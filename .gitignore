@@ -1,0 +1,6 @@
+/data/
+/*.exe
+/test-results/
+/.deps/
+/*.zip
+/.gocache/

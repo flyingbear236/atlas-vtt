@@ -1,0 +1,663 @@
+diff --git a/scene_commands.go b/scene_commands.go
+index c7ccdc6..1dadf7e 100644
+--- a/scene_commands.go
++++ b/scene_commands.go
+@@ -40,19 +40,19 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		sum := sha256.Sum256(encoded)
+ 		digest = hex.EncodeToString(sum[:])
+ 		if !reliable || command.Client == "" || len(command.Client) > 80 {
+-			s.send(peer, map[string]string{"type": "fatal", "message": "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ РїРѕС‚РѕРє РєРѕРјР°РЅРґ"})
++			s.send(peer, map[string]string{"type": "fatal", "message": "Некорректный поток команд"})
+ 			return
+ 		}
+ 		if command.Seq == previousReceipt.Seq {
+ 			if previousReceipt.Digest != digest {
+-				s.send(peer, map[string]string{"type": "fatal", "message": "РќРѕРјРµСЂ РєРѕРјР°РЅРґС‹ СѓР¶Рµ Р·Р°РЅСЏС‚ РґСЂСѓРіРѕР№ РєРѕРјР°РЅРґРѕР№. РћС‚РєСЂРѕР№С‚Рµ СЃС‚РѕР» РІ РЅРѕРІРѕР№ РІРєР»Р°РґРєРµ"})
++				s.send(peer, map[string]string{"type": "fatal", "message": "Номер команды уже занят другой командой. Откройте стол в новой вкладке"})
+ 				return
+ 			}
+ 			s.send(peer, map[string]any{"type": "ack", "client": command.Client, "seq": command.Seq, "error": previousReceipt.Error, "revision": sceneRevision(session, sceneID), "sceneId": sceneID})
+ 			return
+ 		}
+ 		if command.Seq < previousReceipt.Seq || (command.Seq != previousReceipt.Seq+1 && !receiptGapAllowed(command)) {
+-			s.send(peer, map[string]string{"type": "fatal", "message": "РќР°СЂСѓС€РµРЅР° РїРѕСЃР»РµРґРѕРІР°С‚РµР»СЊРЅРѕСЃС‚СЊ РєРѕРјР°РЅРґ. РћС‚РєСЂРѕР№С‚Рµ РЅРѕРІСѓСЋ РІРєР»Р°РґРєСѓ"})
++			s.send(peer, map[string]string{"type": "fatal", "message": "Нарушена последовательность команд. Откройте новую вкладку"})
+ 			return
+ 		}
+ 	}
+@@ -60,9 +60,9 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 	scene := session.Scenes[sceneID]
+ 	issue := ""
+ 	if scene == nil {
+-		issue = "РЎС†РµРЅР° РЅРµ РЅР°Р№РґРµРЅР°"
++		issue = "Сцена не найдена"
+ 	} else if peer.member.Role != "gm" && !scene.Published {
+-		issue = "РЎС†РµРЅР° СЃРєСЂС‹С‚Р°"
++		issue = "Сцена скрыта"
+ 	}
+ 	oldRevision, oldDirty := uint64(0), s.dirty
+ 	if scene != nil {
+@@ -80,13 +80,13 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 
+ 	gmOnly := command.Type != "transitionUse"
+ 	if issue == "" && gmOnly && peer.member.Role != "gm" {
+-		issue = "Р”РµР№СЃС‚РІРёРµ РґРѕСЃС‚СѓРїРЅРѕ РІРµРґСѓС‰РµРјСѓ"
++		issue = "Действие доступно ведущему"
+ 	}
+ 	if issue == "" {
+ 		switch command.Type {
+ 		case "boundsUpdate":
+ 			if command.Bounds == nil || !validSceneBounds(*command.Bounds) {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Рµ РіСЂР°РЅРёС†С‹ СЃС†РµРЅС‹"
++				issue = "Некорректные границы сцены"
+ 				break
+ 			}
+ 			old := scene.Bounds
+@@ -97,12 +97,12 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			}
+ 		case "floorCreate":
+ 			if len(scene.Floors) >= maxSceneFloors {
+-				issue = "РЎРµР№С‡Р°СЃ СЃС†РµРЅР° РїРѕРґРґРµСЂР¶РёРІР°РµС‚ РЅРµ Р±РѕР»СЊС€Рµ РґРІСѓС… СЌС‚Р°Р¶РµР№"
++				issue = "Сейчас сцена поддерживает не больше двух этажей"
+ 				break
+ 			}
+ 			name := strings.TrimSpace(command.Floor.Name)
+ 			if name == "" || utf8.RuneCountInString(name) > 80 {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅРѕРµ РёРјСЏ СЌС‚Р°Р¶Р°"
++				issue = "Некорректное имя этажа"
+ 				break
+ 			}
+ 			floor := Floor{ID: id(), Name: name, Order: command.Floor.Order, Opacity: 1}
+@@ -120,7 +120,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "floorUpdate":
+ 			floor, ok := scene.Floors[command.Floor.ID]
+ 			if !ok {
+-				issue = "Р­С‚Р°Р¶ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Этаж не найден"
+ 				break
+ 			}
+ 			old := floor
+@@ -128,7 +128,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			if props.Name != nil {
+ 				name := strings.TrimSpace(*props.Name)
+ 				if name == "" || utf8.RuneCountInString(name) > 80 {
+-					issue = "РќРµРєРѕСЂСЂРµРєС‚РЅРѕРµ РёРјСЏ СЌС‚Р°Р¶Р°"
++					issue = "Некорректное имя этажа"
+ 					break
+ 				}
+ 				floor.Name = name
+@@ -138,14 +138,14 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			}
+ 			if props.Opacity != nil {
+ 				if !validNumber(*props.Opacity) || *props.Opacity < 0 || *props.Opacity > 1 {
+-					issue = "РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РЅРµРїСЂРѕР·СЂР°С‡РЅРѕСЃС‚СЊ СЌС‚Р°Р¶Р°"
++					issue = "Некорректная непрозрачность этажа"
+ 					break
+ 				}
+ 				floor.Opacity = *props.Opacity
+ 			}
+ 			if props.OpacityWhenViewedFromBelow != nil {
+ 				if !validNumber(*props.OpacityWhenViewedFromBelow) || *props.OpacityWhenViewedFromBelow < 0 || *props.OpacityWhenViewedFromBelow > 1 {
+-					issue = "РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РІРёРґРёРјРѕСЃС‚СЊ СЌС‚Р°Р¶Р° СЃРЅРёР·Сѓ"
++					issue = "Некорректная видимость этажа снизу"
+ 					break
+ 				}
+ 				floor.OpacityWhenViewedFromBelow = *props.OpacityWhenViewedFromBelow
+@@ -158,24 +158,24 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "floorDelete":
+ 			floor, ok := scene.Floors[command.Floor.ID]
+ 			if !ok || len(scene.Floors) <= 1 {
+-				issue = "РќРµР»СЊР·СЏ СѓРґР°Р»РёС‚СЊ СЌС‚РѕС‚ СЌС‚Р°Р¶"
++				issue = "Нельзя удалить этот этаж"
+ 				break
+ 			}
+ 			for _, token := range scene.Tokens {
+ 				if token.FloorID == floor.ID {
+-					issue = "РЎРЅР°С‡Р°Р»Р° РїРµСЂРµРЅРµСЃРёС‚Рµ С‚РѕРєРµРЅС‹ СЃ СЌС‚Р°Р¶Р°"
++					issue = "Сначала перенесите токены с этажа"
+ 					break
+ 				}
+ 			}
+ 			for _, element := range scene.Elements {
+ 				if element.FloorID == floor.ID {
+-					issue = "РЎРЅР°С‡Р°Р»Р° СѓРґР°Р»РёС‚Рµ РёР»Рё РїРµСЂРµРЅРµСЃРёС‚Рµ СЌР»РµРјРµРЅС‚С‹ СЌС‚Р°Р¶Р°"
++					issue = "Сначала удалите или перенесите элементы этажа"
+ 					break
+ 				}
+ 			}
+ 			for _, transition := range scene.Transitions {
+ 				if transition.SourceFloorID == floor.ID || transition.DestinationFloorID == floor.ID {
+-					issue = "РЎРЅР°С‡Р°Р»Р° СѓРґР°Р»РёС‚Рµ РїРµСЂРµС…РѕРґС‹ СЌС‚Р°Р¶Р°"
++					issue = "Сначала удалите переходы этажа"
+ 					break
+ 				}
+ 			}
+@@ -200,7 +200,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "layerCreate":
+ 			name := strings.TrimSpace(command.Layer.Name)
+ 			if scene.Floors[command.Layer.FloorID].ID == "" || name == "" || utf8.RuneCountInString(name) > 80 {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ СЃР»РѕР№"
++				issue = "Некорректный слой"
+ 				break
+ 			}
+ 			layer := Layer{ID: id(), FloorID: command.Layer.FloorID, Name: name, Kind: layerKindVisual, Order: command.Layer.Order, Visible: true, Opacity: 1}
+@@ -210,7 +210,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "layerUpdate":
+ 			layer, ok := scene.Layers[command.Layer.ID]
+ 			if !ok {
+-				issue = "РЎР»РѕР№ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Слой не найден"
+ 				break
+ 			}
+ 			old := layer
+@@ -218,7 +218,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			if props.Name != nil {
+ 				name := strings.TrimSpace(*props.Name)
+ 				if name == "" || utf8.RuneCountInString(name) > 80 {
+-					issue = "РќРµРєРѕСЂСЂРµРєС‚РЅРѕРµ РёРјСЏ СЃР»РѕСЏ"
++					issue = "Некорректное имя слоя"
+ 					break
+ 				}
+ 				layer.Name = name
+@@ -234,18 +234,18 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			}
+ 			if props.Opacity != nil {
+ 				if layer.Kind != layerKindVisual {
+-					issue = "РќРµРїСЂРѕР·СЂР°С‡РЅРѕСЃС‚СЊ РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ РІРёР·СѓР°Р»СЊРЅРѕРјСѓ СЃР»РѕСЋ"
++					issue = "Непрозрачность доступна только визуальному слою"
+ 					break
+ 				}
+ 				if !validNumber(*props.Opacity) || *props.Opacity < 0 || *props.Opacity > 1 {
+-					issue = "РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РїСЂРѕР·СЂР°С‡РЅРѕСЃС‚СЊ"
++					issue = "Некорректная прозрачность"
+ 					break
+ 				}
+ 				layer.Opacity = *props.Opacity
+ 			}
+ 			if props.WalkableBounds != nil {
+ 				if layer.Kind != layerKindWalkable || !validWalkableBounds(*props.WalkableBounds) {
+-					issue = "РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РёРіСЂРѕРІР°СЏ РѕР±Р»Р°СЃС‚СЊ"
++					issue = "Некорректная игровая область"
+ 					break
+ 				}
+ 				bounds := *props.WalkableBounds
+@@ -259,12 +259,12 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "layerDelete":
+ 			layer, ok := scene.Layers[command.Layer.ID]
+ 			if !ok || layer.Kind != layerKindVisual {
+-				issue = "РќРµР»СЊР·СЏ СѓРґР°Р»РёС‚СЊ СЌС‚РѕС‚ СЃР»РѕР№"
++				issue = "Нельзя удалить этот слой"
+ 				break
+ 			}
+ 			for _, element := range scene.Elements {
+ 				if element.LayerID == layer.ID {
+-					issue = "РЎРЅР°С‡Р°Р»Р° СѓРґР°Р»РёС‚Рµ РёР»Рё РїРµСЂРµРЅРµСЃРёС‚Рµ СЌР»РµРјРµРЅС‚С‹ СЃР»РѕСЏ"
++					issue = "Сначала удалите или перенесите элементы слоя"
+ 					break
+ 				}
+ 			}
+@@ -276,12 +276,12 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			restore = func() { scene.Layers[layer.ID] = layer }
+ 		case "elementCreate":
+ 			if len(scene.Elements) >= maxSceneElements {
+-				issue = "Р›РёРјРёС‚ СЌР»РµРјРµРЅС‚РѕРІ СЃС†РµРЅС‹ РґРѕСЃС‚РёРіРЅСѓС‚"
++				issue = "Лимит элементов сцены достигнут"
+ 				break
+ 			}
+ 			asset, ok := session.Assets[command.Element.AssetID]
+ 			if !ok {
+-				issue = "РР·РѕР±СЂР°Р¶РµРЅРёРµ РЅРµ РЅР°Р№РґРµРЅРѕ"
++				issue = "Изображение не найдено"
+ 				break
+ 			}
+ 			element := command.Element
+@@ -294,7 +294,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			}
+ 			layer := scene.Layers[element.LayerID]
+ 			if element.FloorID != layer.FloorID || layer.Kind != layerKindVisual {
+-				issue = "Р­Р»РµРјРµРЅС‚ РјРѕР¶РЅРѕ РїРѕРјРµСЃС‚РёС‚СЊ С‚РѕР»СЊРєРѕ РІ РІРёР·СѓР°Р»СЊРЅС‹Р№ СЃР»РѕР№ СЃРІРѕРµРіРѕ СЌС‚Р°Р¶Р°"
++				issue = "Элемент можно поместить только в визуальный слой своего этажа"
+ 				break
+ 			}
+ 			if element.Transform.Width <= 0 {
+@@ -304,7 +304,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 				element.Transform.Height = float64(asset.Height)
+ 			}
+ 			if !validTransform(element.Transform) || element.Opacity < 0 || element.Opacity > 1 {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ СЌР»РµРјРµРЅС‚"
++				issue = "Некорректный элемент"
+ 				break
+ 			}
+ 			if element.Name == "" {
+@@ -317,7 +317,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "elementUpdate":
+ 			element, ok := scene.Elements[command.Element.ID]
+ 			if !ok {
+-				issue = "Р­Р»РµРјРµРЅС‚ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Элемент не найден"
+ 				break
+ 			}
+ 			old := element
+@@ -325,7 +325,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			if props.Name != nil {
+ 				name := strings.TrimSpace(*props.Name)
+ 				if utf8.RuneCountInString(name) > 120 {
+-					issue = "РЎР»РёС€РєРѕРј РґР»РёРЅРЅРѕРµ РёРјСЏ СЌР»РµРјРµРЅС‚Р°"
++					issue = "Слишком длинное имя элемента"
+ 					break
+ 				}
+ 				element.Name = name
+@@ -338,7 +338,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			}
+ 			layer := scene.Layers[element.LayerID]
+ 			if layer.ID == "" || layer.Kind != layerKindVisual || layer.FloorID != element.FloorID {
+-				issue = "Р­Р»РµРјРµРЅС‚ РјРѕР¶РЅРѕ РїРѕРјРµСЃС‚РёС‚СЊ С‚РѕР»СЊРєРѕ РІ РІРёР·СѓР°Р»СЊРЅС‹Р№ СЃР»РѕР№ СЃРІРѕРµРіРѕ СЌС‚Р°Р¶Р°"
++				issue = "Элемент можно поместить только в визуальный слой своего этажа"
+ 				break
+ 			}
+ 			if props.ZOrder != nil {
+@@ -352,7 +352,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			}
+ 			if props.Opacity != nil {
+ 				if !validNumber(*props.Opacity) || *props.Opacity < 0 || *props.Opacity > 1 {
+-					issue = "РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РїСЂРѕР·СЂР°С‡РЅРѕСЃС‚СЊ"
++					issue = "Некорректная прозрачность"
+ 					break
+ 				}
+ 				element.Opacity = *props.Opacity
+@@ -366,11 +366,11 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "elementPreview", "elementTransform":
+ 			element, ok := scene.Elements[command.Element.ID]
+ 			if !ok {
+-				issue = "Р­Р»РµРјРµРЅС‚ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Элемент не найден"
+ 				break
+ 			}
+ 			if !validTransform(command.Element.Transform) {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ transform"
++				issue = "Некорректный transform"
+ 				break
+ 			}
+ 			old := element
+@@ -384,7 +384,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "elementDelete":
+ 			element, ok := scene.Elements[command.Element.ID]
+ 			if !ok {
+-				issue = "Р­Р»РµРјРµРЅС‚ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Элемент не найден"
+ 				break
+ 			}
+ 			delete(scene.Elements, element.ID)
+@@ -402,7 +402,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 				transition.Directionality = "oneWay"
+ 			}
+ 			if !validTransition(scene, transition) {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ РїРµСЂРµС…РѕРґ"
++				issue = "Некорректный переход"
+ 				break
+ 			}
+ 			scene.Transitions[transition.ID] = transition
+@@ -411,7 +411,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "transitionDelete":
+ 			transition, ok := scene.Transitions[command.Transition.ID]
+ 			if !ok {
+-				issue = "РџРµСЂРµС…РѕРґ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Переход не найден"
+ 				break
+ 			}
+ 			delete(scene.Transitions, transition.ID)
+@@ -420,7 +420,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "transitionUpdate":
+ 			old, ok := scene.Transitions[command.Transition.ID]
+ 			if !ok {
+-				issue = "РџРµСЂРµС…РѕРґ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Переход не найден"
+ 				break
+ 			}
+ 			updated := command.Transition
+@@ -429,7 +429,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 				updated.EndpointA, updated.EndpointB, updated.Direction = old.EndpointA, old.EndpointB, old.Direction
+ 			}
+ 			if !validTransition(scene, updated) {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ РїРµСЂРµС…РѕРґ"
++				issue = "Некорректный переход"
+ 				break
+ 			}
+ 			if updated != old {
+@@ -441,15 +441,15 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			transition, ok := scene.Transitions[command.Transition.ID]
+ 			token, tokenOK := scene.Tokens[command.Token.ID]
+ 			if !ok || !tokenOK {
+-				issue = "РџРµСЂРµС…РѕРґ РёР»Рё С‚РѕРєРµРЅ РЅРµ РЅР°Р№РґРµРЅ"
++				issue = "Переход или токен не найден"
+ 				break
+ 			}
+ 			if peer.member.Role != "gm" && (token.Owner != peer.member.ID || token.Hidden) {
+-				issue = "РќРµС‚ РїСЂР°РІР° РїРµСЂРµРјРµС‰Р°С‚СЊ СЌС‚РѕС‚ С‚РѕРєРµРЅ"
++				issue = "Нет права перемещать этот токен"
+ 				break
+ 			}
+ 			if peer.member.Role != "gm" && token.FloorID != currentFloorForPeer(peer, scene) {
+-				issue = "РўРѕРєРµРЅ РЅР°С…РѕРґРёС‚СЃСЏ РЅР° РґСЂСѓРіРѕРј СЌС‚Р°Р¶Рµ"
++				issue = "Токен находится на другом этаже"
+ 				break
+ 			}
+ 			old := token
+@@ -472,7 +472,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 		case "assetRetention":
+ 			asset, ok := session.Assets[command.AssetID]
+ 			if !ok || (command.RetentionPolicy != assetKeep && command.RetentionPolicy != assetReclaimable) {
+-				issue = "РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РїРѕР»РёС‚РёРєР° Р°СЃСЃРµС‚Р°"
++				issue = "Некорректная политика ассета"
+ 				break
+ 			}
+ 			old := asset
+@@ -536,7 +536,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 			} else {
+ 				session.Receipts[stream] = previousReceipt
+ 			}
+-			s.send(peer, map[string]any{"type": "saveError", "client": command.Client, "seq": command.Seq, "message": "РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ РёР·РјРµРЅРµРЅРёРµ СЃС†РµРЅС‹. РљРѕРјР°РЅРґР° РЅРµ РїРѕРґС‚РІРµСЂР¶РґРµРЅР°; Р±СѓРґРµС‚ РїРѕРІС‚РѕСЂРµРЅР°"})
++			s.send(peer, map[string]any{"type": "saveError", "client": command.Client, "seq": command.Seq, "message": "Не удалось сохранить изменение сцены. Команда не подтверждена; будет повторена"})
+ 			if scene != nil {
+ 				s.send(peer, s.snapshotSceneForPeer(session, peer))
+ 			}
+diff --git a/web/app.js b/web/app.js
+index 5af132c..973ba39 100644
+--- a/web/app.js
++++ b/web/app.js
+@@ -11,8 +11,8 @@ const canvas = $('board'), ctx = canvas.getContext('2d');
+ const saveStatus=document.createElement('span');saveStatus.id='saveStatus';saveStatus.className='status';$('connection').after(saveStatus);
+ let storageDegraded='';
+ function commitStatus(message){saveStatus.textContent=message;saveStatus.classList.toggle('danger',!!storageDegraded);saveStatus.style.display=storageDegraded?'inline':'';}
+-function fatal(message){stopped=true;clearTimeout(reconnectTimer);clearTimeout(commandTimer);clearTimeout(positionCommandTimer);clearTimeout(saveRetry);clearTimeout(positionSaveRetry);socket?.close();$('connection').textContent=message;$('connection').className='status';commitStatus('Р вЂ™Р С•РЎРѓРЎРѓРЎвЂљР В°Р Р…Р С•Р Р†Р В»Р ВµР Р…Р С‘Р Вµ Р С•РЎРѓРЎвЂљР В°Р Р…Р С•Р Р†Р В»Р ВµР Р…Р С•');toast(message);}
+-function updateCommandStatus(){if(storageDegraded){commitStatus(storageDegraded);return;}const count=(outbox?.data.queue.length||0)+(positionOutbox?.data.queue.length||0);commitStatus(count?`Р С›Р В¶Р С‘Р Т‘Р В°РЎР‹РЎвЂљ Р С—Р С•Р Т‘РЎвЂљР Р†Р ВµРЎР‚Р В¶Р Т‘Р ВµР Р…Р С‘РЎРЏ: ${count}`:'Р ВР В·Р СР ВµР Р…Р ВµР Р…Р С‘РЎРЏ Р С—РЎР‚Р С‘Р Р…РЎРЏРЎвЂљРЎвЂ№');}
++function fatal(message){stopped=true;clearTimeout(reconnectTimer);clearTimeout(commandTimer);clearTimeout(positionCommandTimer);clearTimeout(saveRetry);clearTimeout(positionSaveRetry);socket?.close();$('connection').textContent=message;$('connection').className='status';commitStatus('Восстановление остановлено');toast(message);}
++function updateCommandStatus(){if(storageDegraded){commitStatus(storageDegraded);return;}const count=(outbox?.data.queue.length||0)+(positionOutbox?.data.queue.length||0);commitStatus(count?`Ожидают подтверждения: ${count}`:'Изменения приняты');}
+ function initOutbox(){
+   try {
+     const make=(key,position)=>new Outbox(sessionStorage,key,cmd=>{
+@@ -27,10 +27,10 @@ function initOutbox(){
+     outbox=make(`atlas-outbox/${credentials.session}/${credentials.key}`,false);
+     positionOutbox=make(`atlas-position-outbox/${credentials.session}/${credentials.key}`,true);
+     updateCommandStatus();
+-  }catch(e){fatal('Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ Р С—РЎР‚Р С•РЎвЂЎР С‘РЎвЂљР В°РЎвЂљРЎРЉ Р С•РЎвЂЎР ВµРЎР‚Р ВµР Т‘РЎРЉ Р С”Р С•Р СР В°Р Р…Р Т‘ Р В±РЎР‚Р В°РЎС“Р В·Р ВµРЎР‚Р В°');}
++  }catch(e){fatal('Не удалось прочитать очередь команд браузера');}
+ }
+-function queueCommand(type,payload){if(stopped||!outbox)return false;if(CONTENT_COMMANDS.has(type)){if(!state?.scene?.id)return false;payload={...payload,sceneId:state.scene.id};}try{outbox.enqueue(type,payload);return true;}catch(e){fatal('Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎРѓР С•РЎвЂ¦РЎР‚Р В°Р Р…Р С‘РЎвЂљРЎРЉ Р С”Р С•Р СР В°Р Р…Р Т‘РЎС“ Р Р† Р В±РЎР‚Р В°РЎС“Р В·Р ВµРЎР‚Р Вµ. Р ВР В·Р СР ВµР Р…Р ВµР Р…Р С‘Р Вµ Р Р…Р Вµ Р С•РЎвЂљР С—РЎР‚Р В°Р Р†Р В»Р ВµР Р…Р С•');return false;}}
+-function queueTransform(type,payload){if(stopped||!positionOutbox||!state?.scene?.id)return false;try{positionOutbox.enqueue(type,{...payload,sceneId:state.scene.id});return true;}catch(e){fatal('Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎРѓР С•РЎвЂ¦РЎР‚Р В°Р Р…Р С‘РЎвЂљРЎРЉ Р С—Р С•Р В»Р С•Р В¶Р ВµР Р…Р С‘Р Вµ Р Р† Р В±РЎР‚Р В°РЎС“Р В·Р ВµРЎР‚Р Вµ. Р ВР В·Р СР ВµР Р…Р ВµР Р…Р С‘Р Вµ Р Р…Р Вµ Р С•РЎвЂљР С—РЎР‚Р В°Р Р†Р В»Р ВµР Р…Р С•');return false;}}
++function queueCommand(type,payload){if(stopped||!outbox)return false;if(CONTENT_COMMANDS.has(type)){if(!state?.scene?.id)return false;payload={...payload,sceneId:state.scene.id};}try{outbox.enqueue(type,payload);return true;}catch(e){fatal('Не удалось сохранить команду в браузере. Изменение не отправлено');return false;}}
++function queueTransform(type,payload){if(stopped||!positionOutbox||!state?.scene?.id)return false;try{positionOutbox.enqueue(type,{...payload,sceneId:state.scene.id});return true;}catch(e){fatal('Не удалось сохранить положение в браузере. Изменение не отправлено');return false;}}
+ function queuePosition(payload){return queueTransform('final',payload);}
+ for(const [id,field] of [['tokenName','name'],['tokenSize','size'],['tokenColor','color'],['tokenOwner','owner'],['tokenHidden','hidden'],['tokenFloor','floorId']]){
+   $(id).addEventListener('input',()=>{if(selected)drafts.set(selected,field,id==='tokenHidden'?$(id).checked:id==='tokenSize'?Number($(id).value):$(id).value);});
+@@ -38,7 +38,7 @@ for(const [id,field] of [['tokenName','name'],['tokenSize','size'],['tokenColor'
+ let credentials, state, campaign, desiredSceneID='', socket, reconnectTimer, selected, selectedElement, selectedTransition, currentFloorID='', pendingActiveFocus='', drag, transitionDraft=null, inviteCode, outbox, positionOutbox, commandTimer, positionCommandTimer, saveRetry, positionSaveRetry, outboxNeedsResume=true; const drafts=new Drafts();
+ const uploadControllers=new Set();
+ const scenes=new ScenesRuntime({homeAdd:$('homeSceneAdd'),back:$('toScenes'),home:$('campaignHome'),workspace:$('workspace'),footer:$('appFooter'),cards:$('sceneCards'),empty:$('emptyScenes'),campaignName:$('campaignName'),sceneTabs:$('sceneTabs')},{open:openScene,home:goCampaignHome,queue:queueCommand});
+-const sceneTree=new SceneTreeRuntime({tree:$('sceneTree'),addFloor:$('addFloor'),addLayer:$('addLayer'),boundsWidth:$('boundsWidth'),boundsHeight:$('boundsHeight'),boundsSave:$('boundsSave'),addTransition:$('addTransition'),controls:[$('addFloor').parentElement,$('boundsSave').parentElement,$('mapUpload').parentElement]},{queue:queueCommand,selectElement,setFloor,getFloor:()=>currentFloorID,beginTransition:floorID=>{transitionDraft={stage:'A',sourceFloorID:floorID,a:null,b:null,radius:64};toast('Р С™Р В»Р С‘Р С”Р Р…Р С‘РЎвЂљР Вµ A Р Р…Р В° Р С”Р В°РЎР‚РЎвЂљР Вµ, Р В·Р В°РЎвЂљР ВµР С B. Esc Р С•РЎвЂљР СР ВµР Р…РЎРЏР ВµРЎвЂљ.');dirty=true;}});
++const sceneTree=new SceneTreeRuntime({tree:$('sceneTree'),addFloor:$('addFloor'),addLayer:$('addLayer'),boundsWidth:$('boundsWidth'),boundsHeight:$('boundsHeight'),boundsSave:$('boundsSave'),addTransition:$('addTransition'),controls:[$('addFloor').parentElement,$('boundsSave').parentElement,$('mapUpload').parentElement]},{queue:queueCommand,selectElement,setFloor,getFloor:()=>currentFloorID,beginTransition:floorID=>{transitionDraft={stage:'A',sourceFloorID:floorID,a:null,b:null,radius:64};toast('Кликните A на карте, затем B. Esc отменяет.');dirty=true;}});
+ let camera = {x: 0, y: 0, scale: .75}, viewport = {w: 1, h: 1}, grid = true;
+ const REGION_PREFETCH=.5,MAX_REGION_SPAN=524288,INITIAL_SCENE_SCALE=.75,INITIAL_REGION_WORLD_SPAN=6144,VIEWPORT_SAVE_INTERVAL=10000;let regionInFlight=false,sceneCameraInitialized=false,viewportSaveTimer,viewportSaveDirty=false,viewportLastSave=0;
+ let dirty = true, lastFrame = 0, frameTime = 0, rendered = 0, fps = 0, lastMove = 0;
+@@ -49,7 +49,7 @@ let sidebarWidth=250,sidebarDrag=null;
+ function sidebarLimits(){const width=window.innerWidth;return {min:width<=560?140:width<=760?170:190,max:Math.max(220,Math.min(420,Math.floor(width*.45)))};}
+ function storeSidebarSetting(key,value){try{localStorage.setItem(key,value);}catch{}}
+ function setSidebarWidth(value,persist=true){const {min,max}=sidebarLimits();sidebarWidth=Math.max(min,Math.min(max,Number(value)||250));sidebarFrame.style.setProperty('--sidebar-width',`${sidebarWidth}px`);if(persist)storeSidebarSetting(SIDEBAR_WIDTH_KEY,String(Math.round(sidebarWidth)));}
+-function setSidebarCollapsed(collapsed,persist=true){sidebarFrame.classList.toggle('collapsed',collapsed);if(!collapsed)setSidebarWidth(sidebarWidth,false);sidebarToggle.textContent=collapsed?'РІР‚С”':'РІР‚в„–';const action=collapsed?'Р В Р В°Р В·Р Р†Р ВµРЎР‚Р Р…РЎС“РЎвЂљРЎРЉ':'Р РЋР Р†Р ВµРЎР‚Р Р…РЎС“РЎвЂљРЎРЉ';sidebarToggle.title=`${action} Р В»Р ВµР Р†РЎС“РЎР‹ Р С—Р В°Р Р…Р ВµР В»РЎРЉ`;sidebarToggle.setAttribute('aria-label',`${action} Р В»Р ВµР Р†РЎС“РЎР‹ Р С—Р В°Р Р…Р ВµР В»РЎРЉ`);if(persist)storeSidebarSetting(SIDEBAR_COLLAPSED_KEY,collapsed?'1':'0');dirty=true;}
++function setSidebarCollapsed(collapsed,persist=true){sidebarFrame.classList.toggle('collapsed',collapsed);if(!collapsed)setSidebarWidth(sidebarWidth,false);sidebarToggle.textContent=collapsed?'вЂє':'вЂ№';const action=collapsed?'Развернуть':'Свернуть';sidebarToggle.title=`${action} левую панель`;sidebarToggle.setAttribute('aria-label',`${action} левую панель`);if(persist)storeSidebarSetting(SIDEBAR_COLLAPSED_KEY,collapsed?'1':'0');dirty=true;}
+ function showSidebarSection(name,expand=false){for(const [key,section] of Object.entries(sidebarSections)){const active=key===name;section.panel.hidden=!active;section.button.classList.toggle('active',active);section.button.setAttribute('aria-pressed',String(active));}if(expand&&sidebarFrame.classList.contains('collapsed'))setSidebarCollapsed(false);}
+ for(const [name,section] of Object.entries(sidebarSections))section.button.onclick=()=>showSidebarSection(name,true);
+ sidebarToggle.onclick=()=>setSidebarCollapsed(!sidebarFrame.classList.contains('collapsed'));
+@@ -118,14 +118,14 @@ function applyImageMemorySetting(value,persist=true){
+   if(!IMAGE_MEMORY_SETTINGS.has(value))value='auto';
+   imageMemorySetting=value;memoryLimit=resolveImageMemoryBudgetMiB(navigator.deviceMemory,value)*MIB;assetLimit=memoryLimit-ARTWORK_LIMIT;
+   const budgetSelect=$('imageCacheBudget'),autoBudget=resolveImageMemoryBudgetMiB(navigator.deviceMemory,'auto');
+-  budgetSelect.querySelector('option[value="auto"]').textContent=`Auto (${autoBudget} MiB)`;budgetSelect.value=value;budgetSelect.title=value==='auto'?`Auto: ${memoryLimit/MIB} MiB`:`Р вЂєР С‘Р СР С‘РЎвЂљ: ${memoryLimit/MIB} MiB`;
+-  if(persist){try{localStorage.setItem(IMAGE_MEMORY_SETTING_KEY,value);}catch{toast('Р вЂРЎР‚Р В°РЎС“Р В·Р ВµРЎР‚ Р Р…Р Вµ РЎРѓР С•РЎвЂ¦РЎР‚Р В°Р Р…Р С‘Р В» Р Р…Р В°РЎРѓРЎвЂљРЎР‚Р С•Р в„–Р С”РЎС“ RAM-Р С”РЎРЊРЎв‚¬Р В°.');}}
++  budgetSelect.querySelector('option[value="auto"]').textContent=`Auto (${autoBudget} MiB)`;budgetSelect.value=value;budgetSelect.title=value==='auto'?`Auto: ${memoryLimit/MIB} MiB`:`Лимит: ${memoryLimit/MIB} MiB`;
++  if(persist){try{localStorage.setItem(IMAGE_MEMORY_SETTING_KEY,value);}catch{toast('Браузер не сохранил настройку RAM-кэша.');}}
+   trimImages();dirty=true;
+ }
+ applyImageMemorySetting(imageMemorySetting,false);
+ $('imageCacheBudget').onchange=()=>applyImageMemorySetting($('imageCacheBudget').value);
+ function sessions(){try{return JSON.parse(localStorage.getItem('atlas-sessions')||'[]');}catch{return [];}}
+-function remember(c){const list=sessions().filter(x=>x.session!==c.session);list.unshift(c);try{localStorage.setItem('atlas-sessions',JSON.stringify(list.slice(0,12)));}catch{toast('Р вЂРЎР‚Р В°РЎС“Р В·Р ВµРЎР‚ Р Р…Р Вµ РЎРѓР С•РЎвЂ¦РЎР‚Р В°Р Р…Р С‘Р В» Р С”Р В»РЎР‹РЎвЂЎ Р Т‘Р С•РЎРѓРЎвЂљРЎС“Р С—Р В°. Р СњР Вµ Р В·Р В°Р С”РЎР‚РЎвЂ№Р Р†Р В°Р в„–РЎвЂљР Вµ Р Р†Р С”Р В»Р В°Р Т‘Р С”РЎС“.');}}
++function remember(c){const list=sessions().filter(x=>x.session!==c.session);list.unshift(c);try{localStorage.setItem('atlas-sessions',JSON.stringify(list.slice(0,12)));}catch{toast('Браузер не сохранил ключ доступа. Не закрывайте вкладку.');}}
+ async function api(path,body,raw=false,signal) {
+   const headers={};if(credentials)headers.Authorization=`Bearer ${credentials.key}`;
+   if(!raw)headers['Content-Type']='application/json';
+@@ -133,9 +133,9 @@ async function api(path,body,raw=false,signal) {
+   if(!res.ok)throw new Error(await res.text());return res.json();
+ }
+ const invitation=new URLSearchParams(location.hash.slice(1));
+-if(invitation.has('invite')){$('nameLabel').textContent='Р вЂ™Р В°РЎв‚¬Р Вµ Р С‘Р СРЎРЏ';$('sessionName').placeholder='Р С™Р В°Р С” Р Р†Р В°РЎРѓ Р В·Р С•Р Р†РЎС“РЎвЂљ?';$('startButton').textContent='Р СџРЎР‚Р С‘РЎРѓР С•Р ВµР Т‘Р С‘Р Р…Р С‘РЎвЂљРЎРЉРЎРѓРЎРЏ Р С” РЎРѓРЎвЂљР С•Р В»РЎС“ РІвЂ вЂ”';}
+-for(const saved of sessions()){const row=document.createElement('div');row.className='saved-campaign';const button=document.createElement('button');button.textContent=`Р СџРЎР‚Р С•Р Т‘Р С•Р В»Р В¶Р С‘РЎвЂљРЎРЉ: ${saved.name||'Р ВР С–РЎР‚Р С•Р Р†Р С•Р в„– РЎРѓРЎвЂљР С•Р В»'}`;button.onclick=()=>enter(saved);const remove=document.createElement('button');remove.className='danger';remove.textContent='Р Р€Р В±РЎР‚Р В°РЎвЂљРЎРЉ';remove.title='Р Р€Р В±РЎР‚Р В°РЎвЂљРЎРЉ Р Р†РЎвЂ¦Р С•Р Т‘ РЎвЂљР С•Р В»РЎРЉР С”Р С• Р С‘Р В· РЎРЊРЎвЂљР С•Р С–Р С• Р В±РЎР‚Р В°РЎС“Р В·Р ВµРЎР‚Р В°';remove.onclick=()=>{const list=sessions().filter(item=>item.session!==saved.session);localStorage.setItem('atlas-sessions',JSON.stringify(list));row.remove();};row.append(button,remove);$('resumeList').append(row);}
+-$('start').onsubmit=async e=>{e.preventDefault();$('startButton').disabled=true;try{const name=$('sessionName').value.trim();let c;if(invitation.has('invite'))c=await api('/api/join',{session:invitation.get('session'),invite:invitation.get('invite'),name});else c=await api('/api/sessions',{name});c.name=name||'Р СњР С•Р Р†Р В°РЎРЏ Р С‘РЎРѓРЎвЂљР С•РЎР‚Р С‘РЎРЏ';remember(c);enter(c);}catch(e){toast(e.message);}finally{$('startButton').disabled=false;}};
++if(invitation.has('invite')){$('nameLabel').textContent='Ваше имя';$('sessionName').placeholder='Как вас зовут?';$('startButton').textContent='Присоединиться к столу ↗';}
++for(const saved of sessions()){const row=document.createElement('div');row.className='saved-campaign';const button=document.createElement('button');button.textContent=`Продолжить: ${saved.name||'Игровой стол'}`;button.onclick=()=>enter(saved);const remove=document.createElement('button');remove.className='danger';remove.textContent='Убрать';remove.title='Убрать вход только из этого браузера';remove.onclick=()=>{const list=sessions().filter(item=>item.session!==saved.session);localStorage.setItem('atlas-sessions',JSON.stringify(list));row.remove();};row.append(button,remove);$('resumeList').append(row);}
++$('start').onsubmit=async e=>{e.preventDefault();$('startButton').disabled=true;try{const name=$('sessionName').value.trim();let c;if(invitation.has('invite'))c=await api('/api/join',{session:invitation.get('session'),invite:invitation.get('invite'),name});else c=await api('/api/sessions',{name});c.name=name||'Новая история';remember(c);enter(c);}catch(e){toast(e.message);}finally{$('startButton').disabled=false;}};
+ function enter(c){credentials=c;stopped=false;initOutbox();if(stopped)return;inviteCode=c.invite;$('lobby').hidden=true;$('app').hidden=false;resize();connect();}
+ function send(value){
+  if(socket?.readyState!==WebSocket.OPEN)return false;
+@@ -171,18 +171,18 @@ function ensureSceneRegion(view){
+ }
+ function currentViewRegion(){return {left:camera.x,top:camera.y,right:camera.x+viewport.w/camera.scale,bottom:camera.y+viewport.h/camera.scale};}
+ function pruneAssetMetadata(assetID){if(!assetID)return;for(const token of Object.values(state?.tokens||{}))if(token.asset===assetID)return;for(const element of Object.values(state?.elements||{}))if(element.assetId===assetID)return;delete state.assets?.[assetID];}
+-function openScene(sceneID){if(!sceneID||state?.scene?.id===sceneID)return;desiredSceneID=sceneID;clearSceneState();$('connection').textContent='Р С›РЎвЂљР С”РЎР‚РЎвЂ№Р Р†Р В°Р ВµР С РЎРѓРЎвЂ Р ВµР Р…РЎС“РІР‚В¦';send({type:'subscribe',sceneId:sceneID,activeTokenId:readSavedActiveToken(sceneID)});}
++function openScene(sceneID){if(!sceneID||state?.scene?.id===sceneID)return;desiredSceneID=sceneID;clearSceneState();$('connection').textContent='Открываем сцену…';send({type:'subscribe',sceneId:sceneID,activeTokenId:readSavedActiveToken(sceneID)});}
+ function goCampaignHome(){desiredSceneID='';clearSceneState();if(campaign)scenes.showHome();send({type:'subscribe',sceneId:''});}
+ function connect(){
+- if(stopped)return;saveViewportNow();clearTimeout(reconnectTimer);storageDegraded='';updateCommandStatus();$('connection').textContent='Р СџР С•Р Т‘Р С”Р В»РЎР‹РЎвЂЎР ВµР Р…Р С‘Р ВµРІР‚В¦';$('connection').className='status';state=null;regionInFlight=false;sceneCameraInitialized=false;outboxNeedsResume=true;
++ if(stopped)return;saveViewportNow();clearTimeout(reconnectTimer);storageDegraded='';updateCommandStatus();$('connection').textContent='Подключение…';$('connection').className='status';state=null;regionInFlight=false;sceneCameraInitialized=false;outboxNeedsResume=true;
+  socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
+  socket.onopen=()=>socket.send(JSON.stringify(credentials));
+  socket.onmessage=e=>{
+   bytesIn+=e.data.length;const msg=JSON.parse(e.data);
+   if(msg.type==='fatal'){fatal(msg.message);return;}
+-  if(msg.type==='ack'){const position=msg.client===positionOutbox?.data.client,target=position?positionOutbox:outbox;clearTimeout(position?positionCommandTimer:commandTimer);try{target.ack(msg);}catch(e){fatal('Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎРѓР С•РЎвЂ¦РЎР‚Р В°Р Р…Р С‘РЎвЂљРЎРЉ Р С•РЎвЂЎР ВµРЎР‚Р ВµР Т‘РЎРЉ Р С”Р С•Р СР В°Р Р…Р Т‘ Р Р† Р В±РЎР‚Р В°РЎС“Р В·Р ВµРЎР‚Р Вµ');}return;}
++  if(msg.type==='ack'){const position=msg.client===positionOutbox?.data.client,target=position?positionOutbox:outbox;clearTimeout(position?positionCommandTimer:commandTimer);try{target.ack(msg);}catch(e){fatal('Не удалось сохранить очередь команд в браузере');}return;}
+   if(msg.type==='saveError'){const position=msg.client===positionOutbox?.data.client,target=position?positionOutbox:outbox;clearTimeout(position?positionCommandTimer:commandTimer);commitStatus(msg.message);if(position){clearTimeout(positionSaveRetry);positionSaveRetry=setTimeout(()=>target.retry(),2000);}else{clearTimeout(saveRetry);saveRetry=setTimeout(()=>target.retry(),2000);}return;}
+-  if(msg.type==='storageError'){const wasDegraded=!!storageDegraded;storageDegraded=msg.message||'Р РЋР ВµРЎР‚Р Р†Р ВµРЎР‚ Р Р†РЎР‚Р ВµР СР ВµР Р…Р Р…Р С• Р Р…Р Вµ Р СР С•Р В¶Р ВµРЎвЂљ РЎРѓР С•РЎвЂ¦РЎР‚Р В°Р Р…РЎРЏРЎвЂљРЎРЉ Р С‘Р В·Р СР ВµР Р…Р ВµР Р…Р С‘РЎРЏ Р Р…Р В° Р Т‘Р С‘РЎРѓР С”';updateCommandStatus();if(!wasDegraded)toast(storageDegraded);return;}
++  if(msg.type==='storageError'){const wasDegraded=!!storageDegraded;storageDegraded=msg.message||'Сервер временно не может сохранять изменения на диск';updateCommandStatus();if(!wasDegraded)toast(storageDegraded);return;}
+   if(msg.type==='storageRecovered'){storageDegraded='';updateCommandStatus();return;}
+   if(msg.type==='activeTokenRejected'){regionInFlight=false;pendingActiveFocus='';drag=null;toast(msg.message);send({type:'sync'});return;}
+   if(msg.type==='presence'&&state){
+@@ -192,7 +192,7 @@ function connect(){
+   }
+   if(msg.type==='campaignSnapshot'){
+    campaign=msg;scenes.update(campaign);
+-   retry=0;$('connection').textContent='РІвЂ”РЏ Р вЂ™ РЎРѓР ВµРЎвЂљР С‘';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;$('roleBadge').textContent=msg.you.role==='gm'?'Р вЂ™Р вЂўР вЂќР Р€Р В©Р ВР в„ў':'Р ВР вЂњР В Р С›Р С™';document.querySelectorAll('.gm').forEach(el=>el.hidden=msg.you.role!=='gm');
++   retry=0;$('connection').textContent='● В сети';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;$('roleBadge').textContent=msg.you.role==='gm'?'ВЕДУЩИЙ':'ИГРОК';document.querySelectorAll('.gm').forEach(el=>el.hidden=msg.you.role!=='gm');
+    if(outboxNeedsResume){outboxNeedsResume=false;outbox.reconnect();positionOutbox.reconnect();}
+    const active=state?.scene?.id,summary=msg.scenes.find(scene=>scene.id===active),accessible=id=>msg.scenes.some(scene=>scene.id===id);
+    if(active&&summary){state.scene={...state.scene,name:summary.name,published:summary.published};$('sceneLabel').textContent=summary.name;scenes.showScene();return;}
+@@ -204,7 +204,7 @@ function connect(){
+   if(msg.type==='snapshot'){
+    if(!desiredSceneID||msg.scene.id!==desiredSceneID)return;
+    const initialRegion=msg.region==null;state=msg;if(!initialRegion)regionInFlight=false;desiredSceneID=msg.scene.id;scenes.update(campaign);scenes.showScene();retry=0;
+-   $('connection').textContent='РІвЂ”РЏ Р вЂ™ РЎРѓР ВµРЎвЂљР С‘';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;$('roleBadge').textContent=msg.you.role==='gm'?'Р вЂ™Р вЂўР вЂќР Р€Р В©Р ВР в„ў':'Р ВР вЂњР В Р С›Р С™';document.querySelectorAll('.gm').forEach(el=>el.hidden=msg.you.role!=='gm');
++   $('connection').textContent='● В сети';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;$('roleBadge').textContent=msg.you.role==='gm'?'ВЕДУЩИЙ':'ИГРОК';document.querySelectorAll('.gm').forEach(el=>el.hidden=msg.you.role!=='gm');
+    if(!sceneCameraInitialized){initializeSceneCamera(msg);sceneCameraInitialized=true;}
+    state.ownedTokens=state.ownedTokens||{};currentFloorID=msg.currentFloorId||orderedFloors(state)[0]?.id||'';if(state.you.role==='player')rememberActiveToken(state.scene.id,state.activeTokenId||'');
+    if(pendingActiveFocus&&pendingActiveFocus===state.activeTokenId){const token=navigationToken(pendingActiveFocus);if(token){camera.x=token.x-viewport.w/(2*camera.scale);camera.y=token.y-viewport.h/(2*camera.scale);scheduleViewportSave();}pendingActiveFocus='';}
+@@ -239,17 +239,17 @@ function connect(){
+    }else if(next){
+     state.tokens[msg.id]=next;tokenIndex.set(next);if(!old||old.x!==next.x||old.y!==next.y)movingTokens.add(msg.id);if(state.you.role==='player'){const listed=state.ownedTokens[msg.id];if(listed)updateTokenRow(listed);else removeTokenRow(msg.id);}else if(next.floorId===currentFloorID&&propertiesChanged)updateTokenRow(next);else if(next.floorId!==currentFloorID)removeTokenRow(next.id);
+   }
+-  $('revision').textContent=`Р В Р ВµР Р†Р С‘Р В·Р С‘РЎРЏ ${state.revision}`;
++  $('revision').textContent=`Ревизия ${state.revision}`;
+   if(propertiesChanged&&selected===msg.id)fillProperties();
+   if(old?.asset&&old.asset!==next?.asset)pruneAssetMetadata(old.asset);
+   if(selected&&!state.tokens[selected])select(null);
+   dirty=true;
+  };
+- socket.onclose=()=>{clearTimeout(commandTimer);clearTimeout(positionCommandTimer);abortUploads();if(stopped)return;outbox.inflight=false;positionOutbox.inflight=false;if(drag?.type==='token'||drag?.type==='element')endDrag();drag=null;dirty=true;$('connection').textContent='РІвЂ”РЏ Р СњР ВµРЎвЂљ РЎРѓР Р†РЎРЏР В·Р С‘ Р’В· Р С—Р С•Р Р†РЎвЂљР С•РЎР‚РІР‚В¦';$('connection').className='status';reconnectTimer=setTimeout(connect,Math.min(1000*2**retry++,10000));};
++ socket.onclose=()=>{clearTimeout(commandTimer);clearTimeout(positionCommandTimer);abortUploads();if(stopped)return;outbox.inflight=false;positionOutbox.inflight=false;if(drag?.type==='token'||drag?.type==='element')endDrag();drag=null;dirty=true;$('connection').textContent='● Нет связи · повтор…';$('connection').className='status';reconnectTimer=setTimeout(connect,Math.min(1000*2**retry++,10000));};
+  socket.onerror=()=>socket.close();
+ }
+ $('leaveCampaign').onclick=()=>{saveViewportNow();stopped=true;socket?.close();location.href='/';};
+-$('invite').onclick=async()=>{const url=`${location.origin}/#session=${credentials.session}&invite=${inviteCode}`;if(!inviteCode){toast('Р СџРЎР‚Р С‘Р С–Р В»Р В°РЎв‚¬Р ВµР Р…Р С‘Р Вµ Р Т‘Р С•РЎРѓРЎвЂљРЎС“Р С—Р Р…Р С• Р Р† Р С‘РЎРѓРЎвЂ¦Р С•Р Т‘Р Р…Р С•Р в„– Р Р†Р С”Р В»Р В°Р Т‘Р С”Р Вµ Р Р†Р ВµР Т‘РЎС“РЎвЂ°Р ВµР С–Р С•.');return;}try{await navigator.clipboard.writeText(url);toast('Р РЋРЎРѓРЎвЂ№Р В»Р С”Р В° Р Т‘Р В»РЎРЏ Р С‘Р С–РЎР‚Р С•Р С”Р С•Р Р† РЎРѓР С”Р С•Р С—Р С‘РЎР‚Р С•Р Р†Р В°Р Р…Р В°');}catch{prompt('Р РЋР С”Р С•Р С—Р С‘РЎР‚РЎС“Р в„–РЎвЂљР Вµ РЎРѓРЎРѓРЎвЂ№Р В»Р С”РЎС“ Р Т‘Р В»РЎРЏ Р С‘Р С–РЎР‚Р С•Р С”Р С•Р Р†',url);}};
++$('invite').onclick=async()=>{const url=`${location.origin}/#session=${credentials.session}&invite=${inviteCode}`;if(!inviteCode){toast('Приглашение доступно в исходной вкладке ведущего.');return;}try{await navigator.clipboard.writeText(url);toast('Ссылка для игроков скопирована');}catch{prompt('Скопируйте ссылку для игроков',url);}};
+ function canMove(t){return state&&(state.you.role==='gm'||(t.owner===state.you.id&&!t.hidden));}
+ function navigationToken(id){return state?.tokens?.[id]||state?.ownedTokens?.[id];}
+ function activatePlayerToken(token,focus){
+@@ -265,12 +265,12 @@ function clearSceneState(){saveViewportNow();clearTimeout(viewportSaveTimer);vie
+ function rebuildTokenIndex(){tokenIndex.clear();movingTokens.clear();for(const t of Object.values(state.tokens)){tokenIndex.set(t);const v=visuals.get(t.id);if(v&&(v.x!==t.x||v.y!==t.y))movingTokens.add(t.id);}}
+ function renderMembers(){
+  $('members').replaceChildren();let online=0;
+- for(const m of Object.values(state.members)){const row=document.createElement('div');row.className='member';const dot=document.createElement('span');dot.className='live-dot'+(state.online[m.id]?'':' offline');const name=document.createElement('span');name.textContent=m.name;const role=document.createElement('small');role.textContent=m.role==='gm'?'Р Р†Р ВµР Т‘РЎС“РЎвЂ°Р С‘Р в„–':'Р С‘Р С–РЎР‚Р С•Р С”';row.append(dot,name,role);$('members').append(row);if(state.online[m.id])online++;}
++ for(const m of Object.values(state.members)){const row=document.createElement('div');row.className='member';const dot=document.createElement('span');dot.className='live-dot'+(state.online[m.id]?'':' offline');const name=document.createElement('span');name.textContent=m.name;const role=document.createElement('small');role.textContent=m.role==='gm'?'ведущий':'игрок';row.append(dot,name,role);$('members').append(row);if(state.online[m.id])online++;}
+  $('memberCount').textContent=online;
+ }
+ function renderPanels(){
+  const gm=state.you.role==='gm';$('mapTab').hidden=!gm;if(!gm&&!sidebarSections.map.panel.hidden)showSidebarSection('objects');
+- $('noSelection').querySelector('p').innerHTML=gm?'Р вЂ™РЎвЂ№Р В±Р ВµРЎР‚Р С‘РЎвЂљР Вµ РЎвЂљР С•Р С”Р ВµР Р…<br>Р С‘Р В»Р С‘ РЎРЊР В»Р ВµР СР ВµР Р…РЎвЂљ РЎРѓРЎвЂ Р ВµР Р…РЎвЂ№':'Р вЂ™РЎвЂ№Р В±Р ВµРЎР‚Р С‘РЎвЂљР Вµ РЎвЂљР С•Р С”Р ВµР Р…';
++ $('noSelection').querySelector('p').innerHTML=gm?'Выберите токен<br>или элемент сцены':'Выберите токен';
+  $('emptyMap').hidden=!!Object.keys(state.elements||{}).length;$('sceneLabel').textContent=state.floors?.[currentFloorID]?`${state.scene.name} Р’В· ${state.floors[currentFloorID].name}`:state.scene.name;
+  renderMembers();renderTokenList();fillProperties();fillElementProperties();sceneTree.update(state,selectedElement);
+ }
+@@ -281,12 +281,12 @@ function createTokenRow(id){
+ }
+ function updateTokenRow(t){
+  let row=tokenRows.get(t.id);if(!row)row=createTokenRow(t.id);
+- row.className='token-row'+(t.id===selected?' selected':'')+(t.id===state?.activeTokenId?' active':'');const [swatch,name,extra]=row.children;swatch.style.background=t.color;swatch.textContent=t.name.slice(0,1)||'РІвЂ”вЂ ';name.textContent=t.name;extra.textContent=t.hidden?'РІвЂ”РЉ':t.id===state?.activeTokenId?'РІвЂ”РЏ':canMove(t)?'РІвЂ вЂ”':'';
++ row.className='token-row'+(t.id===selected?' selected':'')+(t.id===state?.activeTokenId?' active':'');const [swatch,name,extra]=row.children;swatch.style.background=t.color;swatch.textContent=t.name.slice(0,1)||'РІвЂ”вЂ ';name.textContent=t.name;extra.textContent=t.hidden?'в—Њ':t.id===state?.activeTokenId?'в—Џ':canMove(t)?'РІвЂ вЂ”':'';
+  $('emptyTokens').hidden=tokenRows.size>0;
+ }
+ function removeTokenRow(id){const row=tokenRows.get(id);if(row){row.remove();tokenRows.delete(id);}$('emptyTokens').hidden=tokenRows.size>0;}
+ function renderTokenList(){
+- if(!state)return;$('revision').textContent=`Р В Р ВµР Р†Р С‘Р В·Р С‘РЎРЏ ${state.revision}`;const listed=state.you.role==='player'?Object.values(state.ownedTokens||{}):Object.values(state.tokens).filter(t=>t.floorId===currentFloorID),ids=new Set(listed.map(t=>t.id));
++ if(!state)return;$('revision').textContent=`Ревизия ${state.revision}`;const listed=state.you.role==='player'?Object.values(state.ownedTokens||{}):Object.values(state.tokens).filter(t=>t.floorId===currentFloorID),ids=new Set(listed.map(t=>t.id));
+  for(const id of tokenRows.keys())if(!ids.has(id))removeTokenRow(id);
+  for(const t of listed)updateTokenRow(t);
+  $('emptyTokens').hidden=ids.size>0;
+@@ -296,17 +296,17 @@ function selectElement(id){if(id&&state?.you.role!=='gm')return;if(id)select(nul
+ function setFloor(id){if(!state?.floors?.[id]||state.you.role!=='gm'||id===currentFloorID)return;select(null);selectElement(null);const region=boundedRegion(currentViewRegion());if(send({type:'view',sceneId:state.scene.id,viewFloorId:id,region}))regionInFlight=true;}
+ function transitionContains(region,x,y){return region.shape==='circle'?Math.hypot(x-region.x,y-region.y)<=region.radius:region.shape==='rectangle'&&x>=region.x&&y>=region.y&&x<=region.x+region.width&&y<=region.y+region.height;}
+ function transitionSourceContains(item,t){const direction=item.direction||item.directionality||'AToB',a=item.endpointA,b=item.endpointB;if(a?.floorId){return ((direction==='bidirectional'||direction==='AToB')&&t.floorId===a.floorId&&Math.hypot(t.x-a.position.x,t.y-a.position.y)<=a.radius)||((direction==='bidirectional'||direction==='BToA')&&t.floorId===b.floorId&&Math.hypot(t.x-b.position.x,t.y-b.position.y)<=b.radius);}return t.floorId===item.sourceFloorId&&transitionContains(item.sourceRegion,t.x,t.y);}
+-function fillProperties(){const source=state?.tokens[selected];const t=source?{...source,...drafts.get(selected)}:null;$('properties').hidden=!t;$('noSelection').hidden=!!t||!!state?.elements?.[selectedElement];document.querySelector('.inspector').classList.toggle('has-selection',!!t||!!state?.elements?.[selectedElement]);if(!t)return;$('tokenName').value=t.name;$('tokenSize').value=t.size;$('tokenColor').value=/^#[0-9a-f]{6}$/i.test(t.color)?t.color:'#c2d89b';$('tokenHidden').checked=t.hidden;$('tokenPreview').style.background=t.color;$('tokenPreview').textContent=t.name.slice(0,1);$('tokenOwner').replaceChildren();const add=(id,name)=>{const option=document.createElement('option');option.value=id;option.textContent=name;$('tokenOwner').append(option);};add('','Р СћР С•Р В»РЎРЉР С”Р С• Р Р†Р ВµР Т‘РЎС“РЎвЂ°Р С‘Р в„–');for(const m of Object.values(state.members))if(m.role==='player')add(m.id,m.name);$('tokenOwner').value=t.owner;$('tokenFloor').replaceChildren();for(const floor of orderedFloors(state)){const option=document.createElement('option');option.value=floor.id;option.textContent=floor.name;$('tokenFloor').append(option);}$('tokenFloor').value=t.floorId;for(const el of $('properties').querySelectorAll('input,select'))el.disabled=state.you.role!=='gm';const transition=Object.values(state.transitions||{}).find(item=>transitionSourceContains(item,t));$('useTransition').hidden=!transition;$('useTransition').dataset.transitionId=transition?.id||'';}
++function fillProperties(){const source=state?.tokens[selected];const t=source?{...source,...drafts.get(selected)}:null;$('properties').hidden=!t;$('noSelection').hidden=!!t||!!state?.elements?.[selectedElement];document.querySelector('.inspector').classList.toggle('has-selection',!!t||!!state?.elements?.[selectedElement]);if(!t)return;$('tokenName').value=t.name;$('tokenSize').value=t.size;$('tokenColor').value=/^#[0-9a-f]{6}$/i.test(t.color)?t.color:'#c2d89b';$('tokenHidden').checked=t.hidden;$('tokenPreview').style.background=t.color;$('tokenPreview').textContent=t.name.slice(0,1);$('tokenOwner').replaceChildren();const add=(id,name)=>{const option=document.createElement('option');option.value=id;option.textContent=name;$('tokenOwner').append(option);};add('','Только ведущий');for(const m of Object.values(state.members))if(m.role==='player')add(m.id,m.name);$('tokenOwner').value=t.owner;$('tokenFloor').replaceChildren();for(const floor of orderedFloors(state)){const option=document.createElement('option');option.value=floor.id;option.textContent=floor.name;$('tokenFloor').append(option);}$('tokenFloor').value=t.floorId;for(const el of $('properties').querySelectorAll('input,select'))el.disabled=state.you.role!=='gm';const transition=Object.values(state.transitions||{}).find(item=>transitionSourceContains(item,t));$('useTransition').hidden=!transition;$('useTransition').dataset.transitionId=transition?.id||'';}
+ function fillElementProperties(){const element=state?.you.role==='gm'?state?.elements?.[selectedElement]:null;$('elementProperties').hidden=!element;$('noSelection').hidden=!!state?.tokens?.[selected]||!!element;document.querySelector('.inspector').classList.toggle('has-selection',!!state?.tokens?.[selected]||!!element);if(!element)return;const t=element.transform;$('elementName').value=element.name;$('elementX').value=t.x;$('elementY').value=t.y;$('elementWidth').value=t.width;$('elementHeight').value=t.height;$('elementRotation').value=t.rotation;$('elementOpacity').value=element.opacity;$('elementVisible').checked=element.visible;$('elementLocked').checked=element.locked;$('elementLayer').replaceChildren();for(const layer of orderedLayers(state,element.floorId).filter(layer=>layer.kind==='visual')){const option=document.createElement('option');option.value=layer.id;option.textContent=layer.name;$('elementLayer').append(option);}$('elementLayer').value=element.layerId;for(const control of $('elementProperties').querySelectorAll('input,select,button'))control.disabled=state.you.role!=='gm';}
+ $('properties').onsubmit=e=>{e.preventDefault();const source=state?.tokens[selected];if(!source)return;const draft={...drafts.get(selected)},properties={},unchanged={};for(const [field,value] of Object.entries(draft))(source[field]===value?unchanged:properties)[field]=value;if(Object.keys(unchanged).length)drafts.confirm(selected,unchanged);if(Object.keys(properties).length)queueCommand('properties',{token:{id:selected},properties});else fillProperties();};
+ $('delete').onclick=()=>{if(selected)queueCommand('delete',{token:{id:selected}});select(null);};
+ $('useTransition').onclick=()=>{const transitionId=$('useTransition').dataset.transitionId;if(selected&&transitionId)queueCommand('transitionUse',{token:{id:selected},transition:{id:transitionId}});};
+ $('elementProperties').onsubmit=e=>{e.preventDefault();const element=state?.elements?.[selectedElement];if(!element)return;const layerId=$('elementLayer').value,layer=state.layers[layerId],properties={name:$('elementName').value.trim(),floorId:layer.floorId,layerId,visible:$('elementVisible').checked,locked:$('elementLocked').checked,opacity:Number($('elementOpacity').value)},transform={x:Number($('elementX').value),y:Number($('elementY').value),width:Number($('elementWidth').value),height:Number($('elementHeight').value),rotation:Number($('elementRotation').value)};queueCommand('elementUpdate',{element:{id:element.id},elementProperties:properties});queueTransform('elementTransform',{element:{id:element.id,transform}});};
+-$('deleteElement').onclick=()=>{if(selectedElement&&confirm('Р Р€Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ РЎРЊР В»Р ВµР СР ВµР Р…РЎвЂљ РЎРѓРЎвЂ Р ВµР Р…РЎвЂ№?'))queueCommand('elementDelete',{element:{id:selectedElement}});selectElement(null);};
+-$('duplicateElement').onclick=()=>{const element=state?.elements?.[selectedElement];if(!element)return;queueCommand('elementCreate',{element:{...element,id:'',name:`${element.name} Р С”Р С•Р С—Р С‘РЎРЏ`,transform:{...element.transform,x:element.transform.x+30,y:element.transform.y+30}}});};
+-function addToken(asset='',x=camera.x+viewport.w/(2*camera.scale),y=camera.y+viewport.h/(2*camera.scale)){if(!queueCommand('create',{token:{name:asset?'Р СњР С•Р Р†РЎвЂ№Р в„– Р С—Р ВµРЎР‚РЎРѓР С•Р Р…Р В°Р В¶':'Р ВРЎРѓР С”Р В°РЎвЂљР ВµР В»РЎРЉ',floorId:currentFloorID,x,y,size:80,rotation:0,color:'#c2d89b',owner:'',hidden:false,asset}}))toast('Р вЂќР С•Р В¶Р Т‘Р С‘РЎвЂљР ВµРЎРѓРЎРЉ Р С—Р С•Р Т‘Р С”Р В»РЎР‹РЎвЂЎР ВµР Р…Р С‘РЎРЏ Р С” РЎРѓР ВµРЎР‚Р Р†Р ВµРЎР‚РЎС“');}
++$('deleteElement').onclick=()=>{if(selectedElement&&confirm('Удалить элемент сцены?'))queueCommand('elementDelete',{element:{id:selectedElement}});selectElement(null);};
++$('duplicateElement').onclick=()=>{const element=state?.elements?.[selectedElement];if(!element)return;queueCommand('elementCreate',{element:{...element,id:'',name:`${element.name} копия`,transform:{...element.transform,x:element.transform.x+30,y:element.transform.y+30}}});};
++function addToken(asset='',x=camera.x+viewport.w/(2*camera.scale),y=camera.y+viewport.h/(2*camera.scale)){if(!queueCommand('create',{token:{name:asset?'Новый персонаж':'Искатель',floorId:currentFloorID,x,y,size:80,rotation:0,color:'#c2d89b',owner:'',hidden:false,asset}}))toast('Дождитесь подключения к серверу');}
+ $('add').onclick=()=>addToken();
+-async function upload(file,kind){if(!file)return;if(!state?.scene?.id)throw new Error('Р РЋР Р…Р В°РЎвЂЎР В°Р В»Р В° Р С•РЎвЂљР С”РЎР‚Р С•Р в„–РЎвЂљР Вµ РЎРѓРЎвЂ Р ВµР Р…РЎС“');if(file.size>UPLOAD_LIMIT_BYTES)throw new Error('Р В Р В°Р В·Р СР ВµРЎР‚ РЎвЂћР В°Р в„–Р В»Р В° Р Р…Р Вµ Р Т‘Р С•Р В»Р В¶Р ВµР Р… Р С—РЎР‚Р ВµР Р†РЎвЂ№РЎв‚¬Р В°РЎвЂљРЎРЉ 256 Р СљР С‘Р вЂ');const sceneID=state.scene.id,controller=new AbortController(),activeElement=state.elements?.[selectedElement],layer=activeElement?.layerId||orderedLayers(state,currentFloorID).find(item=>item.kind==='visual')?.id||'';uploadControllers.add(controller);toast('Р СџР С•Р Т‘Р С–Р С•РЎвЂљР С•Р Р†Р С”Р В° Р С‘Р В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘РЎРЏ Р Р…Р В° РЎРѓР ВµРЎР‚Р Р†Р ВµРЎР‚Р ВµРІР‚В¦');try{const query=new URLSearchParams({session:credentials.session,scene:sceneID,kind,name:file.name,floor:currentFloorID,layer});const a=await api(`/api/upload?${query}`,file,true,controller.signal);if(controller.signal.aborted||state?.scene?.id!==sceneID)throw new DOMException('Scene changed','AbortError');toast(kind==='map'?(a.renderMode==='tiled'?'Р ВР В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘Р Вµ Р Т‘Р С•Р В±Р В°Р Р†Р В»Р ВµР Р…Р С•. Р вЂ”Р В°Р С–РЎР‚РЎС“Р В¶Р В°РЎР‹РЎвЂљРЎРѓРЎРЏ Р Р†Р С‘Р Т‘Р С‘Р СРЎвЂ№Р Вµ РЎвЂљР В°Р в„–Р В»РЎвЂ№.':'Р ВР В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘Р Вµ Р Т‘Р С•Р В±Р В°Р Р†Р В»Р ВµР Р…Р С•.'):'Р ВР В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘Р Вµ РЎвЂљР С•Р С”Р ВµР Р…Р В° Р В·Р В°Р С–РЎР‚РЎС“Р В¶Р ВµР Р…Р С•');if(kind==='token')addToken(a.id);return a;}finally{uploadControllers.delete(controller);}}
++async function upload(file,kind){if(!file)return;if(!state?.scene?.id)throw new Error('Сначала откройте сцену');if(file.size>UPLOAD_LIMIT_BYTES)throw new Error('Размер файла не должен превышать 256 МиБ');const sceneID=state.scene.id,controller=new AbortController(),activeElement=state.elements?.[selectedElement],layer=activeElement?.layerId||orderedLayers(state,currentFloorID).find(item=>item.kind==='visual')?.id||'';uploadControllers.add(controller);toast('Подготовка изображения на сервере…');try{const query=new URLSearchParams({session:credentials.session,scene:sceneID,kind,name:file.name,floor:currentFloorID,layer});const a=await api(`/api/upload?${query}`,file,true,controller.signal);if(controller.signal.aborted||state?.scene?.id!==sceneID)throw new DOMException('Scene changed','AbortError');toast(kind==='map'?(a.renderMode==='tiled'?'Изображение добавлено. Загружаются видимые тайлы.':'Изображение добавлено.'):'Изображение токена загружено');if(kind==='token')addToken(a.id);return a;}finally{uploadControllers.delete(controller);}}
+ for(const kind of ['map','token'])$(`${kind}Upload`).onchange=async e=>{const input=e.target;input.disabled=true;try{await upload(input.files[0],kind);}catch(e){if(e.name!=='AbortError')toast(e.message);}finally{input.disabled=false;input.value='';}};
+ function resize(){const rect=$('stage').getBoundingClientRect();viewport={w:Math.max(1,rect.width),h:Math.max(1,rect.height)};const dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(viewport.w*dpr);canvas.height=Math.round(viewport.h*dpr);dirty=true;}
+ new ResizeObserver(resize).observe($('stage'));
+@@ -315,14 +315,14 @@ function zoom(factor,x=viewport.w/2,y=viewport.h/2){const wx=camera.x+x/camera.s
+ $('fit').onclick=fit;$('plus').onclick=()=>zoom(1.25);$('minus').onclick=()=>zoom(.8);$('grid').onclick=()=>{grid=!grid;$('grid').classList.toggle('active',grid);dirty=true;};
+ const point=e=>{const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};};
+ canvas.onwheel=e=>{e.preventDefault();const p=point(e);zoom(Math.exp(-e.deltaY*.001),p.x,p.y);};
+-canvas.onpointerdown=e=>{if(!state)return;canvas.focus();canvas.setPointerCapture(e.pointerId);const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,gm=state.you.role==='gm';if(gm&&transitionDraft&&e.button===0&&!e.altKey){if(transitionDraft.stage==='A'){transitionDraft.a={x:wx,y:wy,floorId:transitionDraft.sourceFloorID};transitionDraft.stage='B';toast('Р С™Р В»Р С‘Р С”Р Р…Р С‘РЎвЂљР Вµ РЎвЂљР С•РЎвЂЎР С”РЎС“ B. Esc Р С•РЎвЂљР СР ВµР Р…РЎРЏР ВµРЎвЂљ.');}else{const target=orderedFloors(state).find(f=>f.id!==transitionDraft.sourceFloorID&&f.id===currentFloorID)||orderedFloors(state).find(f=>f.id!==transitionDraft.sourceFloorID);if(!target){toast('Р СњРЎС“Р В¶Р ВµР Р… Р Р†РЎвЂљР С•РЎР‚Р С•Р в„– РЎРЊРЎвЂљР В°Р В¶');return;}transitionDraft.b={x:wx,y:wy,floorId:target.id};queueCommand('transitionCreate',{transition:{name:'Р СџР ВµРЎР‚Р ВµРЎвЂ¦Р С•Р Т‘',endpointA:{floorId:transitionDraft.a.floorId,position:{x:transitionDraft.a.x,y:transitionDraft.a.y},radius:transitionDraft.radius},endpointB:{floorId:transitionDraft.b.floorId,position:{x:transitionDraft.b.x,y:transitionDraft.b.y},radius:transitionDraft.radius},direction:'bidirectional'}});transitionDraft=null;toast('Р СџР ВµРЎР‚Р ВµРЎвЂ¦Р С•Р Т‘ РЎРѓР С•Р В·Р Т‘Р В°Р Р…');}dirty=true;return;}const gm2=gm,t=topmostTokenAt(state,currentFloorID,tokenIndex.query(wx,wy,wx,wy),wx,wy,t=>gm2?t.floorId===currentFloorID:canMove(t)),chosen=state.elements?.[selectedElement],handle=gm2?elementHandleAt(chosen,wx,wy,camera.scale):null,element=gm2?(handle?chosen:hitElement(state,currentFloorID,wx,wy)):null;if(t&&e.button===0&&!e.altKey){if(!gm2)activatePlayerToken(t,false);else select(t.id);if(canMove(t))drag={type:'token',id:t.id,dx:wx-t.x,dy:wy-t.y,x:t.x,y:t.y,moved:false};}else if(element&&e.button===0&&!e.altKey){selectElement(element.id);const layer=state.layers[element.layerId];if(!element.locked&&!layer.locked)drag={type:'element',id:element.id,mode:handle||'move',start:{...element.transform,pointerX:wx,pointerY:wy},pointerX:wx,pointerY:wy,transform:{...element.transform},moved:false};}else{select(null);selectElement(null);drag={type:'pan',px:p.x,py:p.y,x:camera.x,y:camera.y};}dirty=true;};
++canvas.onpointerdown=e=>{if(!state)return;canvas.focus();canvas.setPointerCapture(e.pointerId);const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,gm=state.you.role==='gm';if(gm&&transitionDraft&&e.button===0&&!e.altKey){if(transitionDraft.stage==='A'){transitionDraft.a={x:wx,y:wy,floorId:transitionDraft.sourceFloorID};transitionDraft.stage='B';toast('Кликните точку B. Esc отменяет.');}else{const target=orderedFloors(state).find(f=>f.id!==transitionDraft.sourceFloorID&&f.id===currentFloorID)||orderedFloors(state).find(f=>f.id!==transitionDraft.sourceFloorID);if(!target){toast('Нужен второй этаж');return;}transitionDraft.b={x:wx,y:wy,floorId:target.id};queueCommand('transitionCreate',{transition:{name:'Переход',endpointA:{floorId:transitionDraft.a.floorId,position:{x:transitionDraft.a.x,y:transitionDraft.a.y},radius:transitionDraft.radius},endpointB:{floorId:transitionDraft.b.floorId,position:{x:transitionDraft.b.x,y:transitionDraft.b.y},radius:transitionDraft.radius},direction:'bidirectional'}});transitionDraft=null;toast('Переход создан');}dirty=true;return;}const gm2=gm,t=topmostTokenAt(state,currentFloorID,tokenIndex.query(wx,wy,wx,wy),wx,wy,t=>gm2?t.floorId===currentFloorID:canMove(t)),chosen=state.elements?.[selectedElement],handle=gm2?elementHandleAt(chosen,wx,wy,camera.scale):null,element=gm2?(handle?chosen:hitElement(state,currentFloorID,wx,wy)):null;if(t&&e.button===0&&!e.altKey){if(!gm2)activatePlayerToken(t,false);else select(t.id);if(canMove(t))drag={type:'token',id:t.id,dx:wx-t.x,dy:wy-t.y,x:t.x,y:t.y,moved:false};}else if(element&&e.button===0&&!e.altKey){selectElement(element.id);const layer=state.layers[element.layerId];if(!element.locked&&!layer.locked)drag={type:'element',id:element.id,mode:handle||'move',start:{...element.transform,pointerX:wx,pointerY:wy},pointerX:wx,pointerY:wy,transform:{...element.transform},moved:false};}else{select(null);selectElement(null);drag={type:'pan',px:p.x,py:p.y,x:camera.x,y:camera.y};}dirty=true;};
+ canvas.onpointermove=e=>{if(!drag)return;const p=point(e);if(drag.type==='pan'){camera.x=drag.x-(p.x-drag.px)/camera.scale;camera.y=drag.y-(p.y-drag.py)/camera.scale;scheduleViewportSave();}else if(drag.type==='token'){let x=camera.x+p.x/camera.scale-drag.dx,y=camera.y+p.y/camera.scale-drag.dy;if(state.you.role!=='gm'){const bounds=walkableBounds(state,currentFloorID);if(bounds){x=Math.max(bounds.x,Math.min(bounds.x+bounds.width,x));y=Math.max(bounds.y,Math.min(bounds.y+bounds.height,y));}}if(x!==drag.x||y!==drag.y)drag.moved=true;drag.x=x;drag.y=y;if(drag.moved&&performance.now()-lastMove>50&&!positionOutbox?.hasQueuedBehindInflight()){send({type:'move',token:{id:drag.id,x:drag.x,y:drag.y}});lastMove=performance.now();}}else if(drag.type==='element'){const wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,transform=transformedFromDrag(drag.start,drag.mode,wx-drag.pointerX,wy-drag.pointerY,e.shiftKey);drag.transform=transform;drag.moved=true;state.elements[drag.id]={...state.elements[drag.id],transform};if(performance.now()-lastMove>50&&!positionOutbox?.hasQueuedBehindInflight()){send({type:'elementPreview',element:{id:drag.id,transform}});lastMove=performance.now();}}dirty=true;};
+ function endDrag(){if(drag?.type==='token'&&drag.moved)queuePosition({token:{id:drag.id,x:drag.x,y:drag.y}});if(drag?.type==='element'&&drag.moved)queueTransform('elementTransform',{element:{id:drag.id,transform:drag.transform}});drag=null;fillElementProperties();dirty=true;}
+ canvas.onpointerup=endDrag;canvas.onpointercancel=endDrag;canvas.onlostpointercapture=endDrag;canvas.oncontextmenu=e=>e.preventDefault();
+ canvas.onkeydown=e=>{if(e.key==='Escape'){transitionDraft=null;select(null);selectElement(null);dirty=true;}if(e.key==='Delete'&&state?.you.role==='gm'){if(selected)$('delete').click();else if(selectedElement)$('deleteElement').click();}if(e.key==='f')fit();};
+ $('continuous').onchange=()=>{dirty=true;};$('reconnect').onclick=()=>socket?.close();
+-$('stress').onclick=()=>{if(!state)return;for(let i=0;i<100;i++)addToken('',camera.x+(i%10)*100,camera.y+Math.floor(i/10)*100);toast('Р вЂќР С•Р В±Р В°Р Р†Р В»Р ВµР Р…Р С• 100 РЎвЂљР ВµРЎРѓРЎвЂљР С•Р Р†РЎвЂ№РЎвЂ¦ РЎвЂљР С•Р С”Р ВµР Р…Р С•Р Р†');};
+-$('clearCache').onclick=async()=>{await cacheQueue;const db=await dbPromise;if(db){await new Promise(resolve=>{const tx=db.transaction('assets','readwrite');tx.objectStore('assets').clear();tx.oncomplete=tx.onerror=tx.onabort=resolve;});}diskBytes=0;diskEnabled=!!db;for(const entry of memory.values())entry.bitmap.close();memory.clear();memoryBytes=0;artwork.clear();dirty=true;toast('Р С™РЎРЊРЎв‚¬ Р С•РЎвЂЎР С‘РЎвЂ°Р ВµР Р…. Р РЋРЎвЂ Р ВµР Р…Р В° РЎРѓР С•РЎвЂ¦РЎР‚Р В°Р Р…Р ВµР Р…Р В°.');};
++$('stress').onclick=()=>{if(!state)return;for(let i=0;i<100;i++)addToken('',camera.x+(i%10)*100,camera.y+Math.floor(i/10)*100);toast('Добавлено 100 тестовых токенов');};
++$('clearCache').onclick=async()=>{await cacheQueue;const db=await dbPromise;if(db){await new Promise(resolve=>{const tx=db.transaction('assets','readwrite');tx.objectStore('assets').clear();tx.oncomplete=tx.onerror=tx.onabort=resolve;});}diskBytes=0;diskEnabled=!!db;for(const entry of memory.values())entry.bitmap.close();memory.clear();memoryBytes=0;artwork.clear();dirty=true;toast('Кэш очищен. Сцена сохранена.');};
+ 
+ let decodeEdge=512, imagePlans=new Map();const nativeSizes=new Map();
+ function cacheKey(path){return `${credentials.session}/${path}`;}
+@@ -380,19 +380,19 @@ function loadImage(key,plan){
+  const controller=new AbortController();controller.width=plan.width;controller.height=plan.height;pending.set(key,controller);activeLoads++;
+  (async()=>{
+   let blob=await diskGet(key);if(controller.signal.aborted)return;
+-  if(blob)cacheHits++;else{const path=key.slice(credentials.session.length+1),scene=state?.scene?.id;if(!scene)throw new DOMException('Scene changed','AbortError');const query=new URLSearchParams({session:credentials.session,scene,activeTokenId:state?.activeTokenId||''});const res=await fetch(`/api/asset/${path}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal:controller.signal,cache:diskEnabled?'no-store':'force-cache'});if(!res.ok)throw new Error(`Р ВР В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘Р Вµ: HTTP ${res.status}`);blob=await res.blob();tileBytes+=blob.size;diskPut(key,blob);}
++  if(blob)cacheHits++;else{const path=key.slice(credentials.session.length+1),scene=state?.scene?.id;if(!scene)throw new DOMException('Scene changed','AbortError');const query=new URLSearchParams({session:credentials.session,scene,activeTokenId:state?.activeTokenId||''});const res=await fetch(`/api/asset/${path}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal:controller.signal,cache:diskEnabled?'no-store':'force-cache'});if(!res.ok)throw new Error(`Изображение: HTTP ${res.status}`);blob=await res.blob();tileBytes+=blob.size;diskPut(key,blob);}
+   if(controller.signal.aborted)return;
+   // Prepared resources are PNG: inspect IHDR before decode, including assets
+   // newly revealed to a player whose snapshot did not yet contain metadata.
+   const header=new DataView(await blob.slice(0,24).arrayBuffer());
+-  if(header.byteLength<24||header.getUint32(0)!==0x89504e47)throw new Error('Р СњР ВµР С”Р С•РЎР‚РЎР‚Р ВµР С”РЎвЂљР Р…РЎвЂ№Р в„– PNG');
++  if(header.byteLength<24||header.getUint32(0)!==0x89504e47)throw new Error('Некорректный PNG');
+   const width=header.getUint32(16),height=header.getUint32(20);nativeSizes.set(key,{width,height});
+   const sizePlan=fitImageSize(width,height,Math.max(plan.width,plan.height)),decodeStart=performance.now();
+   const bitmap=await createImageBitmap(blob,{resizeWidth:sizePlan.width,resizeHeight:sizePlan.height,resizeQuality:'high'});decodeCount++;decodeMs+=performance.now()-decodeStart;
+   if(controller.signal.aborted||!wanted.has(key)){bitmap.close();return;}
+   const size=bitmap.width*bitmap.height*4;if(memoryBytes+size>assetLimit){bitmap.close();return;}
+   memory.set(key,{bitmap,size,used:performance.now()});memoryBytes+=size;failures.delete(key);
+- })().catch(e=>{if(e.name!=='AbortError'){failures.set(key,Date.now()+5000);if(failures.size===1)toast('Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ Р В·Р В°Р С–РЎР‚РЎС“Р В·Р С‘РЎвЂљРЎРЉ Р С‘Р В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘РЎРЏ. Р СџР С•Р Р†РЎвЂљР С•РЎР‚ РЎвЂЎР ВµРЎР‚Р ВµР В· 5 РЎРѓР ВµР С”РЎС“Р Р…Р Т‘.');}}).finally(()=>{pending.delete(key);activeLoads--;dirty=true;});
++ })().catch(e=>{if(e.name!=='AbortError'){failures.set(key,Date.now()+5000);if(failures.size===1)toast('Не удалось загрузить изображения. Повтор через 5 секунд.');}}).finally(()=>{pending.delete(key);activeLoads--;dirty=true;});
+ }
+ function draw(now){const start=performance.now();dirty=false;imagePlans=new Map();const dpr=canvas.width/viewport.w;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#121c1d';ctx.fillRect(0,0,viewport.w,viewport.h);ctx.save();ctx.scale(camera.scale,camera.scale);ctx.translate(-camera.x,-camera.y);const right=camera.x+viewport.w/camera.scale,bottom=camera.y+viewport.h/camera.scale;ensureSceneRegion({left:camera.x,top:camera.y,right,bottom});let tokenAnimating=false;
+  if(state){const bounds=state.scene.bounds,gm=state.you.role==='gm';ctx.fillStyle='#182322';ctx.fillRect(0,0,bounds.width,bounds.height);drawSceneStack({ctx,state,currentFloorId:currentFloorID,view:{left:camera.x,top:camera.y,right,bottom},camera,dpr,requestImage,selectedElement,editor:gm,drawTokenLayer:(floorId,alpha)=>{tokenAnimating=drawTokens({ctx,camera,viewport,dpr,tokens:state.tokens,index:tokenIndex,visuals,moving:movingTokens,drag,selected,queue:[...(outbox?.data.queue||[]),...(positionOutbox?.data.queue||[])],requestImage,artwork,delta:now-lastFrame,floorId,alpha,walkableBounds:walkableBounds(state,floorId),showOutOfBounds:gm&&floorId===currentFloorID})||tokenAnimating;}});drawTransitions({ctx,state,currentFloorId,editor:gm,draft:transitionDraft&&{a:transitionDraft.a,b:transitionDraft.b,radius:transitionDraft.radius}});}
+@@ -401,4 +401,4 @@ function draw(now){const start=performance.now();dirty=false;imagePlans=new Map(
+  ctx.restore();scheduleImages();$('zoom').textContent=`${Math.round(camera.scale*100)}%`;frameTime=performance.now()-start;rendered++;
+ }
+ function loop(now){if(!$('app').hidden&&(dirty||$('continuous').checked))draw(now);lastFrame=now;requestAnimationFrame(loop);}requestAnimationFrame(loop);
+-setInterval(()=>{fps=rendered;rendered=0;trimImages();if(failures.size)dirty=true;$('diagnostics').textContent=`${fps} Р С”Р В°Р Т‘РЎР‚Р С•Р Р†/РЎРѓ Р’В· ${frameTime.toFixed(1)} Р СРЎРѓ/Р С”Р В°Р Т‘РЎР‚\nRAM Р С‘Р В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘Р в„– ${((memoryBytes+artwork.bytes)/MIB).toFixed(1)} / ${memoryLimit/MIB} Р СљР вЂ${imageMemorySetting==='auto'?' Р’В· Auto':''}\nР вЂќР С‘РЎРѓР С” ${(diskBytes/1048576).toFixed(1)} / 128 Р СљР вЂ${diskEnabled?'':' Р’В· Р Р…Р ВµР Т‘Р С•РЎРѓРЎвЂљРЎС“Р С—Р ВµР Р…'} Р’В· R/W ${diskReads}/${diskWrites} Р’В· evict ${diskEvictions} Р’В· drop ${diskDrops}\nР СћР В°Р в„–Р В»РЎвЂ№ РІвЂ вЂњ ${(tileBytes/1048576).toFixed(2)} Р СљР вЂ Р’В· Р С”РЎРЊРЎв‚¬ ${cacheHits}\nDecode ${decodeCount} Р’В· ${decodeMs.toFixed(0)} Р СРЎРѓ РЎРѓРЎС“Р СР СР В°РЎР‚Р Р…Р С• Р’В· edge ${decodeEdge}\nWS РІвЂ вЂњ ${(bytesIn/1024).toFixed(1)} РІвЂ вЂ ${(bytesOut/1024).toFixed(1)} Р С™Р вЂ\nР вЂ”Р В°Р С–РЎР‚РЎС“Р В·Р С”Р В° ${activeLoads} Р’В· Р С•РЎв‚¬Р С‘Р В±Р С”Р С‘ ${failures.size}`;},1000);
++setInterval(()=>{fps=rendered;rendered=0;trimImages();if(failures.size)dirty=true;$('diagnostics').textContent=`${fps} кадров/с · ${frameTime.toFixed(1)} мс/кадр\nRAM изображений ${((memoryBytes+artwork.bytes)/MIB).toFixed(1)} / ${memoryLimit/MIB} МБ${imageMemorySetting==='auto'?' · Auto':''}\nДиск ${(diskBytes/1048576).toFixed(1)} / 128 МБ${diskEnabled?'':' · недоступен'} · R/W ${diskReads}/${diskWrites} · evict ${diskEvictions} · drop ${diskDrops}\nТайлы ↓ ${(tileBytes/1048576).toFixed(2)} МБ · кэш ${cacheHits}\nDecode ${decodeCount} · ${decodeMs.toFixed(0)} мс суммарно · edge ${decodeEdge}\nWS ↓ ${(bytesIn/1024).toFixed(1)} ↑ ${(bytesOut/1024).toFixed(1)} КБ\nЗагрузка ${activeLoads} · ошибки ${failures.size}`;},1000);
+diff --git a/web/scene-tree.js b/web/scene-tree.js
+index 6e9dc02..c9b6d40 100644
+--- a/web/scene-tree.js
++++ b/web/scene-tree.js
+@@ -12,12 +12,12 @@ export class SceneTreeRuntime{
+     this.state=state;const floors=orderedFloors(state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
+     this.elements.boundsWidth.value=Math.round(state.scene.bounds.width);this.elements.boundsHeight.value=Math.round(state.scene.bounds.height);this.elements.tree.replaceChildren();
+     if(state.you.role==='gm'){for(const floor of [...floors].reverse())this.elements.tree.append(this.floorNode(floor,current,selectedElement));for(const transition of Object.values(state.transitions||{}))this.elements.tree.append(this.transitionNode(transition));}
+-    const gm=state.you.role==='gm';for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Р РЋР ВµР в„–РЎвЂЎР В°РЎРѓ Р С—Р С•Р Т‘Р Т‘Р ВµРЎР‚Р В¶Р С‘Р Р†Р В°РЎР‹РЎвЂљРЎРѓРЎРЏ РЎвЂљР С•Р В»РЎРЉР С”Р С• Р Т‘Р Р†Р В° РЎРЊРЎвЂљР В°Р В¶Р В°':'Р вЂќР С•Р В±Р В°Р Р†Р С‘РЎвЂљРЎРЉ РЎРЊРЎвЂљР В°Р В¶';
++    const gm=state.you.role==='gm';for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
+   }
+ 
+-  saveBounds(){const width=Number(this.elements.boundsWidth.value),height=Number(this.elements.boundsHeight.value);if(!(width>0&&height>0))return;const outside=[...Object.values(this.state.elements||{}),...Object.values(this.state.tokens||{})].filter(item=>{const t=item.transform||{x:item.x,y:item.y,width:item.size,height:item.size};return t.x<0||t.y<0||t.x+t.width>width||t.y+t.height>height;}).length;if(outside&&!confirm(`Р вЂ”Р В° Р Р…Р С•Р Р†РЎвЂ№Р СР С‘ Р С–РЎР‚Р В°Р Р…Р С‘РЎвЂ Р В°Р СР С‘ Р С•РЎРѓРЎвЂљР В°Р Р…РЎС“РЎвЂљРЎРѓРЎРЏ ${outside} РЎРЊР В»Р ВµР СР ВµР Р…РЎвЂљР С•Р Р†. Р СџРЎР‚Р С•Р Т‘Р С•Р В»Р В¶Р С‘РЎвЂљРЎРЉ?`))return;this.queue('boundsUpdate',{bounds:{width,height}});}
+-  createFloor(){if(orderedFloors(this.state).length>=2){alert('Р РЋР ВµР в„–РЎвЂЎР В°РЎРѓ РЎРѓРЎвЂ Р ВµР Р…Р В° Р С—Р С•Р Т‘Р Т‘Р ВµРЎР‚Р В¶Р С‘Р Р†Р В°Р ВµРЎвЂљ Р Р…Р Вµ Р В±Р С•Р В»РЎРЉРЎв‚¬Р Вµ Р Т‘Р Р†РЎС“РЎвЂ¦ РЎРЊРЎвЂљР В°Р В¶Р ВµР в„–');return;}const name=prompt('Р СњР В°Р В·Р Р†Р В°Р Р…Р С‘Р Вµ РЎРЊРЎвЂљР В°Р В¶Р В°','Р СњР С•Р Р†РЎвЂ№Р в„– РЎРЊРЎвЂљР В°Р В¶')?.trim();if(!name)return;const order=Math.max(-1,...orderedFloors(this.state).map(f=>f.order))+1;this.queue('floorCreate',{floor:{name,order}});}
+-  createLayer(){const floorId=this.getFloor();if(!floorId)return;const name=prompt('Р СњР В°Р В·Р Р†Р В°Р Р…Р С‘Р Вµ РЎРѓР В»Р С•РЎРЏ','Р СњР С•Р Р†РЎвЂ№Р в„– РЎРѓР В»Р С•Р в„–')?.trim();if(!name)return;const order=Math.max(-1,...orderedLayers(this.state,floorId).filter(layer=>layer.kind!=='walkable').map(layer=>layer.order))+1;this.queue('layerCreate',{layer:{floorId,name,order}});}
++  saveBounds(){const width=Number(this.elements.boundsWidth.value),height=Number(this.elements.boundsHeight.value);if(!(width>0&&height>0))return;const outside=[...Object.values(this.state.elements||{}),...Object.values(this.state.tokens||{})].filter(item=>{const t=item.transform||{x:item.x,y:item.y,width:item.size,height:item.size};return t.x<0||t.y<0||t.x+t.width>width||t.y+t.height>height;}).length;if(outside&&!confirm(`За новыми границами останутся ${outside} элементов. Продолжить?`))return;this.queue('boundsUpdate',{bounds:{width,height}});}
++  createFloor(){if(orderedFloors(this.state).length>=2){alert('Сейчас сцена поддерживает не больше двух этажей');return;}const name=prompt('Название этажа','Новый этаж')?.trim();if(!name)return;const order=Math.max(-1,...orderedFloors(this.state).map(f=>f.order))+1;this.queue('floorCreate',{floor:{name,order}});}
++  createLayer(){const floorId=this.getFloor();if(!floorId)return;const name=prompt('Название слоя','Новый слой')?.trim();if(!name)return;const order=Math.max(-1,...orderedLayers(this.state,floorId).filter(layer=>layer.kind!=='walkable').map(layer=>layer.order))+1;this.queue('layerCreate',{layer:{floorId,name,order}});}
+   createTransition(){const floors=orderedFloors(this.state);if(floors.length<2){alert("Сначала создайте второй этаж");return;}this.beginTransition?.(this.getFloor());}
+ 
+   transitionNode(transition){const row=document.createElement('div');row.className='tree-row tree-transition-row';const a=transition.endpointA?.floorId||transition.sourceFloorId,b=transition.endpointB?.floorId||transition.destinationFloorId;row.textContent=`↔ ${transition.name||'Переход'} (${a.slice(0,6)} → ${b.slice(0,6)})`;const direction=transition.direction||transition.directionality||'bidirectional';row.append(button(direction,'Направление',()=>{const next=direction==='bidirectional'?'AToB':direction==='AToB'?'BToA':'bidirectional';this.queue('transitionUpdate',{transition:{...transition,direction:next}});}),button('×','Удалить переход',()=>{if(confirm('Удалить переход?'))this.queue('transitionDelete',{transition:{id:transition.id}});}));return row;}
+@@ -25,7 +25,7 @@ export class SceneTreeRuntime{
+   floorNode(floor,current,selectedElement){
+     const section=document.createElement('section');section.className='tree-floor'+(floor.id===current?' active':'');section.dataset.floorId=floor.id;
+     const head=document.createElement('div');head.className='tree-row tree-floor-row';const label=document.createElement('strong');label.textContent=floor.name;head.append(label);head.onclick=()=>this.setFloor(floor.id);
+-    head.append(button(`${Math.round(floor.opacity*100)}%`,'Р СњР ВµР С—РЎР‚Р С•Р В·РЎР‚Р В°РЎвЂЎР Р…Р С•РЎРѓРЎвЂљРЎРЉ РЎРЊРЎвЂљР В°Р В¶Р В°',()=>this.updateFloorAlpha(floor,'opacity','Р СњР ВµР С—РЎР‚Р С•Р В·РЎР‚Р В°РЎвЂЎР Р…Р С•РЎРѓРЎвЂљРЎРЉ РЎРЊРЎвЂљР В°Р В¶Р В°, %')),button(`РІвЂ вЂ${Math.round(floor.opacityWhenViewedFromBelow*100)}%`,'Р вЂ™Р С‘Р Т‘Р С‘Р СР С•РЎРѓРЎвЂљРЎРЉ РЎРѓР Р…Р С‘Р В·РЎС“',()=>this.updateFloorAlpha(floor,'opacityWhenViewedFromBelow','Р СњР ВµР С—РЎР‚Р С•Р В·РЎР‚Р В°РЎвЂЎР Р…Р С•РЎРѓРЎвЂљРЎРЉ Р С—РЎР‚Р С‘ Р С—РЎР‚Р С•РЎРѓР СР С•РЎвЂљРЎР‚Р Вµ РЎРѓР Р…Р С‘Р В·РЎС“, %')),button('РІСљР‹','Р СџР ВµРЎР‚Р ВµР С‘Р СР ВµР Р…Р С•Р Р†Р В°РЎвЂљРЎРЉ',()=>{const name=prompt('Р СњР В°Р В·Р Р†Р В°Р Р…Р С‘Р Вµ РЎРЊРЎвЂљР В°Р В¶Р В°',floor.name)?.trim();if(name)this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{name}});}),button('РІвЂ вЂ','Р СџР С•Р Т‘Р Р…РЎРЏРЎвЂљРЎРЉ',()=>this.shiftFloor(floor,1)),button('РІвЂ вЂњ','Р С›Р С—РЎС“РЎРѓРЎвЂљР С‘РЎвЂљРЎРЉ',()=>this.shiftFloor(floor,-1)),button('Р“вЂ”','Р Р€Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ',()=>{if(confirm(`Р Р€Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ РЎРЊРЎвЂљР В°Р В¶ Р’В«${floor.name}Р’В»?`))this.queue('floorDelete',{floor:{id:floor.id}});}));
++    head.append(button(`${Math.round(floor.opacity*100)}%`,'Непрозрачность этажа',()=>this.updateFloorAlpha(floor,'opacity','Непрозрачность этажа, %')),button(`РІвЂ вЂ${Math.round(floor.opacityWhenViewedFromBelow*100)}%`,'Видимость снизу',()=>this.updateFloorAlpha(floor,'opacityWhenViewedFromBelow','Непрозрачность при просмотре снизу, %')),button('вњЋ','Переименовать',()=>{const name=prompt('Название этажа',floor.name)?.trim();if(name)this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{name}});}),button('РІвЂ вЂ','Поднять',()=>this.shiftFloor(floor,1)),button('РІвЂ вЂњ','Опустить',()=>this.shiftFloor(floor,-1)),button('Р“вЂ”','Удалить',()=>{if(confirm(`Удалить этаж «${floor.name}»?`))this.queue('floorDelete',{floor:{id:floor.id}});}));
+     section.append(head);for(const layer of [...orderedLayers(this.state,floor.id)].reverse())section.append(this.layerNode(layer,selectedElement));return section;
+   }
+ 
+@@ -36,22 +36,22 @@ export class SceneTreeRuntime{
+     if(layer.kind==='visual'){section.ondragover=event=>event.preventDefault();section.ondrop=event=>{event.preventDefault();const id=event.dataTransfer.getData('text/atlas-element');if(id)this.moveElementToLayer(id,layer);};}
+     const head=document.createElement('div');head.className='tree-row tree-layer-row';const label=document.createElement('span');label.textContent=layer.name;head.append(label);
+     if(layer.kind==='visual'){
+-      head.prepend(button(layer.visible?'РІвЂ”вЂ°':'РІвЂ”вЂ№','Р вЂ™Р С‘Р Т‘Р С‘Р СР С•РЎРѓРЎвЂљРЎРЉ',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{visible:!layer.visible}})));
+-      head.append(button(layer.locked?'СЂСџвЂќвЂ™':'СЂСџвЂќвЂњ','Р вЂР В»Р С•Р С”Р С‘РЎР‚Р С•Р Р†Р С”Р В°',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{locked:!layer.locked}})),button(`${Math.round(layer.opacity*100)}%`,'Р СњР ВµР С—РЎР‚Р С•Р В·РЎР‚Р В°РЎвЂЎР Р…Р С•РЎРѓРЎвЂљРЎРЉ РЎРѓР В»Р С•РЎРЏ',()=>{const value=prompt('Р СњР ВµР С—РЎР‚Р С•Р В·РЎР‚Р В°РЎвЂЎР Р…Р С•РЎРѓРЎвЂљРЎРЉ РЎРѓР В»Р С•РЎРЏ, %',String(Math.round(layer.opacity*100)));if(value===null)return;const opacity=Number(value)/100;if(Number.isFinite(opacity)&&opacity>=0&&opacity<=1)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{opacity}});}),button('РІСљР‹','Р СџР ВµРЎР‚Р ВµР С‘Р СР ВµР Р…Р С•Р Р†Р В°РЎвЂљРЎРЉ',()=>this.renameLayer(layer)),button('РІвЂ вЂ','Р СџР С•Р Т‘Р Р…РЎРЏРЎвЂљРЎРЉ',()=>this.shiftLayer(layer,1)),button('РІвЂ вЂњ','Р С›Р С—РЎС“РЎРѓРЎвЂљР С‘РЎвЂљРЎРЉ',()=>this.shiftLayer(layer,-1)),button('Р“вЂ”','Р Р€Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ',()=>{if(confirm(`Р Р€Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ РЎРѓР В»Р С•Р в„– Р’В«${layer.name}Р’В»?`))this.queue('layerDelete',{layer:{id:layer.id}});}));
++      head.prepend(button(layer.visible?'РІвЂ”вЂ°':'РІвЂ”вЂ№','Видимость',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{visible:!layer.visible}})));
++      head.append(button(layer.locked?'рџ”’':'рџ”“','Блокировка',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{locked:!layer.locked}})),button(`${Math.round(layer.opacity*100)}%`,'Непрозрачность слоя',()=>{const value=prompt('Непрозрачность слоя, %',String(Math.round(layer.opacity*100)));if(value===null)return;const opacity=Number(value)/100;if(Number.isFinite(opacity)&&opacity>=0&&opacity<=1)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{opacity}});}),button('вњЋ','Переименовать',()=>this.renameLayer(layer)),button('РІвЂ вЂ','Поднять',()=>this.shiftLayer(layer,1)),button('РІвЂ вЂњ','Опустить',()=>this.shiftLayer(layer,-1)),button('Р“вЂ”','Удалить',()=>{if(confirm(`Удалить слой «${layer.name}»?`))this.queue('layerDelete',{layer:{id:layer.id}});}));
+     }else if(layer.kind==='tokens'){
+-      label.textContent=`РІвЂ”вЂ  ${layer.name}`;head.append(button('РІСљР‹','Р СџР ВµРЎР‚Р ВµР С‘Р СР ВµР Р…Р С•Р Р†Р В°РЎвЂљРЎРЉ',()=>this.renameLayer(layer)),button('РІвЂ вЂ','Р СџР С•Р Т‘Р Р…РЎРЏРЎвЂљРЎРЉ',()=>this.shiftLayer(layer,1)),button('РІвЂ вЂњ','Р С›Р С—РЎС“РЎРѓРЎвЂљР С‘РЎвЂљРЎРЉ',()=>this.shiftLayer(layer,-1)));
++      label.textContent=`РІвЂ”вЂ  ${layer.name}`;head.append(button('вњЋ','Переименовать',()=>this.renameLayer(layer)),button('РІвЂ вЂ','Поднять',()=>this.shiftLayer(layer,1)),button('РІвЂ вЂњ','Опустить',()=>this.shiftLayer(layer,-1)));
+     }else{
+-      label.textContent=`РІвЂ“В§ ${layer.name}`;head.append(button('Р В Р В°Р СР С”Р В°','Р ВР В·Р СР ВµР Р…Р С‘РЎвЂљРЎРЉ Р С‘Р С–РЎР‚Р С•Р Р†РЎС“РЎР‹ Р С•Р В±Р В»Р В°РЎРѓРЎвЂљРЎРЉ',()=>this.editWalkable(layer)));
++      label.textContent=`РІвЂ“В§ ${layer.name}`;head.append(button('Рамка','Изменить игровую область',()=>this.editWalkable(layer)));
+     }
+     section.append(head);if(layer.kind==='visual'){const elements=Object.values(this.state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>b.zOrder-a.zOrder||a.id.localeCompare(b.id));for(const element of elements)section.append(this.elementNode(element,selectedElement));}return section;
+   }
+ 
+-  renameLayer(layer){const name=prompt('Р СњР В°Р В·Р Р†Р В°Р Р…Р С‘Р Вµ РЎРѓР В»Р С•РЎРЏ',layer.name)?.trim();if(name)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{name}});}
+-  editWalkable(layer){const current=layer.walkableBounds||{x:0,y:0,width:this.state.scene.bounds.width,height:this.state.scene.bounds.height},x=Number(prompt('X Р С‘Р С–РЎР‚Р С•Р Р†Р С•Р в„– Р С•Р В±Р В»Р В°РЎРѓРЎвЂљР С‘',String(current.x))),y=Number(prompt('Y Р С‘Р С–РЎР‚Р С•Р Р†Р С•Р в„– Р С•Р В±Р В»Р В°РЎРѓРЎвЂљР С‘',String(current.y))),width=Number(prompt('Р РЃР С‘РЎР‚Р С‘Р Р…Р В° Р С‘Р С–РЎР‚Р С•Р Р†Р С•Р в„– Р С•Р В±Р В»Р В°РЎРѓРЎвЂљР С‘',String(current.width))),height=Number(prompt('Р вЂ™РЎвЂ№РЎРѓР С•РЎвЂљР В° Р С‘Р С–РЎР‚Р С•Р Р†Р С•Р в„– Р С•Р В±Р В»Р В°РЎРѓРЎвЂљР С‘',String(current.height)));if([x,y,width,height].every(Number.isFinite)&&width>0&&height>0)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{walkableBounds:{x,y,width,height}}});}
++  renameLayer(layer){const name=prompt('Название слоя',layer.name)?.trim();if(name)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{name}});}
++  editWalkable(layer){const current=layer.walkableBounds||{x:0,y:0,width:this.state.scene.bounds.width,height:this.state.scene.bounds.height},x=Number(prompt('X игровой области',String(current.x))),y=Number(prompt('Y игровой области',String(current.y))),width=Number(prompt('Ширина игровой области',String(current.width))),height=Number(prompt('Высота игровой области',String(current.height)));if([x,y,width,height].every(Number.isFinite)&&width>0&&height>0)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{walkableBounds:{x,y,width,height}}});}
+ 
+   elementNode(element,selectedElement){
+     const row=document.createElement('div');row.className='tree-row tree-element-row'+(element.id===selectedElement?' selected':'');row.draggable=true;row.dataset.elementId=element.id;row.onclick=()=>{this.setFloor(element.floorId);this.selectElement(element.id);};row.ondragstart=event=>{event.stopPropagation();event.dataTransfer.setData('text/atlas-element',element.id);};row.ondragover=event=>event.preventDefault();row.ondrop=event=>{event.preventDefault();event.stopPropagation();const id=event.dataTransfer.getData('text/atlas-element');if(id&&id!==element.id)this.dropElement(id,element);};
+-    const name=document.createElement('span');name.textContent=element.name||this.state.assets?.[element.assetId]?.filename||'Р ВР В·Р С•Р В±РЎР‚Р В°Р В¶Р ВµР Р…Р С‘Р Вµ';row.append(name,button('РІвЂ вЂ','Р СњР В° Р С•Р Т‘Р С‘Р Р… РЎС“РЎР‚Р С•Р Р†Р ВµР Р…РЎРЉ Р Р†Р С—Р ВµРЎР‚РЎвЂР Т‘',()=>this.shiftElement(element,1)),button('РІвЂ вЂњ','Р СњР В° Р С•Р Т‘Р С‘Р Р… РЎС“РЎР‚Р С•Р Р†Р ВµР Р…РЎРЉ Р Р…Р В°Р В·Р В°Р Т‘',()=>this.shiftElement(element,-1)),button('РІвЂЎв‚¬','Р СњР В° Р С—Р ВµРЎР‚Р ВµР Т‘Р Р…Р С‘Р в„– Р С—Р В»Р В°Р Р…',()=>this.moveElementZ(element,true)),button('РІвЂЎР‰','Р СњР В° Р В·Р В°Р Т‘Р Р…Р С‘Р в„– Р С—Р В»Р В°Р Р…',()=>this.moveElementZ(element,false)));return row;
++    const name=document.createElement('span');name.textContent=element.name||this.state.assets?.[element.assetId]?.filename||'Изображение';row.append(name,button('РІвЂ вЂ','На один уровень вперёд',()=>this.shiftElement(element,1)),button('РІвЂ вЂњ','На один уровень назад',()=>this.shiftElement(element,-1)),button('РІвЂЎв‚¬','На передний план',()=>this.moveElementZ(element,true)),button('в‡Љ','На задний план',()=>this.moveElementZ(element,false)));return row;
+   }
+ 
+   moveElementToLayer(id,layer){const element=this.state.elements?.[id];if(!element||layer.kind!=='visual')return;const zOrder=Math.max(-1,...Object.values(this.state.elements).filter(item=>item.layerId===layer.id).map(item=>item.zOrder))+1;this.queue('elementUpdate',{element:{id},elementProperties:{floorId:layer.floorId,layerId:layer.id,zOrder}});this.setFloor(layer.floorId);}

@@ -1,0 +1,17 @@
+package main
+
+// Served only by the isolated profiling host. Production app.js is unchanged.
+const profileProbe = `
+const probe={durations:[],latencies:[],decodes:0,decodeMs:0,closed:0,peakBitmaps:0,peakBytes:0,lastX:null,timers:[]};
+const originalBitmap=globalThis.createImageBitmap;
+globalThis.createImageBitmap=async(...args)=>{const at=performance.now();const result=await originalBitmap(...args);probe.decodes++;probe.decodeMs+=performance.now()-at;return result};
+const originalClose=ImageBitmap.prototype.close;ImageBitmap.prototype.close=function(){probe.closed++;return originalClose.call(this)};
+const originalDraw=draw;draw=function(now){const at=performance.now();originalDraw(now);probe.durations.push(performance.now()-at);const t=state?.tokens['moving'];if(t&&probe.lastX!==t.x){probe.lastX=t.x;if(probe.latencyOn)probe.latencies.push(((Date.now()%10000)-t.x*10+10000)%10000)}probe.peakBitmaps=Math.max(probe.peakBitmaps,memory.size);probe.peakBytes=Math.max(probe.peakBytes,memoryBytes)};
+const distribution=a=>{const s=[...a].sort((a,b)=>a-b);return {count:s.length,mean:s.reduce((a,b)=>a+b,0)/(s.length||1),p50:s[Math.floor(s.length*.5)]||0,p95:s[Math.floor(s.length*.95)]||0,p99:s[Math.floor(s.length*.99)]||0,max:s.at(-1)||0}};
+probe.reset=()=>{probe.durations=[];probe.latencies=[];probe.decodes=0;probe.decodeMs=0;probe.closed=0;probe.peakBitmaps=memory.size;probe.peakBytes=memoryBytes;probe.at=performance.now();};
+probe.sample=async()=>{const db=await dbPromise;let disk={count:0,bytes:0};if(db)await new Promise(resolve=>{const req=db.transaction('assets').objectStore('assets').openCursor();req.onsuccess=()=>{const c=req.result;if(c){disk.count++;disk.bytes+=c.value.size;c.continue()}else resolve()};req.onerror=resolve});return {elapsedMs:performance.now()-probe.at,fps:probe.durations.length/((performance.now()-probe.at)/1000),frame:distribution(probe.durations),latency:distribution(probe.latencies),bitmaps:memory.size,bitmapBytes:memoryBytes,artworkBytes:typeof artwork==='undefined'?0:artwork.bytes,peakBitmaps:probe.peakBitmaps,peakBitmapBytes:probe.peakBytes,decodeEdge,decodes:probe.decodes,decodeMs:probe.decodeMs,closed:probe.closed,disk,cacheHits,activeLoads,failures:failures.size,jsHeap:performance.memory?.usedJSHeapSize||0,tokens:Object.keys(state?.tokens||{}).length,queue:(outbox?.data.queue.length||0)+(positionOutbox?.data.queue.length||0),diagnostics:$('diagnostics').textContent}};
+probe.stop=()=>{for(const timer of probe.timers)clearInterval(timer);probe.timers=[];$('continuous').checked=false;probe.latencyOn=false;};
+probe.start=(mode)=>{probe.stop();probe.reset();probe.latencyOn=mode==='receive';if(mode==='render'||mode==='receive'){$('continuous').checked=true;dirty=true}if(mode==='pan'){const began=performance.now();probe.timers.push(setInterval(()=>{const t=(performance.now()-began)/1000;camera.scale=.13+.6*(.5+.5*Math.sin(t*.8));camera.x=1000+1000*Math.sin(t*.4);camera.y=700+700*Math.cos(t*.5);dirty=true},16))}if(mode==='move'){let tick=0;probe.timers.push(setInterval(()=>{const t={id:'moving',x:(Date.now()%10000)/10,y:500};send({type:'move',token:t});if(++tick%20===0)queuePosition({token:t})},50))}};
+probe.view=()=>{camera={x:0,y:0,scale:.22};dirty=true};probe.enter=c=>enter(c);probe.fit=()=>fit();probe.ready=()=>!!state&&socket?.readyState===1;probe.scene=n=>Object.keys(state?.tokens||{}).length===n;
+globalThis.__atlasProbe=probe;
+`
