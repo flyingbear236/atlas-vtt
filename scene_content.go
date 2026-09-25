@@ -469,13 +469,14 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 	}
 	for elementID, element := range scene.Elements {
 		layer := scene.Layers[element.LayerID]
-		if element.ID != elementID || layer.ID == "" || layer.Kind != layerKindVisual || element.FloorID != layer.FloorID || assets[element.AssetID].ID == "" || !validTransform(element.Transform) || element.Opacity < 0 || element.Opacity > 1 {
+		asset := assets[element.AssetID]
+		if element.ID != elementID || layer.ID == "" || layer.Kind != layerKindVisual || element.FloorID != layer.FloorID || asset.ID == "" || !isSceneRasterKind(asset.Kind) || !validTransform(element.Transform) || element.Opacity < 0 || element.Opacity > 1 {
 			return false
 		}
 	}
 	for tokenID, token := range scene.Tokens {
 		layer := scene.Layers[token.LayerID]
-		if token.ID != tokenID || scene.Floors[token.FloorID].ID == "" || layer.Kind != layerKindTokens || layer.FloorID != token.FloorID || !validNumber(token.X) || !validNumber(token.Y) || token.Size < 16 || token.Size > 1024 || (token.Owner != "" && members[token.Owner] == nil) || (token.Asset != "" && assets[token.Asset].ID == "") {
+		if token.ID != tokenID || scene.Floors[token.FloorID].ID == "" || layer.Kind != layerKindTokens || layer.FloorID != token.FloorID || !validNumber(token.X) || !validNumber(token.Y) || token.Size < 16 || token.Size > 1024 || (token.Owner != "" && members[token.Owner] == nil) || (token.Asset != "" && (assets[token.Asset].ID == "" || assets[token.Asset].Kind != assetKindToken)) {
 			return false
 		}
 	}
@@ -559,6 +560,27 @@ func refreshAssetOrphans(session *Session, now time.Time) bool {
 			}
 		}
 	}
+	// A live derived representation keeps its source chain alive. Provenance is
+	// not a client-visible asset reference, but it is a retention/GC reference.
+	queue := make([]string, 0, len(references))
+	seen := make(map[string]bool, len(references))
+	for assetID, count := range references {
+		if count > 0 {
+			queue = append(queue, assetID)
+		}
+	}
+	for len(queue) > 0 {
+		assetID := queue[0]
+		queue = queue[1:]
+		if seen[assetID] {
+			continue
+		}
+		seen[assetID] = true
+		if sourceID := session.Assets[assetID].ProvenanceSourceID(); sourceID != "" {
+			references[sourceID]++
+			queue = append(queue, sourceID)
+		}
+	}
 	changed := false
 	stamp := now.Unix()
 	for assetID, asset := range session.Assets {
@@ -577,4 +599,11 @@ func refreshAssetOrphans(session *Session, now time.Time) bool {
 		session.Assets[assetID] = asset
 	}
 	return changed
+}
+
+func (asset Asset) ProvenanceSourceID() string {
+	if asset.Provenance == nil {
+		return ""
+	}
+	return asset.Provenance.SourceAssetID
 }

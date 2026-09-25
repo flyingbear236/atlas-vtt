@@ -14,7 +14,7 @@ func sceneContentCommand(commandType string) bool {
 	case "boundsUpdate",
 		"floorCreate", "floorUpdate", "floorDelete",
 		"layerCreate", "layerUpdate", "layerDelete",
-		"elementCreate", "elementUpdate", "elementDelete", "elementPreview", "elementTransform",
+		"elementCreate", "elementUpdate", "elementDelete", "elementPreview", "elementTransform", "elementFixRotation",
 		"transitionCreate", "transitionUpdate", "transitionDelete",
 		"assetRetention":
 		return true
@@ -577,7 +577,7 @@ func (s *Server) publishElement(session *Session, sceneID string, old SceneEleme
 		case newLoaded:
 			message["element"] = next
 			if asset, ok := session.Assets[next.AssetID]; ok {
-				message["asset"] = asset
+				message["asset"] = publicAsset(asset)
 			}
 		}
 		peer.delivery++

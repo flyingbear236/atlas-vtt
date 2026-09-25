@@ -28,19 +28,46 @@ import (
 //go:embed web/*
 var web embed.FS
 
+const (
+	assetKindScene     = "scene"
+	assetKindLegacyMap = "map"
+	assetKindToken     = "token"
+	renderModeBitmap   = "bitmap"
+	renderModeTiled    = "tiled"
+)
+
+func canonicalAssetKind(kind string) (string, bool) {
+	switch kind {
+	case assetKindScene, assetKindLegacyMap:
+		return assetKindScene, true
+	case assetKindToken:
+		return assetKindToken, true
+	default:
+		return "", false
+	}
+}
+
+func isSceneRasterKind(kind string) bool {
+	return kind == assetKindScene || kind == assetKindLegacyMap
+}
+
 type Asset struct {
-	ID              string `json:"id"`
-	Filename        string `json:"filename,omitempty"`
-	MimeType        string `json:"mimeType,omitempty"`
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	Size            int64  `json:"size,omitempty"`
-	Levels          int    `json:"levels"`
-	Kind            string `json:"kind"`
-	RenderMode      string `json:"renderMode,omitempty"`
-	RetentionPolicy string `json:"retentionPolicy"`
-	CreatedAt       int64  `json:"createdAt,omitempty"`
-	OrphanSince     *int64 `json:"orphanSince,omitempty"`
+	ID                    string           `json:"id"`
+	SourceID              string           `json:"sourceId"`
+	RepresentationVersion string           `json:"representationVersion"`
+	Filename              string           `json:"filename,omitempty"`
+	MimeType              string           `json:"mimeType,omitempty"`
+	Width                 int              `json:"width"`
+	Height                int              `json:"height"`
+	Size                  int64            `json:"size,omitempty"`
+	Levels                int              `json:"levels"`
+	Kind                  string           `json:"kind"`
+	RenderMode            string           `json:"renderMode"`
+	TilePresence          string           `json:"tilePresence,omitempty"`
+	Provenance            *AssetProvenance `json:"provenance,omitempty"`
+	RetentionPolicy       string           `json:"retentionPolicy"`
+	CreatedAt             int64            `json:"createdAt,omitempty"`
+	OrphanSince           *int64           `json:"orphanSince,omitempty"`
 }
 type Token struct {
 	ID       string  `json:"id"`
@@ -92,7 +119,11 @@ type Server struct {
 	dirty           bool
 	writes          uint64
 	flushInterval   time.Duration
-	upload          chan struct{}
+	imageJobs       chan struct{}
+	jobContext      context.Context
+	jobCancel       context.CancelFunc
+	jobWG           sync.WaitGroup
+	rotationJobs    map[string]*rotationJob
 	stopping        bool
 	storageDegraded bool
 }
@@ -105,7 +136,8 @@ func id() string {
 	return hex.EncodeToString(b)
 }
 func newServer(root string) (*Server, error) {
-	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, upload: make(chan struct{}, 1)}
+	jobContext, jobCancel := context.WithCancel(context.Background())
+	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, imageJobs: make(chan struct{}, 1), jobContext: jobContext, jobCancel: jobCancel, rotationJobs: map[string]*rotationJob{}}
 	if err := os.MkdirAll(filepath.Join(root, "assets"), 0755); err != nil {
 		return nil, fmt.Errorf("storage directory: %w", err)
 	}
@@ -132,14 +164,22 @@ func newServer(root string) (*Server, error) {
 		}
 		for assetID, asset := range ss.Assets {
 			if asset.RenderMode == "" {
-				if asset.Kind == "map" && asset.Levels > 0 {
-					asset.RenderMode = "tiled"
+				if isSceneRasterKind(asset.Kind) && asset.Levels > 0 {
+					asset.RenderMode = renderModeTiled
 				} else {
-					asset.RenderMode = "bitmap"
+					asset.RenderMode = renderModeBitmap
 				}
 				migrated = true
 			}
-			if asset.ID != assetID || asset.Width <= 0 || asset.Height <= 0 || (asset.Kind != "map" && asset.Kind != "token") || (asset.RenderMode != "bitmap" && asset.RenderMode != "tiled") || (asset.RenderMode == "tiled" && (asset.Kind != "map" || asset.Levels < 1)) {
+			if asset.SourceID == "" {
+				asset.SourceID = asset.ID
+				migrated = true
+			}
+			if asset.RepresentationVersion == "" {
+				asset.RepresentationVersion = "legacy"
+				migrated = true
+			}
+			if asset.ID != assetID || asset.Width <= 0 || asset.Height <= 0 || (!isSceneRasterKind(asset.Kind) && asset.Kind != assetKindToken) || (asset.RenderMode != renderModeBitmap && asset.RenderMode != renderModeTiled) || (asset.RenderMode == renderModeTiled && (!isSceneRasterKind(asset.Kind) || asset.Levels < 1)) || !validTilePresence(asset) {
 				return nil, fmt.Errorf("invalid asset in session %s", sessionID)
 			}
 			if asset.RetentionPolicy == "" {
@@ -158,6 +198,11 @@ func newServer(root string) (*Server, error) {
 				migrated = true
 			}
 			ss.Assets[assetID] = asset
+		}
+		for assetID, asset := range ss.Assets {
+			if provenance := asset.Provenance; provenance != nil && (provenance.Operation != "fixRotation" || provenance.SourceAssetID == "" || provenance.SourceAssetID == assetID || ss.Assets[provenance.SourceAssetID].ID == "" || provenance.RecipeHash == "" || provenance.RecipeVersion == "") {
+				return nil, fmt.Errorf("invalid derived asset in session %s", sessionID)
+			}
 		}
 		for sceneID, scene := range ss.Scenes {
 			if scene == nil || scene.ID != sceneID || scene.Name == "" {
@@ -479,11 +524,11 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if msg.Type == "activeToken" {
 			if p.sceneID == "" || msg.SceneID != p.sceneID || m.Role != "player" {
-				s.send(p, map[string]string{"type": "error", "message": "Токен нельзя сделать активным"})
+				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Токен нельзя сделать активным"})
 			} else if token, ok := activeTokenForMember(ss.Scenes[p.sceneID], m, msg.ActiveTokenID); !ok {
-				s.send(p, map[string]string{"type": "error", "message": "Токен не принадлежит игроку"})
+				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Токен не принадлежит игроку"})
 			} else if msg.Region != nil && !msg.Region.valid() {
-				s.send(p, map[string]string{"type": "error", "message": "Некорректная область сцены"})
+				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Некорректная область сцены"})
 			} else {
 				p.activeTokenID = token.ID
 				p.floorID = tokenFloorID(ss.Scenes[p.sceneID], token)
@@ -537,14 +582,14 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	select {
-	case s.upload <- struct{}{}:
-		defer func() { <-s.upload }()
+	case s.imageJobs <- struct{}{}:
+		defer func() { <-s.imageJobs }()
 	default:
 		fail(w, 429, "Другая карта уже обрабатывается")
 		return
 	}
-	kind := r.URL.Query().Get("kind")
-	if kind != "map" && kind != "token" {
+	kind, validKind := canonicalAssetKind(r.URL.Query().Get("kind"))
+	if !validKind {
 		fail(w, 400, "Неизвестный тип")
 		return
 	}
@@ -600,7 +645,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		a.OrphanSince = oldAsset.OrphanSince
 	}
 	ss.Assets[a.ID] = a
-	if kind == "map" {
+	if kind == assetKindScene {
 		floorID := r.URL.Query().Get("floor")
 		layerID := r.URL.Query().Get("layer")
 		if scene.Floors[floorID].ID == "" {
@@ -642,7 +687,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "Ошибка сохранения")
 		return
 	}
-	if kind == "map" {
+	if kind == assetKindScene {
 		s.publishSceneSnapshot(ss, sceneID)
 	}
 	s.mu.Unlock()

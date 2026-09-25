@@ -83,7 +83,7 @@ func TestProfileHost(t *testing.T) {
 		floorID, layerID := firstFloorID(scene), firstLayerID(scene, firstFloorID(scene))
 		scene.Elements = map[string]SceneElement{}
 		for _, a := range ss.Assets {
-			if a.Kind == "map" && a.Width == req.MapWidth {
+			if isSceneRasterKind(a.Kind) && a.Width == req.MapWidth {
 				scene.Elements["map"] = SceneElement{ID: "map", FloorID: floorID, LayerID: layerID, AssetID: a.ID, Name: "Map", Transform: Transform{Width: float64(a.Width), Height: float64(a.Height)}, Visible: true, Opacity: 1}
 				break
 			}

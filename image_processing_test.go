@@ -12,9 +12,9 @@ import (
 
 func TestStreamedTilesPreservePixelsAndOddEdges(t *testing.T) {
 	root := t.TempDir()
-	img := image.NewRGBA(image.Rect(0, 0, 1025, 515))
+	img := image.NewRGBA(image.Rect(0, 0, 4097, 515))
 	for y := 0; y < 515; y++ {
-		for x := 0; x < 1025; x++ {
+		for x := 0; x < 4097; x++ {
 			img.SetRGBA(x, y, color.RGBA{uint8(x), uint8(y), uint8(x / 512 * 50), 255})
 		}
 	}
@@ -27,7 +27,7 @@ func TestStreamedTilesPreservePixelsAndOddEdges(t *testing.T) {
 	for _, tile := range []struct {
 		name string
 		x, y int
-	}{{"0_0_0.png", 0, 0}, {"0_1_0.png", 512, 0}, {"0_2_1.png", 1024, 512}} {
+	}{{"0_0_0.png", 0, 0}, {"0_1_0.png", 512, 0}, {"0_8_1.png", 4096, 512}} {
 		f, e := os.Open(filepath.Join(root, "assets", a.ID, tile.name))
 		if e != nil {
 			t.Fatal(e)

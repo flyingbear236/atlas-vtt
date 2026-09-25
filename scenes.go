@@ -6,9 +6,10 @@ import (
 )
 
 const (
-	maxSceneTokens     = 100000
-	sceneSpatialCell   = 2048.0
-	maxSceneRegionSpan = 524288.0
+	maxSceneTokens         = 100000
+	sceneSpatialCell       = 2048.0
+	maxElementSpatialCells = 256
+	maxSceneRegionSpan     = 524288.0
 )
 
 // Scene owns mutable play state. Assets themselves remain campaign-owned and
@@ -85,6 +86,7 @@ type sceneRuntime struct {
 	cells              map[string][]spatialCell
 	elementBuckets     map[spatialCell]map[string]struct{}
 	elementCells       map[string][]spatialCell
+	oversizedElements  map[string]struct{}
 	assetAll           map[string]int
 	assetPublic        map[string]int
 	assetAllByFloor    map[string]map[string]int
@@ -101,6 +103,7 @@ func newSceneRuntime(scene *Scene) *sceneRuntime {
 		cells:              make(map[string][]spatialCell, len(scene.Tokens)),
 		elementBuckets:     map[spatialCell]map[string]struct{}{},
 		elementCells:       make(map[string][]spatialCell, len(scene.Elements)),
+		oversizedElements:  map[string]struct{}{},
 		assetAll:           map[string]int{},
 		assetPublic:        map[string]int{},
 		assetAllByFloor:    map[string]map[string]int{},
@@ -225,19 +228,30 @@ func (rt *sceneRuntime) remove(token Token) {
 	}
 }
 
-func elementCells(element SceneElement) []spatialCell {
-	half := math.Hypot(element.Transform.Width, element.Transform.Height) / 2
-	cx := element.Transform.X + element.Transform.Width/2
-	cy := element.Transform.Y + element.Transform.Height/2
-	x0, x1 := int(math.Floor((cx-half)/sceneSpatialCell)), int(math.Floor((cx+half)/sceneSpatialCell))
-	y0, y1 := int(math.Floor((cy-half)/sceneSpatialCell)), int(math.Floor((cy+half)/sceneSpatialCell))
-	keys := make([]spatialCell, 0, (x1-x0+1)*(y1-y0+1))
+func elementCellRange(element SceneElement) (int, int, int, int) {
+	t := element.Transform
+	hw, hh := t.Width/2, t.Height/2
+	angle := t.Rotation * math.Pi / 180
+	c, sine := math.Abs(math.Cos(angle)), math.Abs(math.Sin(angle))
+	extentX, extentY := c*hw+sine*hh, sine*hw+c*hh
+	cx, cy := t.X+hw, t.Y+hh
+	return int(math.Floor((cx - extentX) / sceneSpatialCell)), int(math.Floor((cx + extentX) / sceneSpatialCell)),
+		int(math.Floor((cy - extentY) / sceneSpatialCell)), int(math.Floor((cy + extentY) / sceneSpatialCell))
+}
+
+func elementCells(element SceneElement) ([]spatialCell, bool) {
+	x0, x1, y0, y1 := elementCellRange(element)
+	cellCount := int64(x1-x0+1) * int64(y1-y0+1)
+	if cellCount > maxElementSpatialCells {
+		return nil, true
+	}
+	keys := make([]spatialCell, 0, int(cellCount))
 	for y := y0; y <= y1; y++ {
 		for x := x0; x <= x1; x++ {
 			keys = append(keys, spatialCell{X: x, Y: y})
 		}
 	}
-	return keys
+	return keys, false
 }
 
 func (rt *sceneRuntime) elementPublic(element SceneElement) bool {
@@ -266,7 +280,10 @@ func decrementFloorAsset(index map[string]map[string]int, floorID, assetID strin
 
 func (rt *sceneRuntime) addElement(element SceneElement) {
 	rt.elementIndexed++
-	keys := elementCells(element)
+	keys, oversized := elementCells(element)
+	if oversized {
+		rt.oversizedElements[element.ID] = struct{}{}
+	}
 	for _, key := range keys {
 		bucket := rt.elementBuckets[key]
 		if bucket == nil {
@@ -298,6 +315,7 @@ func (rt *sceneRuntime) removeElement(element SceneElement) {
 		}
 	}
 	delete(rt.elementCells, element.ID)
+	delete(rt.oversizedElements, element.ID)
 	rt.elementIndexed--
 	if element.AssetID != "" {
 		if rt.assetAll[element.AssetID] <= 1 {
@@ -353,6 +371,9 @@ func (rt *sceneRuntime) queryElements(region SceneRegion) []SceneElement {
 	x0, x1 := int(math.Floor(region.Left/sceneSpatialCell)), int(math.Floor(region.Right/sceneSpatialCell))
 	y0, y1 := int(math.Floor(region.Top/sceneSpatialCell)), int(math.Floor(region.Bottom/sceneSpatialCell))
 	ids := map[string]struct{}{}
+	for elementID := range rt.oversizedElements {
+		ids[elementID] = struct{}{}
+	}
 	cellCount := (x1 - x0 + 1) * (y1 - y0 + 1)
 	if cellCount > len(rt.elementBuckets) {
 		for key, bucket := range rt.elementBuckets {
@@ -477,7 +498,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 			if _, visible := visibleFloors[tokenFloorID(scene, token)]; visible && (member.Role == "gm" || !token.Hidden) {
 				tokens[token.ID] = token
 				if asset, ok := ss.Assets[token.Asset]; ok {
-					assets[asset.ID] = asset
+					assets[asset.ID] = publicAsset(asset)
 				}
 			}
 		}
@@ -490,7 +511,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 			}
 			elements[element.ID] = element
 			if asset, ok := ss.Assets[element.AssetID]; ok {
-				assets[asset.ID] = asset
+				assets[asset.ID] = publicAsset(asset)
 			}
 		}
 	}

@@ -1,0 +1,1200 @@
+﻿Milestone 1 — пункты 1–7, 28–30, 33 и соответствующая часть 34. Floor/Layer model, максимум два этажа, Token Layer, Walkable Layer, opacity в обоих направлениях, Floor-aware player view, правильный render stack, permissions и миграция. Это один связный кусок: здесь одновременно определяется, что такое Floor и как он существует в runtime. Делить его мельче рискованно.
+Milestone 2 — пункт 8 и связанные проверки из 34. Нормальный UI и серверная семантика Transition точка/радиус → точка. Он зависит от уже стабильных Floors, но почти не затрагивает image pipeline, поэтому хорошо изолируется.
+Milestone 3 — пункты 9, 14–16, 25–26 и соответствующие performance/check sections. Унификация raster Asset/SceneElement, lazy loading и единая representationPolicy: когда bitmap, когда tiled LOD. Здесь же провести небольшой эмпирический подбор threshold. После этого исчезает архитектурная зависимость map/object → renderer.
+Milestone 4 — пункты 10–13 и 23 применительно к одному SceneElement. Rotation UI, explicit enable для нижнего слоя, Зафиксировать ротацию, derived raster и sparse transparent tiles. К этому моменту representation pipeline уже стабилен, поэтому operation строится поверх него, а не одновременно с ним.
+Milestone 5 — пункты 17–24, 27 и соответствующие проверки. Запечь слой, BakeRecipe, edit/unbake lifecycle, static subset, recipe hash и GC references. Он использует rasterization pipeline из Milestone 4, но добавляет совершенно другой lifecycle, поэтому совмещать их в одном prompt я бы не стал.
+Цель
+Доработать новую модель Scene/Floor/Layer/SceneElement так, чтобы она стала устойчивой основой для:
+* двухэтажных сцен;
+* Photoshop-подобных визуальных слоёв;
+* управляемого порядка токенов относительно визуальных объектов;
+* ограничений перемещения;
+* lazy loading всех визуальных ресурсов;
+* автоматического выбора между обычным bitmap и tiled LOD;
+* оптимизации повернутых крупных изображений;
+* запекания законченных визуальных слоёв;
+* будущих анимаций, overhead-объектов, interaction/collision/FOV без очередной миграции модели.
+Не реализовывать коллизии, полноценный FOV, свет, интерактивные объекты и combat в рамках этой задачи.
+Сначала изучить уже реализованные Floor, Layer, SceneElement, Scene.Bounds, tiled image pipeline, decoded cache, spatial loading, realtime/revisions и Asset Store. Адаптировать существующую реализацию минимально, не переписывать работающие подсистемы без необходимости.
+________________
+
+
+1. Целевая модель Floor
+На текущем этапе одна Scene поддерживает максимум два Floor.
+Scene
+    Bounds
+
+
+    Floor 1
+        visual layers
+        Token Layer
+        Walkable Layer
+
+
+    Floor 2      // optional
+        visual layers
+        Token Layer
+        Walkable Layer
+Сервер и UI должны явно запрещать создание третьего Floor.
+Это временное продуктовое ограничение. Формат данных не должен принципиально исключать поддержку большего количества Floors в будущем, но текущие команды и UI должны возвращать понятную ошибку при попытке создать Floor 3.
+Floor должен содержать настройки отображения:
+Floor {
+    ...
+    opacity
+    opacityWhenViewedFromBelow
+}
+Где:
+opacity: 0..1
+— базовая непрозрачность всего содержимого Floor.
+Она применяется:
+* когда пользователь находится на этом Floor;
+* когда этот Floor отображается пользователю, находящемуся этажом выше.
+opacityWhenViewedFromBelow: 0..1
+— дополнительный множитель непрозрачности Floor только тогда, когда Floor отображается пользователю, находящемуся этажом ниже.
+Рекомендуемые значения по умолчанию:
+opacity = 1
+opacityWhenViewedFromBelow = 0
+То есть Floor полностью видим сам по себе, а верхний этаж по умолчанию не просвечивает пользователю снизу.
+В UI лучше использовать термин Непрозрачность, если значение 100% означает полностью видимый Floor.
+Если в интерфейсе используется термин Прозрачность, направление шкалы должно быть обратным и не должно создавать неоднозначности.
+
+
+________________
+
+
+2. Visual Layers
+Основа, Объекты, Overhead остаются обычными visual Layers.
+Каждый visual Layer имеет собственный:
+opacity: 0..1
+Layer opacity комбинируется с Floor opacity и opacity отдельного SceneElement.
+Не складывать проценты арифметически.
+Использовать обычную multiplicative alpha semantics.
+Для visual SceneElement:
+effectiveAlpha =
+    floorEffectiveAlpha
+    × layer.opacity
+    × element.opacity
+Пример:
+Floor opacity = 50%
+Layer opacity = 50%
+Element opacity = 100%
+
+
+effectiveAlpha = 25%
+Фактическое наложение нескольких изображений затем выполняется обычным Canvas alpha compositing.
+Token Layer также получает effective Floor alpha, когда весь Floor показывается с прозрачностью.
+Walkable Layer является editor overlay и не должен изменяться визуальной opacity Floor
+
+
+________________
+
+
+3. Token Layer
+У каждого Floor существует один специальный:
+Layer {
+    kind: tokens
+}
+
+
+Token Layer участвует в общем render order наравне с visual Layers.
+GM может переместить Token Layer выше или ниже visual Layers.
+Это необходимо для сценариев:
+Layer "Overhead"
+    chandelier.png
+    tree-crown.png
+
+
+Token Layer
+
+
+Layer "Furniture"
+    table.png
+
+
+Layer "Основа"
+    floor.png
+
+
+Тогда токен автоматически рисуется:
+* над мебелью;
+* под люстрой.
+Не выполнять per-pixel анализ alpha overhead-объектов.
+Обычное Canvas compositing уже обеспечивает нужный результат: прозрачные пиксели PNG показывают токен, непрозрачные перекрывают его.
+Token Layer:
+* нельзя запечь;
+* нельзя удалить;
+* нельзя поместить в него SceneElement;
+* нельзя переместить SceneElement из visual Layer в Token Layer;
+* нельзя переместить Token в обычный visual Layer.
+Token при этом остаётся отдельной игровой сущностью, а Token Layer определяет только его место в render stack.
+________________
+
+
+4. Walkable Layer
+У каждого Floor существует специальный функциональный Walkable Layer.
+Он используется только GM при редактировании и определяет допустимое пространство движения Token данного Floor.
+В первой версии не реализовывать произвольные polygon regions.
+Использовать простой axis-aligned rectangular:
+WalkableBounds {
+    x
+    y
+    width
+    height
+}
+
+
+По умолчанию:
+WalkableBounds = Scene.Bounds
+
+
+GM может изменить WalkableBounds конкретного Floor.
+Обычный Player не может переместить Token так, чтобы его допустимая позиция оказалась за WalkableBounds.
+Проверка должна выполняться authoritative на сервере, а не только клиентом.
+GM может иметь административную возможность переместить Token за WalkableBounds в режиме редактирования, но UI должен явно показывать, что Token находится вне игровой области.
+Walkable Layer:
+* не является raster;
+* не участвует в обычном player render;
+* не является Asset;
+* не запекается;
+* игроку не показывается;
+* в GM editor отображается как редактируемая рамка/overlay.
+________________
+
+
+5. Scene Bounds и Walkable Bounds
+Не смешивать их.
+Scene.Bounds
+Определяет логическую рабочую область Scene и общую координатную систему.
+Большие Scene.Bounds не должны создавать raster соответствующего размера.
+Scene размером:
+20000 × 20000
+
+
+должна оставаться дешёвой, если в viewport нет тяжёлых ресурсов.
+Floor.WalkableBounds
+Определяет, где Token данного Floor может перемещаться.
+SceneElement может физически находиться за WalkableBounds.
+Данные за Scene.Bounds также не должны автоматически уничтожаться или clamp'иться.
+Если элемент находится за Scene.Bounds, он сохраняется для GM, но обычный Player не должен:
+* видеть его;
+* взаимодействовать с ним;
+* загружать его Asset;
+* учитывать его при FOV/collision в будущем.
+Это позволяет уменьшить Scene.Bounds без потери данных.
+________________
+
+
+6. Отображение двух Floors и directional opacity
+Поддержать только:
+Floor 1
+Floor 2
+В зависимости от текущего Floor пользователя правила compositing различаются.
+Пользователь находится на Floor 1
+Сначала отображается Floor 1.
+Его effective alpha:
+Floor1.opacity
+Floor 2 также может отображаться поверх Floor 1.
+Его effective alpha:
+Floor2.opacity × Floor2.opacityWhenViewedFromBelow
+Таким образом GM может настроить, насколько верхний этаж виден пользователю снизу.
+Пример:
+Floor2.opacity = 100%
+Floor2.opacityWhenViewedFromBelow = 50%
+Пользователь Floor 1 видит Floor 2 с effective alpha 50%.
+Если:
+Floor2.opacity = 50%
+Floor2.opacityWhenViewedFromBelow = 50%
+effective alpha Floor 2 снизу равен 25%.
+Если:
+Floor2.opacityWhenViewedFromBelow = 0
+Floor 2 вообще не рендерится пользователю Floor 1 и его визуальные Assets не должны загружаться ради такого просмотра.
+Пользователь находится на Floor 2
+Сначала отображается Floor 1:
+effective alpha = Floor1.opacity
+Затем поверх него отображается Floor 2:
+effective alpha = Floor2.opacity
+Floor2.opacityWhenViewedFromBelow в этом случае не применяется.
+Таким образом Floor 2 может иметь прозрачные участки либо общую уменьшенную opacity, через которые пользователь сверху видит Floor 1.
+Что входит в Floor composition
+Floor composition включает:
+* все его visible visual Layers;
+* Token Layer;
+* SceneElements этих Layers.
+Walkable Layer в обычный render не входит.
+Поэтому, если Floor 2 показывается пользователю Floor 1 с opacity 50%, его Tokens также видны с соответствующим Floor alpha.
+Не выполнять per-pixel вычисления видимости между Floors.
+Не реализовывать vertical FOV.
+Не вычислять геометрическую высоту.
+Не поддерживать Floor 3.
+________________
+
+
+7. Player Floor
+Player имеет один текущий Floor, определяемый Floor его управляемого Token либо authoritative scene-view state.
+Player не может произвольно переключить текущий Floor через editor UI.
+При этом другой Floor может быть визуально отображён согласно правилам section 6.
+Визуальное отображение другого Floor не означает смену игрового Floor.
+То есть Player, находящийся на Floor 1:
+* может видеть Floor 2, если opacityWhenViewedFromBelow > 0;
+* не получает права перемещать свой Token по Floor 2;
+* не может использовать editor selection Floor 2;
+* не меняет token.floorId;
+* не взаимодействует автоматически с объектами Floor 2 только потому, что они визуально отображаются.
+Аналогично пользователь Floor 2 может видеть Floor 1, но остаётся игровым участником Floor 2.
+Смена token.floorId происходит только через разрешённый Transition либо административное действие GM.
+
+
+
+
+________________
+
+
+8. Transitions
+Упростить Transition первой версии.
+Не использовать длинные rectangles/polygons как пользовательскую модель перехода.
+Использовать:
+Transition {
+    sourceFloorId
+    sourcePosition
+    sourceRadius
+
+
+    destinationFloorId
+    destinationPosition
+}
+
+
+То есть фактически:
+небольшая область вокруг точки A
+→
+точка B
+
+
+Это покрывает:
+* лестницу;
+* люк;
+* портал;
+* обычный переход между этажами.
+GM UI:
+1. выбрать Создать переход;
+2. кликнуть source point;
+3. указать небольшой radius либо использовать разумный default;
+4. переключиться/выбрать destination Floor;
+5. кликнуть destination point;
+6. сохранить.
+Не использовать цепочку browser prompt() для координат.
+Не реализовывать сейчас:
+* длинный обрыв;
+* region→region mapping;
+* сохранение относительной позиции вдоль края;
+* polygon source areas.
+Это можно добавить отдельным типом Transition позже.
+________________
+
+
+9. SceneElement и карта
+Не возвращать фундаментальный тип Map.
+Большая карта, стул, пол, дом и декоративный объект являются одним типом визуального экземпляра:
+SceneElement {
+    assetId
+    floorId
+    layerId
+    transform
+    zOrder
+    opacity
+    ...
+}
+
+
+Различие между картой и стулом определяется Asset representation и размером ресурса, а не semantic type.
+________________
+
+
+10. Rotation UI
+Backend/data model продолжает поддерживать:
+rotation
+
+
+для любого SceneElement.
+Однако GM interface должен быть консервативным.
+Default
+Если SceneElement находится в самом нижнем visual Layer текущего Floor, rotation handle не показывается.
+Причина: нижний слой обычно используется как основа карты, а произвольная rotation крупных tiled assets усложняет tile selection и может увеличивать overfetch.
+Override
+Для выбранного SceneElement добавить действие:
+Разрешить вращение
+
+
+После этого в текущей editing session появляется rotation handle.
+Не требуется вводить отдельный server-side тип «карта».
+Это UI-policy.
+Если элемент уже имеет rotation != 0, его rotation сохраняется независимо от позиции Layer.
+________________
+
+
+11. Зафиксировать ротацию
+Добавить отдельную оптимизационную операцию для статического raster SceneElement:
+Зафиксировать ротацию
+
+
+Она особенно полезна для крупных tiled assets.
+Операция выполняется только явно по команде GM.
+Никогда не запускать дорогое raster preprocessing после каждого pointermove/rotation.
+Поведение
+Исходно:
+SceneElement
+    assetId = A
+    rotation = 37°
+
+
+Backend создаёт derived raster Asset:
+A_rotated
+
+
+с уже применённой rotation.
+Полученный raster axis-aligned.
+Пустые углы имеют alpha transparency.
+После успешной обработки SceneElement переключается на новый derived Asset и:
+rotation = 0
+
+
+Положение и effective visual footprint должны остаться визуально эквивалентными состоянию до операции.
+Не запекать обычный runtime scale без необходимости: основная цель этой операции — убрать arbitrary rotation из tiled render path.
+________________
+
+
+12. Sparse tiles для зафиксированной rotation
+Если resulting derived raster использует tiled pyramid:
+* полностью прозрачные tiles не сохранять;
+* не передавать их клиенту;
+* manifest должен позволять понять, что tile пуст;
+* отсутствие transparent tile не должно считаться ошибкой загрузки.
+Таким образом повернутая карта может храниться как axis-aligned raster с прозрачными участками без необходимости скачивать полностью прозрачные области.
+________________
+
+
+13. Lifecycle derived rotation Asset
+Derived Asset после Зафиксировать ротацию:
+* является server-side derived resource;
+* reclaimable;
+* не обязан отображаться пользователю как отдельный элемент Asset Library;
+* должен иметь ссылку на source Asset / processing recipe, достаточную для корректного reference tracking.
+Исходный Asset не удалять только потому, что SceneElement переключился на derived representation, если он нужен для обратимости или другого использования.
+Не требуется обязательно реализовывать UI Отменить фиксацию в этой задаче, но архитектура не должна терять происхождение derived resource.
+________________
+
+
+14. Lazy loading для всех visual Assets
+Любой visual Asset должен загружаться лениво.
+Сам факт существования SceneElement:
+* на другой Scene;
+* на другом Floor;
+* вне Scene.Bounds;
+* вне relevant viewport;
+* внутри source recipe baked Layer;
+не является причиной загружать его binary на клиент.
+Player получает только Asset references, действительно необходимые его текущему scene view.
+________________
+
+
+15. Image representation policy
+Не запускать image pyramid/tiled LOD для каждого изображения.
+Маленькому chair.png это создаёт лишние:
+* preprocessing;
+* metadata;
+* files;
+* requests;
+* disk usage.
+Ввести централизованную функцию/политику вида:
+representationPolicy(assetMetadata)
+
+
+которая выбирает representation.
+Минимально:
+small raster
+→ обычный bitmap
+
+
+large raster
+→ tiled image pyramid / LOD
+
+
+При необходимости допустим промежуточный режим:
+medium raster
+→ original + несколько resolution variants
+
+
+но добавлять его только если существующий код делает это простым.
+________________
+
+
+16. Как выбирать необходимость tiled LOD
+Не использовать compressed file size как основной признак.
+Главные признаки:
+pixelCount = width × height
+maxDimension
+estimatedDecodedBytes ≈ width × height × 4
+
+
+Дополнительно учитывать текущий tile size и реальные decoded cache budgets.
+Threshold должен быть централизован, а не размазан по нескольким файлам.
+Порог подобрать эмпирически на текущем pipeline.
+Минимальный тестовый набор должен включать raster assets примерно разных классов:
+512²
+1024²
+2048²
+4096²
+очень крупную карту существующего target case
+
+
+Сравнить хотя бы:
+* preprocessing cost;
+* createImageBitmap/decode cost;
+* decoded RAM;
+* количество запросов;
+* tile/request overhead;
+* поведение при pan/zoom;
+* повторное использование cache.
+Цель — найти точку, где экономия от partial decode/tile LOD становится значимее стоимости pyramid и дополнительных запросов.
+Если полноценный benchmark в рамках задачи слишком дорог, выбрать простой консервативный threshold на основании текущей реализации больших карт, вынести его в одно место и явно документировать как tuning parameter.
+________________
+
+
+17. Запечь слой
+Архитектурно предусмотреть bake для любого:
+Layer.kind == visual
+
+
+Не разрешать bake:
+Token Layer
+Walkable Layer
+
+
+Операция:
+Запечь слой
+
+
+является отдельной от Заблокировать слой.
+Заблокировать слой
+Только запрещает случайное редактирование.
+Не создаёт Asset.
+Запечь слой
+Создаёт оптимизированное runtime-представление композиции.
+________________
+
+
+18. Bake recipe
+При bake не уничтожать информацию о составляющих слоя.
+Сохранить server-side recipe примерно такого вида:
+BakeRecipe {
+    version
+    elements [
+        {
+            assetId
+            x
+            y
+            width
+            height
+            rotation
+            opacity
+            zOrder
+        }
+    ]
+}
+
+
+Можно хранить эту структуру в Scene storage/JSON либо эквивалентном persisted формате.
+Обычному Player recipe не передавать.
+В обычном runtime source SceneElements baked Layer не должны материализовываться как активные SceneElements.
+Иначе bake не даст выигрыша в:
+* scene state;
+* spatial index;
+* asset discovery;
+* client RAM;
+* draw calls.
+________________
+
+
+19. Baked representation
+Backend создаёт один derived raster Asset для статической части слоя.
+Если размер требует tiled LOD, derived Asset проходит обычную representationPolicy.
+Таким образом:
+100 static SceneElements
+→
+1 runtime baked SceneElement/representation
+
+
+Player получает только baked representation и необходимые ему tiles.
+Исходные Assets остаются на серверном диске.
+________________
+
+
+20. Animated elements при bake
+Не пытаться flatten'ить анимированные элементы в статический PNG.
+Если visual Layer содержит:
+80 static elements
+2 animated elements
+
+
+результат:
+1 baked static representation
+2 animated SceneElements
+
+
+То есть bake применяется к static subset.
+Animated subset остаётся отдельным runtime content.
+До появления полноценной animation subsystem достаточно архитектурно поддержать это разделение.
+________________
+
+
+21. Редактирование baked Layer
+При переходе в режим редактирования baked Layer:
+1. сервер отдаёт BakeRecipe GM-клиенту;
+2. исходные элементы материализуются для editor;
+3. их Assets загружаются лениво;
+4. baked representation временно не является источником редактируемой композиции.
+При изменении recipe существующий baked Asset помечается stale.
+Для первой реализации допустимо автоматически перевести Layer обратно в unbaked/edit mode.
+После завершения GM снова явно выбирает:
+Запечь слой
+
+
+Не выполнять дорогое rebake после каждого drag/resize.
+________________
+
+
+22. Recipe hash / version
+Добавить стабильный hash или version recipe:
+recipeHash
+
+
+Он должен зависеть как минимум от:
+* assetId;
+* transform;
+* opacity;
+* zOrder;
+* содержимого recipe.
+Baked representation хранит hash recipe, из которого она была построена.
+Если hash не совпадает, representation считается stale.
+________________
+
+
+23. Общий preprocessing backend
+Зафиксировать ротацию и Запечь слой должны использовать общий низкоуровневый pipeline:
+source raster composition
+→ rasterize
+→ trim/compute bounds при необходимости
+→ derived Asset
+→ representationPolicy
+→ optional tiled pyramid
+→ sparse transparent tile handling
+
+
+Но бизнес-операции остаются разными.
+Fix Rotation
+Scope:
+1 SceneElement
+
+
+Результат:
+1 optimized derived Asset
+
+
+Bake Layer
+Scope:
+N static SceneElements
+
+
+Результат:
+1 composed derived Asset + BakeRecipe
+
+
+Не дублировать image processing implementation.
+________________
+
+
+24. Почему операции не объединять
+Не делать единую пользовательскую кнопку Запечь.
+Причина:
+для оптимизации одной повернутой крупной карты не должно требоваться объединение остальных элементов её Layer.
+Кроме того, bake Layer:
+* меняет количество runtime SceneElements;
+* требует recipe;
+* влияет на asset discovery;
+* требует edit/unbake lifecycle.
+Fix Rotation этого не требует.
+________________
+
+
+25. Asset storage после bake
+Server disk остаётся источником истины.
+Хранить:
+original Assets
+derived Assets
+tile pyramids
+BakeRecipes
+Scene state
+
+
+Не держать бинарники исходных Assets постоянно в server RAM.
+Server RAM может хранить metadata/reference indexes/recipe metadata.
+Player client после bake не должен получать исходные Assets, если они нигде больше не используются в его текущем scene view.
+________________
+
+
+26. Client caches
+Сохранить разделение:
+Server disk
+→ источник истины
+
+
+Client disk/browser cache
+→ bounded disposable cache compressed resources
+
+
+Client decoded RAM
+→ bounded cache ImageBitmap/decoded resources
+
+
+Исходные элементы baked Layer не должны занимать decoded RAM клиента только потому, что они существуют в BakeRecipe.
+После Редактировать слой GM-клиент получает их лениво по мере необходимости.
+________________
+
+
+27. GC и references baked content
+BakeRecipe считается полноценным Asset reference source.
+Если source Asset отсутствует среди активных SceneElements, но присутствует в BakeRecipe:
+Asset != orphan
+
+
+Derived baked Asset считается reclaimable.
+Если Layer:
+* удалён;
+* изменён;
+* rebaked;
+старый derived Asset может стать orphan и позже удаляться общим GC.
+Не выполнять мгновенное физическое удаление.
+________________
+
+
+28. Player UI
+Player не должен видеть editor-oriented:
+* Asset list;
+* Floor/Layer Photoshop tree;
+* BakeRecipe;
+* Walkable Layer;
+* rotation/resize handles;
+* обычный SceneElement selection.
+Позднее интерактивные объекты получат отдельный player interaction mechanism.
+Не использовать GM selection SceneElement как будущий механизм взаимодействия Player с объектами.
+________________
+
+
+29. Floor-aware loading
+Spatial loading, Scene state delivery и Asset authorization должны учитывать не только текущий Floor, но и Floors, которые реально участвуют в текущем compositing.
+Player находится на Floor 1
+Всегда загружать релевантное viewport-содержимое Floor 1.
+Floor 2 загружать только если:
+Floor2.opacity × Floor2.opacityWhenViewedFromBelow > 0
+Если effective alpha Floor 2 равен нулю:
+* не загружать его visual SceneElements;
+* не запрашивать его visual Assets;
+* не декодировать его изображения;
+* не расходовать decoded cache на этот Floor.
+Player находится на Floor 2
+Всегда загружать релевантное содержимое Floor 2.
+Floor 1 загружать только если:
+Floor1.opacity > 0
+и только для relevant viewport / bounded prefetch area.
+Не загружать Floor целиком только потому, что он участвует в compositing.
+Правильная последовательность:
+visible Floors
+→ relevant spatial regions
+→ relevant SceneElements/Tokens
+→ необходимые Asset references
+→ необходимые binary resources/tiles
+Не возвращаться к full-floor eager loading.
+________________
+
+
+30. Token rendering относительно Layers и Floors
+Token Layer участвует в render order собственного Floor.
+Не использовать схему:
+draw SceneElements
+draw all Tokens afterwards
+Для каждого Floor формируется ordered render stack:
+visual Layer
+Token Layer
+visual Layer
+visual Layer
+и содержимое рисуется в соответствии с Layer order.
+После определения порядка внутри Floor применяется effective Floor alpha из section 6.
+Пример при просмотре Floor 2:
+Floor 1:
+    effectiveFloorAlpha = Floor1.opacity
+
+
+Floor 2:
+    effectiveFloorAlpha = Floor2.opacity
+Пример при просмотре Floor 1 снизу вверх:
+Floor 1:
+    effectiveFloorAlpha = Floor1.opacity
+
+
+Floor 2:
+    effectiveFloorAlpha =
+        Floor2.opacity
+        × Floor2.opacityWhenViewedFromBelow
+Tokens каждого Floor получают тот же Floor alpha, что и его visual content.
+Не делать отдельный финальный Token pass после compositing Floors.
+
+
+________________
+
+
+31. Дополнительные performance invariants для Floor opacity
+Не реализовывать Floor opacity через создание полного offscreen raster размером Scene/Floor.
+Например, Scene:
+20000 × 20000
+не должна ради opacity=0.5 создавать промежуточный Canvas 20000 × 20000.
+Предпочтительно применять рассчитанный Floor alpha как множитель при draw calls соответствующего render stack.
+Viewport-sized intermediate buffer допустим только если он действительно необходим для корректного compositing и остаётся bounded размером viewport.
+Если effective Floor alpha равен нулю, Floor должен максимально рано исключаться из:
+* spatial asset discovery;
+* binary loading;
+* decoding;
+* render traversal.
+Изменение opacity само по себе не должно пересоздавать Asset, tile pyramid или BakeRecipe.
+Это только render/view property.
+
+
+________________
+
+
+32. Что сознательно не реализовывать
+Не делать в этой задаче:
+* Floor 3+;
+* polygon Walkable Regions;
+* union сложных walkable polygons;
+* vertical FOV;
+* высоту объектов;
+* 3D/2.5D geometry;
+* per-pixel collision/occlusion;
+* per-pixel Token/Overhead calculations;
+* long-edge Transition;
+* region→region teleport mapping;
+* автоматический bake на каждое изменение;
+* pyramid для каждого маленького Asset;
+* flatten animated content в один static raster;
+* полноценный Asset Library UI, если его ещё нет;
+* physical GC без существующего безопасного orphan lifecycle.
+________________
+
+
+33. Миграция текущего состояния
+Существующие visual Layers должны сохраниться как:
+kind=visual
+
+
+Создать/обеспечить для каждого Floor:
+Token Layer
+Walkable Layer
+
+
+Существующие Tokens привязать к Token Layer соответствующего Floor.
+Текущий нижний visual Layer можно сохранить как Основа, но имя не должно иметь специальной backend-семантики.
+Существующие Maps остаются SceneElements.
+Не возвращать singleton Scene.Map.
+________________
+
+
+34. Дополнительные проверки для Floors
+Проверить следующие сценарии.
+Собственный Floor
+Floor1.opacity = 0.5
+Player находится Floor1
+Floor 1 отображается с effective alpha 0.5.
+Нижний Floor при просмотре сверху
+Floor1.opacity = 0.5
+Player находится Floor2
+Floor 1 отображается с effective alpha 0.5.
+Верхний Floor при просмотре снизу
+Floor2.opacity = 1
+Floor2.opacityWhenViewedFromBelow = 0.5
+Player находится Floor1
+Floor 2 отображается с effective alpha 0.5.
+Комбинация двух настроек
+Floor2.opacity = 0.5
+Floor2.opacityWhenViewedFromBelow = 0.5
+Player находится Floor1
+Floor 2 отображается с effective alpha 0.25.
+Layer opacity
+Floor effective alpha = 0.5
+Layer.opacity = 0.5
+Element.opacity = 1
+Element отрисовывается с alpha 0.25.
+Полностью скрытый верхний Floor
+Floor2.opacityWhenViewedFromBelow = 0
+Player находится Floor1
+Убедиться, что Floor 2:
+* не отрисовывается;
+* не вызывает загрузку visual Assets;
+* не занимает decoded cache только из-за своего существования.
+Token Layer
+Убедиться, что Tokens соседнего отображаемого Floor получают ту же directional opacity, что и остальное содержимое Floor.
+Third Floor
+Попытка создать Floor 3 отклоняется и backend, и UI.
+________________
+
+
+35. Приоритет реализации
+Сначала исправить модель render stack и Floor-aware loading.
+Затем WalkableBounds и двухэтажную семантику.
+После этого centralized representationPolicy.
+Далее Зафиксировать ротацию.
+Затем общий rasterization pipeline переиспользовать для Запечь слой.
+GC и физическую очистку Derived Assets включать только после проверки всех reference sources.
+Не смешивать эту работу с collision/FOV/interaction features.
+
+
+
+
+
+
+8. Transitions
+Упростить Transition первой версии и сделать его создание непосредственно на сцене без ввода координат вручную.
+Не использовать длинные rectangles/polygons как пользовательскую модель перехода.
+Переход первой версии состоит из двух круглых зон, связанных между собой:
+Transition {
+    id
+
+
+    endpointA {
+        floorId
+        position
+        radius
+    }
+
+
+    endpointB {
+        floorId
+        position
+        radius
+    }
+
+
+    direction // bidirectional | AToB | BToA
+}
+
+
+По умолчанию переход двусторонний.
+То есть фактически:
+круглая зона A
+↔
+круглая зона B
+
+
+При входе токена в одну зону он перемещается в центр второй зоны.
+Это покрывает:
+* лестницу;
+* люк;
+* портал;
+* обычный переход между этажами;
+* переход между разными областями одного этажа.
+В первой версии оба endpoint должны принадлежать одной Scene. Переходы между разными Scene можно добавить позднее без изменения основной UX-модели.
+8.1. Создание перехода
+В GM UI должна быть команда:
+Создать переход
+После её выбора приложение входит в режим создания Transition.
+Обычный выбор объектов и другие инструменты сцены на время создания перехода не должны перехватывать клики по карте.
+Создание состоит из двух последовательных этапов:
+поставить endpoint A
+→
+подтвердить endpoint A
+→
+поставить endpoint B
+→
+подтвердить endpoint B
+→
+Transition создан и выбран
+
+
+Не использовать browser prompt() для координат, radius, floor или направления.
+8.2. Постановка endpoint A
+После выбора Создать переход следующий клик по сцене начинает создание endpoint A.
+При pointerdown:
+* центр endpoint устанавливается в мировой координате указателя;
+* автоматически определяется Floor;
+* создаётся зона с разумным default radius;
+* зона сразу отображается на сцене как выбранная и редактируемая.
+Default radius должен быть визуально заметным. Не создавать точку с практически нулевой областью срабатывания.
+Если пользователь после pointerdown продолжает drag, расстояние от центра endpoint до курсора задаёт radius.
+Таким образом поддерживаются оба сценария:
+клик
+→
+создать зону стандартного размера
+
+
+и:
+pointerdown
+→
+drag
+→
+сразу задать нужный radius
+→
+pointerup
+
+
+Минимальный radius должен быть ограничен, чтобы пользователь случайно не создавал практически несрабатывающую область.
+8.3. Редактирование только что поставленной зоны
+Пока endpoint не подтверждён, он находится в активном состоянии.
+На самой зоне должны быть доступны:
+* перемещение центра;
+* изменение radius;
+* изменение Floor;
+* подтверждение;
+* отмена создания.
+Центр зоны должен иметь понятный drag-handle для перемещения.
+На окружности должен быть отдельный radius-handle. Drag этого handle изменяет radius, не перемещая центр.
+Не использовать одну и ту же drag-механику одновременно для перемещения центра и изменения размера.
+Элементы управления должны визуально находиться рядом с выбранной зоной, но не перекрывать её полностью.
+Дополнительно:
+* Enter может подтверждать текущий endpoint;
+* Esc отменяет создание Transition целиком;
+* после подтверждения endpoint A начинается постановка endpoint B.
+8.4. Автоматический выбор Floor
+При постановке endpoint приложение должно автоматически выбирать тот Floor, artwork которого фактически находится под указателем.
+Нельзя определять Floor только по прямоугольным bounds изображения.
+Если верхний Floor в данной мировой координате прозрачен, а ниже виден artwork другого Floor, должен быть выбран нижний Floor.
+
+
+Клик в прозрачное отверстие Floor 2 должен выбрать Floor 1.
+Для этого использовать alpha-aware hit testing artwork.
+Не требуется выполнять такой анализ постоянно каждый frame. Он нужен только при операциях выбора/постановки endpoint и поэтому не является hot path.
+Не использовать чтение итогового composited Canvas как единственный источник истины, если это можно определить по данным конкретного artwork. В итоговом Canvas могут одновременно присутствовать несколько Floor, opacity и прочие визуальные эффекты.
+Допустима оптимизированная alpha/occupancy mask, созданная при preprocessing artwork, если текущая архитектура позволяет сделать это без значительного усложнения.
+Автоматический выбор Floor является только первоначальным значением.
+Пользователь всегда должен иметь возможность вручную изменить Floo:
+После ручной смены Floor мировая position endpoint сохраняется, если она допустима для выбранного Floor.
+8.5. Переход к endpoint B
+После подтверждения endpoint A приложение автоматически начинает создание endpoint B.
+От endpoint A до текущего положения курсора отображается пунктирная preview-линия.
+Пример:
+(A) · · · · · · · · · · +
+                         cursor
+
+
+Для endpoint B используется та же механика, что и для A:
+* автоматический выбор Floor;
+* клик создаёт default radius;
+* drag при создании задаёт radius;
+* центр можно перемещать;
+* radius можно менять;
+* Floor можно изменить вручную;
+* endpoint необходимо подтвердить.
+После подтверждения B создаётся Transition.
+Никаких дополнительных модальных окон после этого открывать не требуется.
+Созданный Transition автоматически остаётся выбранным, чтобы пользователь при необходимости мог сразу изменить направление или параметры.
+8.6. Визуальное представление Transition
+Когда Transition выбран, показывать:
+* обе зоны endpoint;
+* связь между ними;
+* направление перехода.
+Пунктир и служебные элементы Transition не должны постоянно загромождать сцену.
+По умолчанию подробную связь показывать:
+* во время создания;
+* когда Transition выбран;
+* при hover, если это потребуется позднее.
+Для невыбранных Transition достаточно ненавязчивого обозначения их зон либо другого минимального маркера согласно общей системе отображения объектов Scene.
+8.7. Transition между Floor
+Если A и B находятся на разных Floor, при редактировании Transition пользователь всё равно должен иметь доступ к обоим endpoint.
+В инспекторе Transition предоставить действия:
+[ Перейти к A ]
+[ Перейти к B ]
+
+
+Действие должно:
+1. переключить активный Floor при необходимости;
+2. переместить viewport к соответствующему endpoint;
+3. оставить Transition выбранным.
+Если endpoint другого Floor отображается одновременно благодаря механике отображения соседних Floor, его можно показать ghost-стилем, но редактирование должно однозначно учитывать его реальный floorId.
+8.8. Настройка направления
+По умолчанию новый Transition имеет:
+bidirectional
+
+
+Во время первоначальной постановки A и B направление выбирать не требуется.
+После создания Transition направление можно изменить в properties/inspector выбранного объекта.
+Использовать простой контрол:
+Внутренние endpoint A и B должны сохранять свою идентичность независимо от текущего направления.
+Изменение направления не должно менять координаты, Floor или radius endpoint.
+8.9. Выбор существующего Transition
+Transition является объектом Scene и должен быть доступен через общий UI выбора объектов сцены.
+Если объекты сцены отображаются в правой панели/Inspector, Transition должен находиться там же.
+Например:
+Объекты сцены
+
+
+Токены
+Декорации
+Интерактивные объекты
+Переходы
+    Переход #1
+    Переход #2
+    Переход #3
+
+
+Не создавать отдельную независимую систему управления Transition, если существующая архитектура Scene Objects уже позволяет включить их туда.
+Transition также можно выбирать непосредственно на карте через его зону или служебный marker в GM mode.
+При выборе Transition становятся видны обе его зоны и связь между ними.
+8.10. Inspector выбранного Transition
+Минимальный inspector:
+Переход
+
+
+Направление
+[ A ↔ B ] [ A → B ] [ A ← B ]
+
+
+Точка A
+Floor: Этаж 1
+Radius: 1.5
+[ Перейти к A ]
+
+
+Точка B
+Floor: Этаж 2
+Radius: 2.0
+[ Перейти к B ]
+
+
+[ Удалить переход ]
+
+
+Radius можно менять непосредственно на карте. Числовое поле в inspector допустимо как дополнительный способ точного редактирования, но не должно быть единственным.
+Название Transition в первой версии можно генерировать автоматически. Ручное именование можно добавить позже, если оно не требуется текущей модели объектов Scene.
+8.11. Срабатывание перехода
+Для определения попадания в Transition использовать logical position/anchor токена.
+Не использовать визуальные bounds artwork токена как условие входа.
+Срабатывание происходит при переходе состояния:
+outside
+→
+inside
+
+
+То есть Transition должен сработать, когда anchor токена пересекает границу зоны и оказывается внутри неё.
+Условно:
+previousPosition outside zone
+currentPosition inside zone
+→
+trigger Transition
+
+
+При срабатывании A → B:
+token.position = endpointB.position
+token.floorId = endpointB.floorId
+
+
+То есть токен появляется в центре destination zone.
+Radius destination endpoint используется как зона входа для движения в обратную сторону, если оно разрешено.
+8.12. Защита от мгновенного обратного перехода
+После телепорта токен оказывается внутри destination zone.
+Это не должно немедленно вызывать обратный Transition.
+Поэтому Transition нельзя реализовывать как:
+if token is inside zone:
+    teleport
+
+
+Срабатывать должно именно событие входа снаружи внутрь.
+После переноса в B токен считается уже находящимся внутри B.
+Чтобы B → A мог сработать, токен сначала должен выйти из B, а затем снова войти в неё.
+Пример:
+вошёл в A
+→
+перенесён в центр B
+→
+B не срабатывает
+
+
+вышел за пределы B
+→
+снова вошёл в B
+→
+B срабатывает
+
+
+Не вводить искусственный cooldown Transition только для решения этой проблемы.
+8.13. Перемещение через Transition
+Если токен перемещается по траектории и пересекает границу входной зоны, движение завершается телепортацией к центру destination endpoint.
+Положение внутри source zone не должно пропорционально переноситься в destination zone.
+Не реализовывать сейчас region-to-region mapping и сохранение относительной позиции.
+В первой версии destination всегда является центром второго endpoint.
+8.14. Редактирование существующего Transition
+Для выбранного Transition GM должен иметь возможность:
+* переместить endpoint A;
+* изменить radius A;
+* сменить Floor A;
+* переместить endpoint B;
+* изменить radius B;
+* сменить Floor B;
+* изменить направление;
+* удалить Transition.
+Перемещение одного endpoint не должно автоматически менять второй.
+Изменение radius одного endpoint не должно менять radius второго.
+Endpoint могут иметь разные radius.
+Endpoint A и B могут находиться:
+* на разных Floor;
+* на одном Floor;
+* в одной и той же мировой координате на разных Floor.
+Последний вариант является нормальным кейсом для вертикальной лестницы, люка или лифта.
+8.15. Отмена незавершённого создания
+Если пользователь отменяет создание до подтверждения endpoint A:
+* временный endpoint удаляется;
+* Transition не создаётся.
+Если endpoint A уже подтверждён, но B ещё не подтверждён, Esc также отменяет создание Transition целиком и удаляет временный A.
+Не сохранять полуготовый Transition с одним endpoint.
+При переключении инструмента во время незавершённого создания использовать ту же семантику отмены либо явно завершать режим создания согласно общей UX-модели редактора.
+8.16. Что не реализовывать сейчас
+Не реализовывать в этой итерации:
+* длинные переходы вдоль края;
+* rectangle source areas;
+* polygon source areas;
+* arbitrary region → region mapping;
+* сохранение относительной позиции внутри source area;
+* сохранение позиции вдоль длинного края;
+* переходы, зависящие от конкретного участка polygon;
+* сложные кривые области срабатывания;
+* несколько destination у одного Transition;
+* условия вида «только определённый тип токена»;
+* ключи, проверки характеристик и игровые условия;
+* анимации перехода;
+* задержку перед переходом;
+* пользовательские скрипты Transition.
+Такие механики позднее можно реализовать отдельными типами или расширениями Transition, не меняя базовую модель endpoint A ↔ endpoint B.
+8.17. UX acceptance criteria
+Реализация считается соответствующей базовому UX, если GM может выполнить полный сценарий без ввода координат вручную:
+Создать переход
+→
+кликнуть/растянуть A
+→
+при необходимости изменить Floor
+→
+подтвердить A
+→
+кликнуть/растянуть B
+→
+при необходимости изменить Floor
+→
+подтвердить B
+→
+получить готовый двусторонний Transition
+
+
+После создания GM может выбрать Transition через Scene Objects, перейти к любому endpoint, изменить обе зоны и переключить направление между:
+A ↔ B
+A → B
+A ← B
+
+
+При игровом перемещении вход в разрешённую source zone переносит anchor токена в центр соответствующей destination zone и на её Floor.
+Перенос в destination zone не вызывает немедленного обратного перехода. Для повторного срабатывания токен должен сначала покинуть эту зону и затем войти в неё снова.

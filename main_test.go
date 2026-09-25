@@ -205,9 +205,9 @@ func TestSessionPermissionsSyncAndPersistence(t *testing.T) {
 }
 func TestTilePyramidAndAssetAccess(t *testing.T) {
 	root := t.TempDir()
-	img := image.NewRGBA(image.Rect(0, 0, 1025, 513))
-	for y := 0; y < 513; y++ {
-		for x := 0; x < 1025; x++ {
+	img := image.NewRGBA(image.Rect(0, 0, 2049, 1025))
+	for y := 0; y < 1025; y++ {
+		for x := 0; x < 2049; x++ {
 			img.SetRGBA(x, y, color.RGBA{123, 80, 31, 255})
 		}
 	}
@@ -217,10 +217,10 @@ func TestTilePyramidAndAssetAccess(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if a.RenderMode != "tiled" || a.Levels != 3 {
+	if a.Kind != assetKindScene || a.RenderMode != renderModeTiled || a.Levels != 4 || a.SourceID == "" || a.RepresentationVersion != representationVersion {
 		t.Fatalf("large image mode=%q levels=%d", a.RenderMode, a.Levels)
 	}
-	f, e := os.Open(filepath.Join(root, "assets", a.ID, "0_2_1.png"))
+	f, e := os.Open(filepath.Join(root, "assets", a.ID, "0_4_2.png"))
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -6,6 +6,24 @@ export class SpatialIndex {
   query(left,top,right,bottom){const result=new Set(),x0=Math.floor(left/this.cell),x1=Math.floor(right/this.cell),y0=Math.floor(top/this.cell),y1=Math.floor(bottom/this.cell);if((x1-x0+1)*(y1-y0+1)>this.buckets.size){for(const [key,bucket]of this.buckets){const [x,y]=key.split(',').map(Number);if(x>=x0&&x<=x1&&y>=y0&&y<=y1)for(const id of bucket)result.add(id);}}else{for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)for(const id of this.buckets.get(`${x},${y}`)||[])result.add(id);}return [...result].map(id=>this.entries.get(id)).filter(({token:t})=>t.x+t.size/2>=left&&t.x-t.size/2<=right&&t.y+t.size/2>=top&&t.y-t.size/2<=bottom).sort((a,b)=>a.order-b.order).map(e=>e.token);}
 }
 
+export class LimitedMap {
+  constructor(limit){this.limit=Math.max(0,limit);this.items=new Map();}
+  get size(){return this.items.size;}
+  has(key){return this.items.has(key);}
+  get(key){return this.items.get(key);}
+  set(key,value){if(this.items.has(key))this.items.delete(key);this.items.set(key,value);while(this.items.size>this.limit)this.items.delete(this.items.keys().next().value);return this;}
+  delete(key){return this.items.delete(key);}
+  clear(){this.items.clear();}
+}
+
+export class MetadataTouchTracker {
+  constructor(limit,interval=60000){this.interval=interval;this.entries=new LimitedMap(limit);}
+  due(key,now){return (this.entries.get(key)||0)<now-this.interval;}
+  record(key,now){this.entries.set(key,now);}
+  clear(){this.entries.clear();}
+  get size(){return this.entries.size;}
+}
+
 const CACHE_BUDGETS_MIB=new Set([64,128,256,512]);
 
 // deviceMemory is intentionally coarse and may be unavailable. Keep the

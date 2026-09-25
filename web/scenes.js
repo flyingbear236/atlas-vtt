@@ -1,3 +1,5 @@
+export function needsActiveTokenRequest(token,focus,confirmedTokenID,confirmedFloorID,pending){return !!focus||!!pending||token?.id!==confirmedTokenID||token?.floorId!==confirmedFloorID;}
+
 export class ScenesRuntime {
   constructor(elements,{open,home,queue}) {
     this.elements=elements;this.open=open;this.home=home;this.queue=queue;this.campaign=null;

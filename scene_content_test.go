@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,37 @@ func elementFrom(t *testing.T, message map[string]json.RawMessage) SceneElement 
 		t.Fatal(err)
 	}
 	return element
+}
+
+func TestSceneStructureSeparatesRasterAndTokenAssetRoles(t *testing.T) {
+	scene := newScene("scene", "Asset roles")
+	floorID := firstFloorID(scene)
+	visualLayerID := firstLayerID(scene, floorID)
+	tokenLayerID := layerIDByKind(scene, floorID, layerKindTokens)
+	assets := map[string]Asset{
+		"raster": {ID: "raster", Kind: assetKindScene, Width: 64, Height: 64, RenderMode: renderModeBitmap},
+		"token":  {ID: "token", Kind: assetKindToken, Width: 64, Height: 64, RenderMode: renderModeBitmap},
+	}
+	scene.Elements["element"] = SceneElement{ID: "element", FloorID: floorID, LayerID: visualLayerID, AssetID: "raster", Transform: Transform{Width: 64, Height: 64}, Visible: true, Opacity: 1}
+	scene.Tokens["piece"] = Token{ID: "piece", FloorID: floorID, LayerID: tokenLayerID, Size: 64, Asset: "token"}
+	if !validateSceneStructure(scene, assets, map[string]*Member{}) {
+		t.Fatal("valid raster element and token portrait were rejected")
+	}
+
+	element := scene.Elements["element"]
+	element.AssetID = "token"
+	scene.Elements["element"] = element
+	if validateSceneStructure(scene, assets, map[string]*Member{}) {
+		t.Fatal("token portrait was accepted as a visual SceneElement")
+	}
+	element.AssetID = "raster"
+	scene.Elements["element"] = element
+	token := scene.Tokens["piece"]
+	token.Asset = "raster"
+	scene.Tokens["piece"] = token
+	if validateSceneStructure(scene, assets, map[string]*Member{}) {
+		t.Fatal("SceneElement raster was accepted as a token portrait")
+	}
 }
 
 func TestCurrentFloorModelMigratesSpecialLayersAndTokenBinding(t *testing.T) {
@@ -556,11 +588,134 @@ func TestPlayerActiveTokenControlsFloorAndNavigation(t *testing.T) {
 	}
 
 	ws.WriteJSON(Command{Type: "activeToken", SceneID: scene.ID, ActiveTokenID: foreign.ID, Region: &region})
-	read(t, ws, "error")
+	rejected := read(t, ws, "error")
+	var operation string
+	json.Unmarshal(rejected["operation"], &operation)
+	if operation != "activeToken" {
+		t.Fatalf("active token rejection was not typed: %q", operation)
+	}
 	ws.WriteJSON(Command{Type: "sync"})
 	afterReject := read(t, ws, "snapshot")
 	json.Unmarshal(afterReject["activeTokenId"], &activeToken)
 	if activeToken != upper.ID {
 		t.Fatalf("rejected token changed active selection to %s", activeToken)
+	}
+}
+
+func benchmarkSceneRuntime() (*Scene, Floor, Layer) {
+	floor := Floor{ID: "floor", Name: "Floor", Opacity: 1}
+	layer := Layer{ID: "visual", FloorID: floor.ID, Name: "Visual", Kind: layerKindVisual, Visible: true, Opacity: 1}
+	scene := &Scene{
+		ID: "benchmark", Revision: 1, Bounds: SceneBounds{Width: maxSceneDimension, Height: maxSceneDimension},
+		Floors: map[string]Floor{floor.ID: floor}, Layers: map[string]Layer{layer.ID: layer},
+		Elements: map[string]SceneElement{}, Tokens: map[string]Token{}, Transitions: map[string]Transition{},
+	}
+	return scene, floor, layer
+}
+
+func TestSceneElementSpatialIndexBoundsOversizedEntries(t *testing.T) {
+	scene, floor, layer := benchmarkSceneRuntime()
+	long := SceneElement{ID: "long", FloorID: floor.ID, LayerID: layer.ID, Visible: true, Opacity: 1, Transform: Transform{X: -20_000, Y: -50, Width: 50_000, Height: 100}}
+	scene.Elements[long.ID] = long
+	runtime := newSceneRuntime(scene)
+	scene.runtime = runtime
+	if _, oversized := runtime.oversizedElements[long.ID]; oversized {
+		t.Fatal("axis-aligned thin element was classified as oversized")
+	}
+	if got := len(runtime.elementCells[long.ID]); got > maxElementSpatialCells || got >= 100 {
+		t.Fatalf("thin element used %d cells", got)
+	}
+	if got := runtime.queryElements(SceneRegion{Left: -20_010, Top: -60, Right: -19_990, Bottom: 60}); len(got) != 1 || got[0].ID != long.ID {
+		t.Fatalf("negative-coordinate boundary query missed element: %+v", got)
+	}
+
+	rotated := long
+	rotated.Transform.Rotation = 45
+	scene.Elements[long.ID] = rotated
+	scene.Revision++
+	scene.applyElementRuntimeChange(long, true, rotated, true)
+	if _, oversized := runtime.oversizedElements[long.ID]; !oversized {
+		t.Fatal("large rotated AABB did not use oversized storage")
+	}
+	if len(runtime.elementCells[long.ID]) != 0 {
+		t.Fatal("oversized element retained grid cells")
+	}
+	scene.Elements[long.ID] = long
+	scene.Revision++
+	scene.applyElementRuntimeChange(rotated, true, long, true)
+	if _, oversized := runtime.oversizedElements[long.ID]; oversized || len(runtime.elementCells[long.ID]) == 0 {
+		t.Fatal("resized element did not return to grid storage")
+	}
+	scene.Elements[long.ID] = rotated
+	scene.Revision++
+	scene.applyElementRuntimeChange(long, true, rotated, true)
+
+	giant := SceneElement{ID: "giant", FloorID: floor.ID, LayerID: layer.ID, Visible: true, Opacity: 1, Transform: Transform{X: 0, Y: 0, Width: maxSceneDimension, Height: maxSceneDimension, Rotation: 13}}
+	scene.Elements[giant.ID] = giant
+	scene.Revision++
+	scene.applyElementRuntimeChange(SceneElement{}, false, giant, true)
+	if _, oversized := runtime.oversizedElements[giant.ID]; !oversized || len(runtime.elementCells[giant.ID]) != 0 {
+		t.Fatal("maximum element allocated spatial cells")
+	}
+	if got := runtime.queryElements(SceneRegion{Left: 499_900, Top: 499_900, Right: 500_100, Bottom: 500_100}); len(got) == 0 {
+		t.Fatal("oversized element was not queryable")
+	}
+
+	delete(scene.Elements, long.ID)
+	scene.Revision++
+	scene.applyElementRuntimeChange(rotated, true, SceneElement{}, false)
+	if _, ok := runtime.oversizedElements[long.ID]; ok {
+		t.Fatal("delete retained oversized entry")
+	}
+	scene.rebuildRuntime()
+	if _, ok := scene.runtime.oversizedElements[giant.ID]; !ok || scene.runtime.elementIndexed != 1 {
+		t.Fatal("runtime rebuild lost oversized state")
+	}
+}
+
+func BenchmarkSceneElementSpatialIndex(b *testing.B) {
+	scene, floor, layer := benchmarkSceneRuntime()
+	element := SceneElement{ID: "long", FloorID: floor.ID, LayerID: layer.ID, Visible: true, Opacity: 1, Transform: Transform{X: 100, Y: 100, Width: 50_000, Height: 100}}
+	runtime := newSceneRuntime(scene)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runtime.addElement(element)
+		runtime.removeElement(element)
+	}
+}
+
+func BenchmarkOversizedElementQuery(b *testing.B) {
+	scene, floor, layer := benchmarkSceneRuntime()
+	for i := 0; i < 1000; i++ {
+		element := SceneElement{ID: fmt.Sprintf("oversized-%d", i), FloorID: floor.ID, LayerID: layer.ID, Visible: true, Opacity: 1, Transform: Transform{X: 0, Y: 0, Width: maxSceneDimension, Height: maxSceneDimension, Rotation: float64(i % 90)}}
+		scene.Elements[element.ID] = element
+	}
+	scene.rebuildRuntime()
+	region := SceneRegion{Left: 499_900, Top: 499_900, Right: 500_100, Bottom: 500_100}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := len(scene.runtime.queryElements(region)); got != len(scene.Elements) {
+			b.Fatalf("query returned %d of %d oversized elements", got, len(scene.Elements))
+		}
+	}
+}
+
+func BenchmarkTokenPositionIndexUpdate(b *testing.B) {
+	scene, floor, _ := benchmarkSceneRuntime()
+	tokenLayer := Layer{ID: "tokens", FloorID: floor.ID, Name: "Tokens", Kind: layerKindTokens, Visible: true, Opacity: 1}
+	scene.Layers[tokenLayer.ID] = tokenLayer
+	token := Token{ID: "moving", FloorID: floor.ID, LayerID: tokenLayer.ID, X: 100, Y: 100, Size: 80}
+	scene.Tokens[token.ID] = token
+	scene.rebuildRuntime()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		old := token
+		token.X = 100 + float64(i%100)
+		scene.Tokens[token.ID] = token
+		scene.Revision++
+		scene.applyTokenRuntimeChange(old, true, token, true)
 	}
 }

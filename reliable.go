@@ -142,6 +142,10 @@ type Command struct {
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {
+	if c.Type == "elementFixRotation" {
+		s.rotationCommand(ss, p, c)
+		return
+	}
 	if c.Type == "sceneCreate" || c.Type == "sceneUpdate" || c.Type == "sceneDelete" {
 		s.sceneCommand(ss, p, c)
 		return
@@ -594,7 +598,7 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 				v["token"] = t
 				if t.Asset != "" {
 					if asset, ok := ss.Assets[t.Asset]; ok {
-						v["asset"] = asset
+						v["asset"] = publicAsset(asset)
 					}
 				}
 			}
@@ -632,8 +636,12 @@ func (s *Server) flushPersistence() error {
 
 func (s *Server) stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.stopping = true
+	s.jobCancel()
+	s.mu.Unlock()
+	s.jobWG.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err := s.saveLocked()
 	for p := range s.peers {
 		p.conn.Close()

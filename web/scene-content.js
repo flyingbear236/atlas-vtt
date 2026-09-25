@@ -1,6 +1,25 @@
 export function orderedFloors(state){return Object.values(state?.floors||{}).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id));}
 export function orderedLayers(state,floorId){return Object.values(state?.layers||{}).filter(layer=>layer.floorId===floorId).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id));}
 
+// Keeps only render order. Element values are resolved from current state so
+// transform previews do not invalidate the index or retain stale objects.
+export class SceneRenderIndex {
+  constructor(){this.layers=new Map();this.rebuilds=0;}
+  clear(){this.layers.clear();}
+  reset(){this.clear();}
+  invalidateLayer(id){if(id)this.layers.delete(id);}
+  elementChanged(previous,next){
+    if(!previous||!next||previous.layerId!==next.layerId||previous.floorId!==next.floorId||previous.zOrder!==next.zOrder){
+      this.invalidateLayer(previous?.layerId);this.invalidateLayer(next?.layerId);
+    }
+  }
+  forLayer(state,layerId){
+    let ids=this.layers.get(layerId);
+    if(!ids){ids=Object.values(state?.elements||{}).filter(element=>element.layerId===layerId).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id)).map(element=>element.id);this.layers.set(layerId,ids);this.rebuilds++;}
+    return ids;
+  }
+}
+
 export function compositeFloors(state,currentFloorId){
   const floors=orderedFloors(state);if(!floors.length)return[];let index=floors.findIndex(f=>f.id===currentFloorId);if(index<0)index=0;
   if(index===0){const out=[{floor:floors[0],alpha:floors[0].opacity}];if(floors[1]){const alpha=floors[1].opacity*floors[1].opacityWhenViewedFromBelow;if(alpha>0)out.push({floor:floors[1],alpha});}return out;}
@@ -17,20 +36,22 @@ function worldPoint(transform,x,y){
   return {x:dx*Math.cos(angle)-dy*Math.sin(angle)+cx,y:dx*Math.sin(angle)+dy*Math.cos(angle)+cy};
 }
 
-export function hitElement(state,floorId,x,y){
-  return elementsAtPoint(state,floorId,x,y)[0]||null;
+export function hitElement(state,floorId,x,y,renderIndex){
+  return elementsAtPoint(state,floorId,x,y,renderIndex)[0]||null;
 }
 
-export function elementsAtPoint(state,floorId,x,y){
-  const layers=new Map(orderedLayers(state,floorId).filter(layer=>layer.kind==='visual').map((layer,index)=>[layer.id,{...layer,index}]));
-  const elements=Object.values(state?.elements||{}).filter(element=>{const layer=layers.get(element.layerId);return element.floorId===floorId&&element.visible&&element.opacity>0&&layer?.visible&&layer.opacity>0;});
-  elements.sort((a,b)=>(layers.get(b.layerId).index-layers.get(a.layerId).index)||(b.zOrder-a.zOrder)||b.id.localeCompare(a.id));
-  return elements.filter(element=>{const p=inversePoint(element.transform,x,y);return p.x>=0&&p.y>=0&&p.x<=element.transform.width&&p.y<=element.transform.height;});
+export function elementsAtPoint(state,floorId,x,y,renderIndex){
+  const result=[],layers=orderedLayers(state,floorId).filter(layer=>layer.kind==='visual'&&layer.visible&&layer.opacity>0);
+  for(let layerIndex=layers.length-1;layerIndex>=0;layerIndex--){
+    const layer=layers[layerIndex],elements=renderIndex?renderIndex.forLayer(state,layer.id):Object.values(state?.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
+    for(let elementIndex=elements.length-1;elementIndex>=0;elementIndex--){const element=renderIndex?state?.elements?.[elements[elementIndex]]:elements[elementIndex];if(!element||element.floorId!==floorId||!element.visible||element.opacity<=0)continue;const p=inversePoint(element.transform,x,y);if(p.x>=0&&p.y>=0&&p.x<=element.transform.width&&p.y<=element.transform.height)result.push(element);}
+  }
+  return result;
 }
 
-export function elementHandleAt(element,x,y,scale){
+export function elementHandleAt(element,x,y,scale,allowRotation=true){
   if(!element)return null;const t=element.transform,r=9/scale;
-  const handles=[['nw',0,0],['n',t.width/2,0],['ne',t.width,0],['e',t.width,t.height/2],['se',t.width,t.height],['s',t.width/2,t.height],['sw',0,t.height],['w',0,t.height/2],['rotate',t.width/2,-28/scale]];
+  const handles=[['nw',0,0],['n',t.width/2,0],['ne',t.width,0],['e',t.width,t.height/2],['se',t.width,t.height],['s',t.width/2,t.height],['sw',0,t.height],['w',0,t.height/2]];if(allowRotation)handles.push(['rotate',t.width/2,-28/scale]);
   for(const [name,hx,hy]of handles){const p=worldPoint(t,hx,hy);if(Math.hypot(x-p.x,y-p.y)<=r)return name;}return null;
 }
 
@@ -52,40 +73,50 @@ function rectIntersectsPolygon(left,top,right,bottom,points){
   for(const [ax,ay]of axes){let pmin=Infinity,pmax=-Infinity;for(const p of points){const value=p.x*ax+p.y*ay;pmin=Math.min(pmin,value);pmax=Math.max(pmax,value);}const values=[left*ax+top*ay,right*ax+top*ay,right*ax+bottom*ay,left*ax+bottom*ay],rmin=Math.min(...values),rmax=Math.max(...values);if(pmax<rmin||rmax<pmin)return false;}return true;
 }
 
+export function elementIntersectsView(element,view){const t=element?.transform;if(!t||!view)return false;return rectIntersectsPolygon(0,0,t.width,t.height,viewportPolygon(t,view));}
+
+const tilePresenceCache=new WeakMap();
+export function tileAvailable(asset,z,x,y,nx){
+  if(!asset?.tilePresence)return true;let levels=tilePresenceCache.get(asset);if(!levels){levels=asset.tilePresence.split('.').map(encoded=>{const raw=atob(encoded),bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);return bytes;});tilePresenceCache.set(asset,levels);}const index=y*nx+x,bytes=levels[z];return !!bytes&&(bytes[index>>3]&(1<<(index&7)))!==0;
+}
+
 function drawTiled(ctx,element,asset,view,camera,dpr,requestImage){
   const t=element.transform,polygon=viewportPolygon(t,view),local=polygonBounds(polygon),sx=t.width/asset.width,sy=t.height/asset.height,screenScale=camera.scale*dpr*Math.max(sx,sy);
   const z=Math.max(0,Math.min(asset.levels-1,Math.floor(Math.log2(1/Math.max(screenScale,.000001))))),unit=512*2**z,nx=Math.ceil(asset.width/unit),ny=Math.ceil(asset.height/unit),tileW=unit*sx,tileH=unit*sy;
   const x0=Math.max(0,Math.floor(local.left/tileW)),y0=Math.max(0,Math.floor(local.top/tileH)),x1=Math.min(nx-1,Math.floor(local.right/tileW)),y1=Math.min(ny-1,Math.floor(local.bottom/tileH));
-  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(!rectIntersectsPolygon(left,top,right,bottom,polygon))continue;visible.add(`${x}:${y}`);const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);}
+  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(!rectIntersectsPolygon(left,top,right,bottom,polygon))continue;visible.add(`${x}:${y}`);if(!tileAvailable(asset,z,x,y,nx))continue;const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);}
   const prefetch=new Set();for(const key of visible){const [x,y]=key.split(':').map(Number);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const px=x+dx,py=y+dy,next=`${px}:${py}`;if(px>=0&&py>=0&&px<nx&&py<ny&&!visible.has(next))prefetch.add(next);}}
-  for(const key of prefetch){const [x,y]=key.split(':').map(Number);requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
+  for(const key of prefetch){const [x,y]=key.split(':').map(Number);if(tileAvailable(asset,z,x,y,nx))requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
 }
 
 function drawElement(ctx,element,asset,view,camera,dpr,requestImage){
-  const t=element.transform;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
-  if(asset?.renderMode==='tiled'||(asset?.kind==='map'&&asset.levels>0&&!asset.renderMode))drawTiled(ctx,element,asset,view,camera,dpr,requestImage);
-  else if(asset){const edge=Math.max(t.width,t.height)*camera.scale*dpr,path=asset.kind==='token'?'token.png':'image.png',bitmap=requestImage(`${asset.id}/${path}`,edge);if(bitmap)ctx.drawImage(bitmap,0,0,t.width,t.height);else{ctx.fillStyle='#33413d';ctx.fillRect(0,0,t.width,t.height);}}
+  if(!elementIntersectsView(element,view))return;const t=element.transform;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
+  if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage);
+  else if(asset){const edge=Math.max(t.width,t.height)*camera.scale*dpr,bitmap=requestImage(`${asset.id}/image.png`,edge);if(bitmap)ctx.drawImage(bitmap,0,0,t.width,t.height);else{ctx.fillStyle='#33413d';ctx.fillRect(0,0,t.width,t.height);}}
   else{ctx.fillStyle='#422';ctx.fillRect(0,0,t.width,t.height);}ctx.restore();
 }
 
-function drawVisualLayer({ctx,state,layer,floorAlpha,view,camera,dpr,requestImage}){
-  if(!layer.visible||layer.opacity<=0)return;const elements=Object.values(state.elements||{}).filter(element=>element.layerId===layer.id&&element.visible&&element.opacity>0).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
-  for(const element of elements){ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage);}
+function drawVisualLayer({ctx,state,layer,floorAlpha,view,camera,dpr,requestImage,renderIndex}){
+  if(!layer.visible||layer.opacity<=0)return;const elements=renderIndex?renderIndex.forLayer(state,layer.id):Object.values(state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
+  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage);}
 }
 
-function drawSelection(ctx,element,camera){
+function drawSelection(ctx,element,camera,showRotation){
   if(!element)return;const t=element.transform,size=7/camera.scale,points=[[0,0],[t.width/2,0],[t.width,0],[t.width,t.height/2],[t.width,t.height],[t.width/2,t.height],[0,t.height],[0,t.height/2]];
-  ctx.save();ctx.globalAlpha=1;ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);ctx.strokeStyle='#edf8d5';ctx.lineWidth=2/camera.scale;ctx.strokeRect(0,0,t.width,t.height);ctx.beginPath();ctx.moveTo(t.width/2,0);ctx.lineTo(t.width/2,-28/camera.scale);ctx.stroke();ctx.fillStyle='#edf8d5';for(const [x,y]of [...points,[t.width/2,-28/camera.scale]])ctx.fillRect(x-size/2,y-size/2,size,size);ctx.restore();
+  ctx.save();ctx.globalAlpha=1;ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);ctx.strokeStyle='#edf8d5';ctx.lineWidth=2/camera.scale;ctx.strokeRect(0,0,t.width,t.height);if(showRotation){ctx.beginPath();ctx.moveTo(t.width/2,0);ctx.lineTo(t.width/2,-28/camera.scale);ctx.stroke();}ctx.fillStyle='#edf8d5';const handles=showRotation?[...points,[t.width/2,-28/camera.scale]]:points;for(const [x,y]of handles)ctx.fillRect(x-size/2,y-size/2,size,size);ctx.restore();
 }
 
 export function walkableBounds(state,floorId){return orderedLayers(state,floorId).find(layer=>layer.kind==='walkable')?.walkableBounds||(state?.currentFloorId===floorId?state.movementBounds:null)||null;}
 
-export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,selectedElement,editor,drawTokenLayer}){
-  for(const {floor,alpha}of compositeFloors(state,currentFloorId))for(const layer of orderedLayers(state,floor.id)){
-    if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage});
-    else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
+export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,selectedElement,editor,drawTokenLayer,renderIndex,showRotationHandle=true}){
+  for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
+    if(alpha<=0)continue;
+    for(const layer of orderedLayers(state,floor.id)){
+      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage,renderIndex});
+      else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
+    }
   }
-  ctx.globalAlpha=1;if(editor){const selected=state.elements?.[selectedElement];if(selected?.floorId===currentFloorId)drawSelection(ctx,selected,camera);}
+  ctx.globalAlpha=1;if(editor){const selected=state.elements?.[selectedElement];if(selected?.floorId===currentFloorId)drawSelection(ctx,selected,camera,showRotationHandle);}
 }
 
 export function drawWalkableOverlay(ctx,state,currentFloorId,camera){

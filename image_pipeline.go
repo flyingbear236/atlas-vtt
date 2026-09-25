@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,14 +23,50 @@ import (
 )
 
 const (
-	uploadLimit       int64 = 256 << 20
-	maxMapPixels      int64 = 150_000_000
-	maxMapSide              = 32768
-	maxTokenPixels    int64 = 25_000_000
-	maxTokenSide            = 8192
-	bitmapSceneSide         = 1024
-	bitmapScenePixels int64 = 1_048_576
+	uploadLimit    int64 = 256 << 20
+	maxMapPixels   int64 = 150_000_000
+	maxMapSide           = 32768
+	maxTokenPixels int64 = 25_000_000
+	maxTokenSide         = 8192
+	// A bitmap may consume at most one seventh of the smallest decoded-asset
+	// budget (56 MiB after the token-artwork reserve). Larger rasters use LOD.
+	bitmapSceneDecodedBytes int64 = 8 << 20
+	bitmapSceneMaxSide            = 8192
+	representationVersion         = "raster-v2-png-tile512"
 )
+
+type rasterMetadata struct {
+	Width  int
+	Height int
+}
+
+type representationPlan struct {
+	Mode                  string
+	PixelCount            int64
+	EstimatedDecodedBytes int64
+}
+
+// representationPolicy is the single policy for every raster SceneElement.
+// Compressed size is intentionally absent: decoded memory and dimensions are
+// what determine whether viewport-local LOD is useful.
+func representationPolicy(metadata rasterMetadata) representationPlan {
+	pixels := int64(metadata.Width) * int64(metadata.Height)
+	decoded := pixels * 4
+	mode := renderModeBitmap
+	if decoded > bitmapSceneDecodedBytes || metadata.Width > bitmapSceneMaxSide || metadata.Height > bitmapSceneMaxSide {
+		mode = renderModeTiled
+	}
+	return representationPlan{Mode: mode, PixelCount: pixels, EstimatedDecodedBytes: decoded}
+}
+
+func representationID(sourceID, kind, version, mode string) string {
+	hash := sha256.New()
+	for _, value := range []string{"atlas-representation", sourceID, kind, version, mode} {
+		io.WriteString(hash, value)
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
 
 var errUploadSize = errors.New("Максимальный размер файла: 256 МиБ")
 var errVipsMissing = errors.New("Не найден libvips: выполните scripts/install-vips.ps1 или задайте ATLAS_VIPS")
@@ -56,7 +93,8 @@ func (r contextReader) Read(p []byte) (int, error) {
 // Compressed input goes straight to disk. Neither it nor a complete decoded
 // map is retained by Go. Only a completed pyramid is published under its hash.
 func prepareReader(ctx context.Context, root string, input io.Reader, kind string) (Asset, error) {
-	if kind != "map" && kind != "token" {
+	var ok bool
+	if kind, ok = canonicalAssetKind(kind); !ok {
 		return Asset{}, errors.New("Неизвестный тип изображения")
 	}
 	assets, err := filepath.Abs(filepath.Join(root, "assets"))
@@ -72,9 +110,8 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	}
 	uploadPath := f.Name()
 	defer os.Remove(uploadPath)
-	hash := sha256.New()
-	io.WriteString(hash, kind)
-	n, copyErr := io.Copy(io.MultiWriter(f, hash), io.LimitReader(contextReader{ctx, input}, uploadLimit+1))
+	sourceHash := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(f, sourceHash), io.LimitReader(contextReader{ctx, input}, uploadLimit+1))
 	closeErr := f.Close()
 	if err = validateUploadSize(n); err != nil {
 		return Asset{}, err
@@ -100,21 +137,23 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	if err = validateImageDimensions(kind, cfg.Width, cfg.Height); err != nil {
 		return Asset{}, err
 	}
+	sourceID := hex.EncodeToString(sourceHash.Sum(nil))
 	mimeType := "image/png"
 	filename := "image.png"
 	if format == "jpeg" {
 		mimeType = "image/jpeg"
 		filename = "image.jpg"
 	}
-	renderMode := "bitmap"
-	if kind == "map" && (cfg.Width > bitmapSceneSide || cfg.Height > bitmapSceneSide || int64(cfg.Width)*int64(cfg.Height) > bitmapScenePixels) {
-		renderMode = "tiled"
+	renderMode := renderModeBitmap
+	if kind == assetKindScene {
+		renderMode = representationPolicy(rasterMetadata{Width: cfg.Width, Height: cfg.Height}).Mode
 	}
-	a := Asset{ID: hex.EncodeToString(hash.Sum(nil)), Filename: filename, MimeType: mimeType, Width: cfg.Width, Height: cfg.Height, Size: n, Kind: kind, RenderMode: renderMode, RetentionPolicy: assetReclaimable, CreatedAt: time.Now().Unix()}
+	a := Asset{SourceID: sourceID, RepresentationVersion: representationVersion, Filename: filename, MimeType: mimeType, Width: cfg.Width, Height: cfg.Height, Size: n, Kind: kind, RenderMode: renderMode, RetentionPolicy: assetReclaimable, CreatedAt: time.Now().Unix()}
+	a.ID = representationID(a.SourceID, a.Kind, a.RepresentationVersion, a.RenderMode)
 	dest := filepath.Join(assets, a.ID)
 	if metadata, e := os.ReadFile(filepath.Join(dest, "meta.json")); e == nil {
 		var cached Asset
-		if json.Unmarshal(metadata, &cached) != nil || cached.ID != a.ID || cached.Width != a.Width || cached.Height != a.Height || cached.Kind != a.Kind {
+		if json.Unmarshal(metadata, &cached) != nil || cached.ID != a.ID || cached.SourceID != a.SourceID || cached.RepresentationVersion != a.RepresentationVersion || cached.Width != a.Width || cached.Height != a.Height || cached.Kind != a.Kind || cached.RenderMode != a.RenderMode {
 			return a, errors.New("Повреждены метаданные ассета")
 		}
 		if cached.RetentionPolicy == "" {
@@ -128,13 +167,6 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 		}
 		if cached.Size == 0 {
 			cached.Size = n
-		}
-		if cached.RenderMode == "" {
-			if cached.Kind == "map" && cached.Levels > 0 {
-				cached.RenderMode = "tiled"
-			} else {
-				cached.RenderMode = "bitmap"
-			}
 		}
 		if err = ctx.Err(); err != nil {
 			return a, err
@@ -158,23 +190,7 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	if a.RenderMode == "tiled" {
-		prefix := filepath.Join(stage, "pyramid")
-		err = runVips(ctx, tool, stage, "dzsave", original+"[access=sequential,fail-on=error]", prefix,
-			"--tile-size=512", "--overlap=0", "--depth=onetile", "--suffix=.png[compression=6]", "--keep=none", "--skip-blanks=-1")
-		if err == nil {
-			a.Levels, err = flattenPyramid(stage, cfg.Width, cfg.Height)
-		}
-	} else if kind == "token" {
-		w, h := cfg.Width, cfg.Height
-		for w > 512 || h > 512 {
-			w = (w + 1) / 2
-			h = (h + 1) / 2
-		}
-		err = runVips(ctx, tool, stage, "thumbnail", original, filepath.Join(stage, "token.png")+"[compression=6,keep=none]", strconv.Itoa(w), "--height="+strconv.Itoa(h), "--size=down", "--no-rotate", "--fail-on=error")
-	} else {
-		err = runVips(ctx, tool, stage, "thumbnail", original, filepath.Join(stage, "image.png")+"[compression=6,keep=none]", strconv.Itoa(cfg.Width), "--height="+strconv.Itoa(cfg.Height), "--size=down", "--no-rotate", "--fail-on=error")
-	}
+	err = prepareRepresentationFiles(ctx, tool, stage, original, &a)
 	if err != nil {
 		return a, err
 	}
@@ -191,6 +207,40 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	return a, nil
 }
 
+func prepareRepresentationFiles(ctx context.Context, tool, stage, original string, asset *Asset) error {
+	return prepareRepresentationFilesWithOptions(ctx, tool, stage, original, asset, false)
+}
+
+func prepareRepresentationFilesWithOptions(ctx context.Context, tool, stage, original string, asset *Asset, sparse bool) error {
+	if asset.RenderMode == renderModeTiled {
+		prefix := filepath.Join(stage, "pyramid")
+		skipBlanks := "-1"
+		if sparse {
+			skipBlanks = "0"
+		}
+		args := []string{"dzsave", original + "[access=sequential,fail-on=error]", prefix,
+			"--tile-size=512", "--overlap=0", "--depth=onetile", "--suffix=.png[compression=6]", "--keep=none", "--skip-blanks=" + skipBlanks}
+		if sparse {
+			args = append(args, "--background", "0 0 0 0")
+		}
+		err := runVips(ctx, tool, stage, args...)
+		if err != nil {
+			return err
+		}
+		asset.Levels, asset.TilePresence, err = flattenPyramidFiles(stage, asset.Width, asset.Height, sparse)
+		return err
+	}
+	if asset.Kind == assetKindToken {
+		w, h := asset.Width, asset.Height
+		for w > 512 || h > 512 {
+			w = (w + 1) / 2
+			h = (h + 1) / 2
+		}
+		return runVips(ctx, tool, stage, "thumbnail", original, filepath.Join(stage, "token.png")+"[compression=6,keep=none]", strconv.Itoa(w), "--height="+strconv.Itoa(h), "--size=down", "--no-rotate", "--fail-on=error")
+	}
+	return runVips(ctx, tool, stage, "thumbnail", original, filepath.Join(stage, "image.png")+"[compression=6,keep=none]", strconv.Itoa(asset.Width), "--height="+strconv.Itoa(asset.Height), "--size=down", "--no-rotate", "--fail-on=error")
+}
+
 func validateUploadSize(size int64) error {
 	if size > uploadLimit {
 		return errUploadSize
@@ -203,11 +253,11 @@ func validateImageDimensions(kind string, width, height int) error {
 		return errors.New("Пустое изображение")
 	}
 	switch kind {
-	case "token":
+	case assetKindToken:
 		if width > maxTokenSide || height > maxTokenSide || int64(width)*int64(height) > maxTokenPixels {
 			return errors.New("Лимит изображения токена: 25 млн пикселей, сторона до 8192 px")
 		}
-	case "map":
+	case assetKindScene, assetKindLegacyMap:
 		if width > maxMapSide || height > maxMapSide || int64(width)*int64(height) > maxMapPixels {
 			return errors.New("Лимит карты: 150 млн пикселей, сторона до 32768 px")
 		}
@@ -285,6 +335,11 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 }
 
 func flattenPyramid(stage string, width, height int) (int, error) {
+	levels, _, err := flattenPyramidFiles(stage, width, height, false)
+	return levels, err
+}
+
+func flattenPyramidFiles(stage string, width, height int, sparse bool) (int, string, error) {
 	levels := 1
 	for w, h := width, height; w > 512 || h > 512; {
 		levels++
@@ -292,35 +347,71 @@ func flattenPyramid(stage string, width, height int) (int, error) {
 		h = (h + 1) / 2
 	}
 	w, h := width, height
+	presence := make([]string, levels)
 	for z := 0; z < levels; z++ {
+		nx, ny := (w+511)/512, (h+511)/512
+		bits := make([]byte, (nx*ny+7)/8)
 		for y := 0; y < h; y += 512 {
 			for x := 0; x < w; x += 512 {
 				from := filepath.Join(stage, "pyramid_files", strconv.Itoa(levels-1-z), fmt.Sprintf("%d_%d.png", x/512, y/512))
 				f, err := os.Open(from)
 				if err != nil {
-					return 0, err
+					if sparse && errors.Is(err, os.ErrNotExist) {
+						continue
+					}
+					return 0, "", err
 				}
 				cfg, _, err := image.DecodeConfig(f)
 				f.Close()
 				if err != nil {
-					return 0, err
+					return 0, "", err
 				}
 				if cfg.Width != min(512, w-x) || cfg.Height != min(512, h-y) {
-					return 0, errors.New("libvips: неверный размер тайла")
+					return 0, "", errors.New("libvips: неверный размер тайла")
 				}
 				if err = os.Rename(from, filepath.Join(stage, fmt.Sprintf("%d_%d_%d.png", z, x/512, y/512))); err != nil {
-					return 0, err
+					return 0, "", err
 				}
+				index := (y/512)*nx + x/512
+				bits[index/8] |= 1 << uint(index%8)
 			}
+		}
+		if sparse {
+			presence[z] = base64.StdEncoding.EncodeToString(bits)
 		}
 		w = (w + 1) / 2
 		h = (h + 1) / 2
 	}
 	if err := os.RemoveAll(filepath.Join(stage, "pyramid_files")); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if err := os.Remove(filepath.Join(stage, "pyramid.dzi")); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return levels, nil
+	if !sparse {
+		return levels, "", nil
+	}
+	return levels, strings.Join(presence, "."), nil
+}
+
+func validTilePresence(asset Asset) bool {
+	if asset.TilePresence == "" {
+		return true
+	}
+	presence := strings.Split(asset.TilePresence, ".")
+	if asset.RenderMode != renderModeTiled || len(presence) != asset.Levels {
+		return false
+	}
+	w, h := asset.Width, asset.Height
+	for z, encoded := range presence {
+		bits, err := base64.StdEncoding.DecodeString(encoded)
+		nx, ny := (w+511)/512, (h+511)/512
+		if err != nil || len(bits) != (nx*ny+7)/8 {
+			return false
+		}
+		if z+1 < asset.Levels {
+			w, h = (w+1)/2, (h+1)/2
+		}
+	}
+	return true
 }
