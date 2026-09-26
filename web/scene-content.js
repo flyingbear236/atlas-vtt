@@ -80,25 +80,46 @@ export function tileAvailable(asset,z,x,y,nx){
   if(!asset?.tilePresence)return true;let levels=tilePresenceCache.get(asset);if(!levels){levels=asset.tilePresence.split('.').map(encoded=>{const raw=atob(encoded),bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);return bytes;});tilePresenceCache.set(asset,levels);}const index=y*nx+x,bytes=levels[z];return !!bytes&&(bytes[index>>3]&(1<<(index&7)))!==0;
 }
 
-function drawTiled(ctx,element,asset,view,camera,dpr,requestImage){
+export function tiledFallbackCandidates(asset,z,x,y){
+  const unit=512*2**z,left=x*unit,top=y*unit,right=Math.min(asset.width,left+unit),bottom=Math.min(asset.height,top+unit),out=[];
+  for(let fallbackZ=z+1;fallbackZ<asset.levels;fallbackZ++){
+    const scale=2**fallbackZ,levelWidth=Math.ceil(asset.width/scale),levelHeight=Math.ceil(asset.height/scale),fallbackX=Math.floor(left/(512*scale)),fallbackY=Math.floor(top/(512*scale)),nx=Math.ceil(levelWidth/512);
+    if(!tileAvailable(asset,fallbackZ,fallbackX,fallbackY,nx))continue;
+    const nativeWidth=Math.min(512,levelWidth-fallbackX*512),nativeHeight=Math.min(512,levelHeight-fallbackY*512);
+    out.push({path:`${asset.id}/${fallbackZ}_${fallbackX}_${fallbackY}.png`,nativeWidth,nativeHeight,cropX:left/scale-fallbackX*512,cropY:top/scale-fallbackY*512,cropWidth:(right-left)/scale,cropHeight:(bottom-top)/scale});
+  }
+  return out;
+}
+
+function drawTiledFallback(ctx,asset,z,x,y,left,top,width,height,peekImage){
+  if(!peekImage)return false;
+  for(const candidate of tiledFallbackCandidates(asset,z,x,y)){
+    const bitmap=peekImage(candidate.path);if(!bitmap)continue;
+    const scaleX=bitmap.width/candidate.nativeWidth,scaleY=bitmap.height/candidate.nativeHeight;
+    ctx.drawImage(bitmap,candidate.cropX*scaleX,candidate.cropY*scaleY,candidate.cropWidth*scaleX,candidate.cropHeight*scaleY,left,top,width,height);return true;
+  }
+  return false;
+}
+
+function drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage){
   const t=element.transform,polygon=viewportPolygon(t,view),local=polygonBounds(polygon),sx=t.width/asset.width,sy=t.height/asset.height,screenScale=camera.scale*dpr*Math.max(sx,sy);
   const z=Math.max(0,Math.min(asset.levels-1,Math.floor(Math.log2(1/Math.max(screenScale,.000001))))),unit=512*2**z,nx=Math.ceil(asset.width/unit),ny=Math.ceil(asset.height/unit),tileW=unit*sx,tileH=unit*sy;
   const x0=Math.max(0,Math.floor(local.left/tileW)),y0=Math.max(0,Math.floor(local.top/tileH)),x1=Math.min(nx-1,Math.floor(local.right/tileW)),y1=Math.min(ny-1,Math.floor(local.bottom/tileH));
-  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(!rectIntersectsPolygon(left,top,right,bottom,polygon))continue;visible.add(`${x}:${y}`);if(!tileAvailable(asset,z,x,y,nx))continue;const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);}
+  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(!rectIntersectsPolygon(left,top,right,bottom,polygon))continue;visible.add(`${x}:${y}`);if(!tileAvailable(asset,z,x,y,nx))continue;const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);else drawTiledFallback(ctx,asset,z,x,y,left,top,right-left,bottom-top,peekImage);}
   const prefetch=new Set();for(const key of visible){const [x,y]=key.split(':').map(Number);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const px=x+dx,py=y+dy,next=`${px}:${py}`;if(px>=0&&py>=0&&px<nx&&py<ny&&!visible.has(next))prefetch.add(next);}}
   for(const key of prefetch){const [x,y]=key.split(':').map(Number);if(tileAvailable(asset,z,x,y,nx))requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
 }
 
-function drawElement(ctx,element,asset,view,camera,dpr,requestImage){
+function drawElement(ctx,element,asset,view,camera,dpr,requestImage,peekImage){
   if(!elementIntersectsView(element,view))return;const t=element.transform;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
-  if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage);
+  if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage);
   else if(asset){const edge=Math.max(t.width,t.height)*camera.scale*dpr,bitmap=requestImage(`${asset.id}/image.png`,edge);if(bitmap)ctx.drawImage(bitmap,0,0,t.width,t.height);else{ctx.fillStyle='#33413d';ctx.fillRect(0,0,t.width,t.height);}}
   else{ctx.fillStyle='#422';ctx.fillRect(0,0,t.width,t.height);}ctx.restore();
 }
 
-function drawVisualLayer({ctx,state,layer,floorAlpha,view,camera,dpr,requestImage,renderIndex}){
+function drawVisualLayer({ctx,state,layer,floorAlpha,view,camera,dpr,requestImage,peekImage,renderIndex}){
   if(!layer.visible||layer.opacity<=0)return;const elements=renderIndex?renderIndex.forLayer(state,layer.id):Object.values(state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
-  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage);}
+  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage,peekImage);}
 }
 
 function drawSelection(ctx,element,camera,showRotation){
@@ -108,11 +129,11 @@ function drawSelection(ctx,element,camera,showRotation){
 
 export function walkableBounds(state,floorId){return orderedLayers(state,floorId).find(layer=>layer.kind==='walkable')?.walkableBounds||(state?.currentFloorId===floorId?state.movementBounds:null)||null;}
 
-export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,selectedElement,editor,drawTokenLayer,renderIndex,showRotationHandle=true}){
+export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,showRotationHandle=true}){
   for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
     if(alpha<=0)continue;
     for(const layer of orderedLayers(state,floor.id)){
-      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage,renderIndex});
+      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex});
       else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
     }
   }

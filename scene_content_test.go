@@ -195,6 +195,19 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 		t.Fatal("scene element was placed into token layer")
 	}
 
+	gmWS.WriteJSON(Command{Type: "elementFixRotation", Client: "fix-rotation-disabled", Seq: 1, SceneID: scene.ID, Element: SceneElement{ID: "lower"}})
+	ack = read(t, gmWS, "ack")
+	json.Unmarshal(ack["error"], &issue)
+	if issue != "Фиксация ротации отключена" {
+		t.Fatalf("disabled fix rotation returned unexpected error: %q", issue)
+	}
+	server.mu.Lock()
+	if len(server.rotationJobs) != 0 {
+		server.mu.Unlock()
+		t.Fatal("disabled fix rotation started a background job")
+	}
+	server.mu.Unlock()
+
 	playerWS := dial(t, host.URL, player)
 	read(t, playerWS, "snapshot")
 	playerWS.WriteJSON(Command{Type: "final", Client: "other-floor", Seq: 1, SceneID: scene.ID, Token: Token{ID: "zz-upper", X: 100, Y: 100}})

@@ -46,13 +46,15 @@ export function resolveImageMemoryBudgetMiB(deviceMemory,override='auto'){
 }
 
 export function planLRUEviction(entries,protectedKeys,projectedBytes,highWatermark,lowRatio=.85){
-  if(projectedBytes<=highWatermark)return {keys:[],remaining:projectedBytes,target:highWatermark};
+  if(projectedBytes<=highWatermark)return {keys:[],degradeKeys:[],remaining:projectedBytes,target:highWatermark};
   const target=Math.floor(highWatermark*lowRatio),candidates=[];
   for(const [key,entry]of entries)if(!protectedKeys.has(key))candidates.push([key,entry]);
   candidates.sort((a,b)=>(a[1].used??0)-(b[1].used??0));
-  const keys=[];let remaining=projectedBytes;
-  for(const [key,entry]of candidates){if(remaining<=target)break;keys.push(key);remaining-=entry.size;}
-  return {keys,remaining,target};
+  const degradeKeys=[],keys=[];let remaining=projectedBytes;
+  // Preserve a cheap decoded version before removing an image completely.
+  for(const [key,entry]of candidates){if(remaining<=target)break;if(!entry.fallback)continue;degradeKeys.push(key);remaining-=entry.size-entry.fallback.size;}
+  for(const [key,entry]of candidates){if(remaining<=target)break;keys.push(key);remaining-=entry.fallback?.size??entry.size;}
+  return {keys,degradeKeys,remaining,target};
 }
 
 // A fixed share of the configured image-memory budget. Pinned artwork is never evicted
