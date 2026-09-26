@@ -83,6 +83,8 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 	}
 	if issue == "" {
 		switch command.Type {
+		case "elementFixRotation":
+			issue = "Фиксация ротации отключена"
 		case "boundsUpdate":
 			if command.Bounds == nil || !validSceneBounds(*command.Bounds) {
 				issue = "Некорректные границы сцены"

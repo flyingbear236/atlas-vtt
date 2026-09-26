@@ -804,7 +804,7 @@ index 0000000..85aabaa
 +})()`
 diff --git a/browser_test.go b/browser_test.go
 new file mode 100644
-index 0000000..274957f
+index 0000000..867ee09
 --- /dev/null
 +++ b/browser_test.go
 @@ -0,0 +1,268 @@
@@ -997,7 +997,7 @@ index 0000000..274957f
 + const uploadResponse=await fetch('/api/upload?session='+encodeURIComponent(creds.session)+'&scene='+encodeURIComponent(sceneId)+'&kind=scene&name=bitmap.png',{method:'POST',headers:{Authorization:'Bearer '+creds.key},body:blob});if(!uploadResponse.ok)throw Error('bitmap upload failed: '+uploadResponse.status);const bitmapAsset=await uploadResponse.json();if(bitmapAsset.kind!=='scene'||bitmapAsset.renderMode!=='bitmap'||!bitmapAsset.sourceId||!bitmapAsset.representationVersion)throw Error('bitmap representation metadata');
 + const tiledCanvas=document.createElement('canvas');tiledCanvas.width=2048;tiledCanvas.height=2048;const tiledContext=tiledCanvas.getContext('2d');for(let y=0;y<8;y++)for(let x=0;x<8;x++){tiledContext.fillStyle='hsl('+((x+y*8)*23%360)+' 45% 35%)';tiledContext.fillRect(x*256,y*256,256,256)}const tiledBlob=await new Promise(resolve=>tiledCanvas.toBlob(resolve,'image/png'));const tiledResponse=await fetch('/api/upload?session='+encodeURIComponent(creds.session)+'&scene='+encodeURIComponent(sceneId)+'&kind=scene&name=tiled.png',{method:'POST',headers:{Authorization:'Bearer '+creds.key},body:tiledBlob});if(!tiledResponse.ok)throw Error('tiled upload failed: '+tiledResponse.status);const tiledAsset=await tiledResponse.json();if(tiledAsset.kind!=='scene'||tiledAsset.renderMode!=='tiled'||tiledAsset.id===bitmapAsset.id||!tiledAsset.sourceId||tiledAsset.representationVersion!==bitmapAsset.representationVersion)throw Error('tiled representation metadata');
 + await wait(()=>document.getElementById('emptyMap').hidden);
-+ await wait(()=>document.querySelectorAll('.tree-element-row').length===2);const rotationRow=document.querySelector('.tree-element-row');rotationRow.click();const allowRotation=document.getElementById('allowElementRotation'),fixRotation=document.getElementById('fixElementRotation');if(allowRotation.hidden)throw Error('base rotation opt-in missing');allowRotation.click();if(!allowRotation.hidden)throw Error('base rotation opt-in not applied');document.getElementById('elementRotation').value='37';document.getElementById('elementProperties').requestSubmit();await wait(()=>!fixRotation.disabled);window.confirm=()=>true;fixRotation.click();await wait(()=>Number(document.getElementById('elementRotation').value)===0&&fixRotation.disabled);if(!sentCommands.some(command=>command.type==='elementFixRotation'))throw Error('fix rotation command missing');
++ await wait(()=>document.querySelectorAll('.tree-element-row').length===2);const rotationRow=document.querySelector('.tree-element-row');rotationRow.click();const allowRotation=document.getElementById('allowElementRotation');if(document.getElementById('fixElementRotation'))throw Error('fix rotation UI still exposed');if(allowRotation.hidden)throw Error('base rotation opt-in missing');allowRotation.click();if(!allowRotation.hidden)throw Error('base rotation opt-in not applied');document.getElementById('elementRotation').value='37';document.getElementById('elementProperties').requestSubmit();await wait(()=>Number(document.getElementById('elementRotation').value)===37);if(sentCommands.some(command=>command.type==='elementFixRotation'))throw Error('disabled fix rotation command was sent');
 + document.getElementById('add').click();document.getElementById('add').click();await wait(()=>document.querySelectorAll('.token-row').length===2).catch(()=>{throw Error('token create timeout: rows='+document.querySelectorAll('.token-row').length+', connection='+document.getElementById('connection').textContent+', queued='+sentCommands.filter(c=>c.type==='create').length)});
 + document.querySelector('.token-row').click();document.getElementById('tokenName').value='Browser hero';document.getElementById('tokenName').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('properties').requestSubmit();await wait(()=>document.querySelector('.token-row').textContent.includes('Browser hero'));
 + document.getElementById('fit').click();await sleep(2500);document.getElementById('reconnect').click();await sleep(2000);await wait(()=>document.getElementById('connection').textContent.includes('В сети'));await wait(()=>!document.getElementById('workspace').hidden);await wait(()=>document.getElementById('diagnostics').textContent.includes('Загрузка 0'));const representationEntries=performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')),representationPaths=representationEntries.map(r=>new URL(r.name).pathname);if(!representationPaths.some(path=>path.endsWith('/image.png'))||!representationPaths.some(path=>/\/0_\d+_\d+\.png$/.test(path)))throw Error('representations did not use common SceneElement render path');
@@ -1075,6 +1075,278 @@ index 0000000..274957f
 +			t.Fatal("fatal auth retried")
 +		}
 +	}
++}
+diff --git a/derived_pipeline.go b/derived_pipeline.go
+new file mode 100644
+index 0000000..62b9710
+--- /dev/null
++++ b/derived_pipeline.go
+@@ -0,0 +1,266 @@
++package main
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"image"
++	"math"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strconv"
++	"strings"
++	"time"
++)
++
++const (
++	rotationRecipeVersion  = "fix-rotation-v1"
++	derivedJobTimeout      = 5 * time.Minute
++	derivedTempBudgetBytes = int64(4 << 30)
++)
++
++var fixedRotationPreparer = prepareFixedRotation
++
++// AssetProvenance stays server-side when asset metadata is sent to a client.
++// It keeps source assets reachable and gives later derived operations a stable
++// recipe without introducing a database or a second asset store.
++type AssetProvenance struct {
++	Operation     string    `json:"operation"`
++	SourceAssetID string    `json:"sourceAssetId"`
++	RecipeHash    string    `json:"recipeHash"`
++	RecipeVersion string    `json:"recipeVersion"`
++	Transform     Transform `json:"transform"`
++	PixelDensity  float64   `json:"pixelDensity"`
++}
++
++type rotationPlan struct {
++	PixelDensity       float64
++	ScaledWidth        int
++	ScaledHeight       int
++	OutputWidth        int
++	OutputHeight       int
++	WorldX             float64
++	WorldY             float64
++	WorldWidth         float64
++	WorldHeight        float64
++	EstimatedTempBytes int64
++}
++
++type rotationRecipe struct {
++	Version   string       `json:"version"`
++	AssetID   string       `json:"assetId"`
++	Width     int          `json:"width"`
++	Height    int          `json:"height"`
++	Transform Transform    `json:"transform"`
++	Plan      rotationPlan `json:"plan"`
++}
++
++func normalizedRotation(angle float64) float64 {
++	angle = math.Mod(angle, 360)
++	if angle < 0 {
++		angle += 360
++	}
++	if math.Abs(angle-360) < 1e-9 || math.Abs(angle) < 1e-9 {
++		return 0
++	}
++	return angle
++}
++
++func planFixedRotation(asset Asset, transform Transform) (rotationPlan, error) {
++	angle := normalizedRotation(transform.Rotation)
++	if angle == 0 {
++		return rotationPlan{}, errors.New("Ротация уже зафиксирована")
++	}
++	radians := angle * math.Pi / 180
++	c, sine := math.Abs(math.Cos(radians)), math.Abs(math.Sin(radians))
++	worldWidth := c*transform.Width + sine*transform.Height
++	worldHeight := sine*transform.Width + c*transform.Height
++	if !validNumber(worldWidth) || !validNumber(worldHeight) || worldWidth <= 0 || worldHeight <= 0 {
++		return rotationPlan{}, errors.New("Некорректная геометрия результата")
++	}
++	density := math.Min(float64(asset.Width)/transform.Width, float64(asset.Height)/transform.Height)
++	if density <= 0 || math.IsNaN(density) || math.IsInf(density, 0) {
++		return rotationPlan{}, errors.New("Некорректная плотность изображения")
++	}
++	// Never upscale either source axis. Reduce density further when the rotated
++	// bounding box would exceed the ordinary scene-raster limits.
++	density = math.Min(density, float64(maxMapSide-2)/worldWidth)
++	density = math.Min(density, float64(maxMapSide-2)/worldHeight)
++	density = math.Min(density, math.Sqrt(float64(maxMapPixels-4)/worldWidth/worldHeight))
++	if density <= 0 {
++		return rotationPlan{}, errors.New("Результат не помещается в лимиты изображения")
++	}
++	scaledWidth := max(1, int(math.Round(transform.Width*density)))
++	scaledHeight := max(1, int(math.Round(transform.Height*density)))
++	// libvips rotate rounds the enclosing output size to the nearest pixel.
++	outputWidth := max(1, int(math.Round(c*float64(scaledWidth)+sine*float64(scaledHeight))))
++	outputHeight := max(1, int(math.Round(sine*float64(scaledWidth)+c*float64(scaledHeight))))
++	if err := validateImageDimensions(assetKindScene, outputWidth, outputHeight); err != nil {
++		return rotationPlan{}, fmt.Errorf("Результат фиксации: %w", err)
++	}
++	sourcePixels := int64(asset.Width) * int64(asset.Height)
++	scaledPixels := int64(scaledWidth) * int64(scaledHeight)
++	outputPixels := int64(outputWidth) * int64(outputHeight)
++	// Native intermediates plus a conservative allowance for PNG and pyramid
++	// output. This is a disk-work budget, not a claimed hard RSS limit.
++	tempBytes := (sourcePixels+scaledPixels)*4 + outputPixels*10
++	if tempBytes > derivedTempBudgetBytes {
++		return rotationPlan{}, fmt.Errorf("Для фиксации требуется около %.1f ГиБ временного места; лимит %.0f ГиБ", float64(tempBytes)/(1<<30), float64(derivedTempBudgetBytes)/(1<<30))
++	}
++	centerX, centerY := transform.X+transform.Width/2, transform.Y+transform.Height/2
++	return rotationPlan{
++		PixelDensity: density, ScaledWidth: scaledWidth, ScaledHeight: scaledHeight,
++		OutputWidth: outputWidth, OutputHeight: outputHeight,
++		WorldX: centerX - worldWidth/2, WorldY: centerY - worldHeight/2,
++		WorldWidth: worldWidth, WorldHeight: worldHeight, EstimatedTempBytes: tempBytes,
++	}, nil
++}
++
++func fixedRotationRecipe(asset Asset, transform Transform, plan rotationPlan) (rotationRecipe, string) {
++	recipe := rotationRecipe{Version: rotationRecipeVersion, AssetID: asset.ID, Width: asset.Width, Height: asset.Height, Transform: transform, Plan: plan}
++	encoded, _ := json.Marshal(recipe)
++	sum := sha256.Sum256(encoded)
++	return recipe, hex.EncodeToString(sum[:])
++}
++
++func publicAsset(asset Asset) Asset {
++	asset.Provenance = nil
++	return asset
++}
++
++func vipsHeader(ctx context.Context, tool, field, path string) (string, error) {
++	name := "vipsheader"
++	if runtime.GOOS == "windows" {
++		name += ".exe"
++	}
++	header := filepath.Join(filepath.Dir(tool), name)
++	cmd := exec.CommandContext(ctx, header, "-f", field, path)
++	configureImageProcess(cmd)
++	var output limitedOutput
++	cmd.Stdout, cmd.Stderr = &output, &output
++	if err := cmd.Run(); err != nil {
++		return "", fmt.Errorf("vipsheader: %w: %s", err, strings.TrimSpace(output.String()))
++	}
++	return strings.TrimSpace(output.String()), nil
++}
++
++func ensureRotationAlpha(ctx context.Context, tool, stage, source string) (string, error) {
++	interpretation, err := vipsHeader(ctx, tool, "interpretation", source)
++	if err != nil {
++		return "", err
++	}
++	current := source
++	if strings.EqualFold(interpretation, "cmyk") {
++		current = filepath.Join(stage, "srgb.v")
++		if err = runVips(ctx, tool, stage, "colourspace", source, current, "srgb"); err != nil {
++			return "", err
++		}
++	}
++	bandsText, err := vipsHeader(ctx, tool, "bands", current)
++	if err != nil {
++		return "", err
++	}
++	bands, err := strconv.Atoi(bandsText)
++	if err != nil {
++		return "", errors.New("libvips: неизвестное число каналов")
++	}
++	if bands == 2 || bands == 4 {
++		return current, nil
++	}
++	if bands != 1 && bands != 3 {
++		return "", fmt.Errorf("Неподдерживаемое число каналов: %d", bands)
++	}
++	withAlpha := filepath.Join(stage, "alpha.v")
++	if err = runVips(ctx, tool, stage, "addalpha", current, withAlpha); err != nil {
++		return "", err
++	}
++	return withAlpha, nil
++}
++
++func prepareFixedRotation(ctx context.Context, root string, source Asset, recipe rotationRecipe, recipeHash string) (Asset, error) {
++	mode := representationPolicy(rasterMetadata{Width: recipe.Plan.OutputWidth, Height: recipe.Plan.OutputHeight}).Mode
++	asset := Asset{
++		SourceID: "derived:" + recipeHash, RepresentationVersion: representationVersion,
++		Filename: source.Filename + " — rotation", MimeType: "image/png",
++		Width: recipe.Plan.OutputWidth, Height: recipe.Plan.OutputHeight,
++		Kind: assetKindScene, RenderMode: mode, RetentionPolicy: assetReclaimable, CreatedAt: time.Now().Unix(),
++		Provenance: &AssetProvenance{Operation: "fixRotation", SourceAssetID: source.ID, RecipeHash: recipeHash, RecipeVersion: recipe.Version, Transform: recipe.Transform, PixelDensity: recipe.Plan.PixelDensity},
++	}
++	asset.ID = representationID(asset.SourceID, asset.Kind, asset.RepresentationVersion, asset.RenderMode)
++	assetsRoot, err := filepath.Abs(filepath.Join(root, "assets"))
++	if err != nil {
++		return Asset{}, err
++	}
++	dest := filepath.Join(assetsRoot, asset.ID)
++	if metadata, readErr := os.ReadFile(filepath.Join(dest, "meta.json")); readErr == nil {
++		var cached Asset
++		if json.Unmarshal(metadata, &cached) != nil || cached.ID != asset.ID || cached.Provenance == nil || cached.Provenance.RecipeHash != recipeHash {
++			return Asset{}, errors.New("Повреждены метаданные derived asset")
++		}
++		return cached, nil
++	} else if !errors.Is(readErr, os.ErrNotExist) {
++		return Asset{}, readErr
++	}
++	tool, err := findVips()
++	if err != nil {
++		return Asset{}, err
++	}
++	stage, err := os.MkdirTemp(assetsRoot, ".derived-*")
++	if err != nil {
++		return Asset{}, err
++	}
++	defer os.RemoveAll(stage)
++	ctx, cancel := context.WithTimeout(ctx, derivedJobTimeout)
++	defer cancel()
++	sourcePath := filepath.Join(assetsRoot, source.ID, "original")
++	current, err := ensureRotationAlpha(ctx, tool, stage, sourcePath)
++	if err != nil {
++		return Asset{}, err
++	}
++	if recipe.Plan.ScaledWidth != source.Width || recipe.Plan.ScaledHeight != source.Height {
++		scaled := filepath.Join(stage, "scaled.v")
++		hScale := float64(recipe.Plan.ScaledWidth) / float64(source.Width)
++		vScale := float64(recipe.Plan.ScaledHeight) / float64(source.Height)
++		if err = runVips(ctx, tool, stage, "resize", current, scaled, strconv.FormatFloat(hScale, 'g', 17, 64), "--vscale", strconv.FormatFloat(vScale, 'g', 17, 64)); err != nil {
++			return Asset{}, err
++		}
++		current = scaled
++	}
++	derivedPNG := filepath.Join(stage, "derived.png")
++	angle := normalizedRotation(recipe.Transform.Rotation)
++	if err = runVips(ctx, tool, stage, "rotate", current, derivedPNG+"[compression=6,keep=none]", strconv.FormatFloat(angle, 'g', 17, 64), "--background", "0 0 0 0"); err != nil {
++		return Asset{}, err
++	}
++	f, err := os.Open(derivedPNG)
++	if err != nil {
++		return Asset{}, err
++	}
++	config, _, decodeErr := image.DecodeConfig(f)
++	f.Close()
++	if decodeErr != nil || config.Width != asset.Width || config.Height != asset.Height {
++		return Asset{}, fmt.Errorf("libvips: ожидался результат %dx%d, получен %dx%d", asset.Width, asset.Height, config.Width, config.Height)
++	}
++	if stat, statErr := os.Stat(derivedPNG); statErr == nil {
++		asset.Size = stat.Size()
++	}
++	original := filepath.Join(stage, "original")
++	if err = os.Rename(derivedPNG, original); err != nil {
++		return Asset{}, err
++	}
++	if err = prepareRepresentationFilesWithOptions(ctx, tool, stage, original, &asset, true); err != nil {
++		return Asset{}, err
++	}
++	metadata, _ := json.Marshal(asset)
++	if err = os.WriteFile(filepath.Join(stage, "meta.json"), metadata, 0600); err != nil {
++		return Asset{}, err
++	}
++	if err = os.Rename(stage, dest); err != nil {
++		return Asset{}, fmt.Errorf("Не удалось опубликовать derived asset: %w", err)
++	}
++	return asset, nil
 +}
 diff --git a/go.mod b/go.mod
 new file mode 100644
@@ -4190,10 +4462,10 @@ index 0000000..8183996
 +}
 diff --git a/reliable.go b/reliable.go
 new file mode 100644
-index 0000000..cb6c9f6
+index 0000000..7a9cfc2
 --- /dev/null
 +++ b/reliable.go
-@@ -0,0 +1,674 @@
+@@ -0,0 +1,670 @@
 +package main
 +
 +import (
@@ -4338,10 +4610,6 @@ index 0000000..cb6c9f6
 +}
 +
 +func (s *Server) command(ss *Session, p *peer, c Command) {
-+	if c.Type == "elementFixRotation" {
-+		s.rotationCommand(ss, p, c)
-+		return
-+	}
 +	if c.Type == "sceneCreate" || c.Type == "sceneUpdate" || c.Type == "sceneDelete" {
 +		s.sceneCommand(ss, p, c)
 +		return
@@ -5496,12 +5764,740 @@ index 0000000..3a97a73
 +		t.Fatal(err)
 +	}
 +}
+diff --git a/rotation_jobs.go b/rotation_jobs.go
+new file mode 100644
+index 0000000..757e255
+--- /dev/null
++++ b/rotation_jobs.go
+@@ -0,0 +1,268 @@
++package main
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"os"
++	"path/filepath"
++	"time"
++)
++
++type rotationJob struct {
++	key        string
++	sessionID  string
++	sceneID    string
++	elementID  string
++	memberID   string
++	client     string
++	seq        uint64
++	digest     string
++	recipe     rotationRecipe
++	recipeHash string
++	source     Asset
++	waiters    map[*peer]bool
++}
++
++func rotationJobKey(sessionID, memberID, client string, seq uint64) string {
++	return fmt.Sprintf("%s:%s:%s:%d", sessionID, memberID, client, seq)
++}
++
++func rotationCommandDigest(command Command) string {
++	encoded, _ := json.Marshal(command)
++	sum := sha256.Sum256(encoded)
++	return hex.EncodeToString(sum[:])
++}
++
++func (s *Server) sendRotationJob(job *rotationJob, status, message string) {
++	for waiter := range job.waiters {
++		s.send(waiter, map[string]any{"type": "job", "operation": "elementFixRotation", "status": status, "sceneId": job.sceneID, "elementId": job.elementID, "client": job.client, "seq": job.seq, "message": message})
++	}
++}
++
++func (s *Server) sendRotationAck(job *rotationJob, session *Session, issue string) {
++	for waiter := range job.waiters {
++		s.send(waiter, map[string]any{"type": "ack", "client": job.client, "seq": job.seq, "error": issue, "revision": sceneRevision(session, job.sceneID), "sceneId": job.sceneID})
++	}
++}
++
++func (s *Server) persistRotationReceipt(session *Session, job *rotationJob, unused *Asset, issue string) bool {
++	stream := job.memberID + ":" + job.client
++	previous, previousExists := session.Receipts[stream]
++	oldDirty := s.dirty
++	var oldAssets map[string]Asset
++	if unused != nil && unused.ID != "" {
++		oldAssets = make(map[string]Asset, len(session.Assets))
++		for assetID, existing := range session.Assets {
++			oldAssets[assetID] = existing
++		}
++		session.Assets[unused.ID] = *unused
++		refreshAssetOrphans(session, time.Now())
++	}
++	session.Receipts[stream] = Receipt{Seq: job.seq, Error: issue, Digest: job.digest, Updated: time.Now().Unix()}
++	s.dirty = true
++	if err := s.saveLocked(); err != nil {
++		if oldAssets != nil {
++			session.Assets = oldAssets
++		}
++		if previousExists {
++			session.Receipts[stream] = previous
++		} else {
++			delete(session.Receipts, stream)
++		}
++		s.dirty = oldDirty
++		for waiter := range job.waiters {
++			s.send(waiter, map[string]any{"type": "saveError", "client": job.client, "seq": job.seq, "message": "Не удалось сохранить результат обработки. Команда не подтверждена; будет повторена"})
++		}
++		return false
++	}
++	if pruneReceipts(session, stream) {
++		s.dirty = true
++	}
++	status := "error"
++	if issue == "" {
++		status = "completed"
++	}
++	s.sendRotationJob(job, status, issue)
++	s.sendRotationAck(job, session, issue)
++	return true
++}
++
++func (s *Server) rejectRotationCommand(session *Session, p *peer, command Command, digest, issue string) {
++	job := &rotationJob{sessionID: session.ID, sceneID: command.SceneID, elementID: command.Element.ID, memberID: p.member.ID, client: command.Client, seq: command.Seq, digest: digest, waiters: map[*peer]bool{p: true}}
++	s.persistRotationReceipt(session, job, nil, issue)
++}
++
++func (s *Server) rotationCommand(session *Session, p *peer, command Command) {
++	sceneID := command.SceneID
++	if sceneID == "" {
++		sceneID = p.sceneID
++	}
++	command.SceneID = sceneID
++	stream := p.member.ID + ":" + command.Client
++	if session.Receipts == nil {
++		session.Receipts = map[string]Receipt{}
++	}
++	previous := session.Receipts[stream]
++	if command.Seq == 0 || command.Client == "" || len(command.Client) > 80 {
++		s.send(p, map[string]string{"type": "fatal", "message": "Некорректный поток команд"})
++		return
++	}
++	digest := rotationCommandDigest(command)
++	if command.Seq == previous.Seq {
++		if previous.Digest != digest {
++			s.send(p, map[string]string{"type": "fatal", "message": "Номер команды уже занят другой командой. Откройте стол в новой вкладке"})
++			return
++		}
++		s.send(p, map[string]any{"type": "ack", "client": command.Client, "seq": command.Seq, "error": previous.Error, "revision": sceneRevision(session, sceneID), "sceneId": sceneID})
++		return
++	}
++	if command.Seq < previous.Seq || command.Seq != previous.Seq+1 {
++		s.send(p, map[string]string{"type": "fatal", "message": "Нарушена последовательность команд. Откройте новую вкладку"})
++		return
++	}
++	key := rotationJobKey(session.ID, p.member.ID, command.Client, command.Seq)
++	if pending := s.rotationJobs[key]; pending != nil {
++		if pending.digest != digest {
++			s.send(p, map[string]string{"type": "fatal", "message": "Номер команды уже занят другой командой. Откройте стол в новой вкладке"})
++			return
++		}
++		pending.waiters[p] = true
++		s.send(p, map[string]any{"type": "job", "operation": "elementFixRotation", "status": "processing", "sceneId": sceneID, "elementId": pending.elementID, "client": command.Client, "seq": command.Seq, "message": "Фиксация ротации выполняется"})
++		return
++	}
++	if p.member.Role != "gm" {
++		s.rejectRotationCommand(session, p, command, digest, "Действие доступно ведущему")
++		return
++	}
++	scene := session.Scenes[sceneID]
++	if scene == nil {
++		s.rejectRotationCommand(session, p, command, digest, "Сцена не найдена")
++		return
++	}
++	element, ok := scene.Elements[command.Element.ID]
++	if !ok {
++		s.rejectRotationCommand(session, p, command, digest, "Элемент не найден")
++		return
++	}
++	if normalizedRotation(element.Transform.Rotation) == 0 {
++		s.rejectRotationCommand(session, p, command, digest, "")
++		return
++	}
++	source, ok := session.Assets[element.AssetID]
++	if !ok || !isSceneRasterKind(source.Kind) {
++		s.rejectRotationCommand(session, p, command, digest, "Исходное изображение не найдено")
++		return
++	}
++	plan, err := planFixedRotation(source, element.Transform)
++	if err != nil {
++		s.rejectRotationCommand(session, p, command, digest, err.Error())
++		return
++	}
++	recipe, recipeHash := fixedRotationRecipe(source, element.Transform, plan)
++	select {
++	case s.imageJobs <- struct{}{}:
++	default:
++		s.rejectRotationCommand(session, p, command, digest, "Сервер уже обрабатывает другое изображение")
++		return
++	}
++	job := &rotationJob{key: key, sessionID: session.ID, sceneID: sceneID, elementID: element.ID, memberID: p.member.ID, client: command.Client, seq: command.Seq, digest: digest, recipe: recipe, recipeHash: recipeHash, source: source, waiters: map[*peer]bool{p: true}}
++	s.rotationJobs[key] = job
++	s.sendRotationJob(job, "processing", "Фиксация ротации выполняется")
++	s.jobWG.Add(1)
++	go s.runRotationJob(job)
++}
++
++func (s *Server) runRotationJob(job *rotationJob) {
++	defer s.jobWG.Done()
++	defer func() { <-s.imageJobs }()
++	asset, processErr := fixedRotationPreparer(s.jobContext, s.root, job.source, job.recipe, job.recipeHash)
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	delete(s.rotationJobs, job.key)
++	if s.stopping {
++		return
++	}
++	session := s.sessions[job.sessionID]
++	if session == nil {
++		return
++	}
++	if processErr != nil {
++		s.persistRotationReceipt(session, job, nil, processErr.Error())
++		return
++	}
++	member := session.Members[job.memberID]
++	if member == nil || member.Role != "gm" {
++		s.persistRotationReceipt(session, job, &asset, "Права ведущего изменились во время обработки")
++		return
++	}
++	scene := session.Scenes[job.sceneID]
++	if scene == nil {
++		s.persistRotationReceipt(session, job, &asset, "Сцена удалена во время обработки")
++		return
++	}
++	current, ok := scene.Elements[job.elementID]
++	if !ok {
++		s.persistRotationReceipt(session, job, &asset, "Элемент удалён во время обработки")
++		return
++	}
++	currentSource, ok := session.Assets[current.AssetID]
++	if !ok {
++		s.persistRotationReceipt(session, job, &asset, "Исходное изображение изменилось")
++		return
++	}
++	currentPlan, err := planFixedRotation(currentSource, current.Transform)
++	if err != nil {
++		s.persistRotationReceipt(session, job, &asset, "Transform элемента изменился во время обработки")
++		return
++	}
++	_, currentHash := fixedRotationRecipe(currentSource, current.Transform, currentPlan)
++	if currentHash != job.recipeHash {
++		s.persistRotationReceipt(session, job, &asset, "Элемент изменился во время обработки; результат не применён")
++		return
++	}
++	if _, err = os.Stat(filepath.Join(s.root, "assets", asset.ID, "meta.json")); err != nil {
++		s.persistRotationReceipt(session, job, nil, "Подготовленный asset не опубликован")
++		return
++	}
++	oldRevision, oldDirty := scene.Revision, s.dirty
++	oldElement := current
++	oldAssets := make(map[string]Asset, len(session.Assets))
++	for assetID, existing := range session.Assets {
++		oldAssets[assetID] = existing
++	}
++	stream := job.memberID + ":" + job.client
++	previousReceipt, previousReceiptExists := session.Receipts[stream]
++	session.Assets[asset.ID] = asset
++	current.AssetID = asset.ID
++	current.Transform = Transform{X: job.recipe.Plan.WorldX, Y: job.recipe.Plan.WorldY, Width: job.recipe.Plan.WorldWidth, Height: job.recipe.Plan.WorldHeight}
++	scene.Elements[current.ID] = current
++	refreshAssetOrphans(session, time.Now())
++	scene.Revision++
++	session.Receipts[stream] = Receipt{Seq: job.seq, Digest: job.digest, Updated: time.Now().Unix()}
++	s.dirty = true
++	if err = s.saveLocked(); err != nil {
++		session.Assets = oldAssets
++		scene.Elements[oldElement.ID] = oldElement
++		scene.Revision = oldRevision
++		scene.rebuildRuntime()
++		if previousReceiptExists {
++			session.Receipts[stream] = previousReceipt
++		} else {
++			delete(session.Receipts, stream)
++		}
++		s.dirty = oldDirty
++		for waiter := range job.waiters {
++			s.send(waiter, map[string]any{"type": "saveError", "client": job.client, "seq": job.seq, "message": "Не удалось сохранить результат обработки. Команда не подтверждена; будет повторена"})
++		}
++		return
++	}
++	if pruneReceipts(session, stream) {
++		s.dirty = true
++	}
++	scene.applyElementRuntimeChange(oldElement, true, current, true)
++	s.publishElement(session, scene.ID, oldElement, true, current, true, false)
++	s.sendRotationJob(job, "completed", "Ротация зафиксирована")
++	s.sendRotationAck(job, session, "")
++}
+diff --git a/rotation_jobs_test.go b/rotation_jobs_test.go
+new file mode 100644
+index 0000000..6f32746
+--- /dev/null
++++ b/rotation_jobs_test.go
+@@ -0,0 +1,448 @@
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/base64"
++	"encoding/json"
++	"errors"
++	"image"
++	"image/color"
++	"image/png"
++	"math"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++type rotationFixture struct {
++	server  *Server
++	session *Session
++	scene   *Scene
++	member  *Member
++	peer    *peer
++	element SceneElement
++	source  Asset
++}
++
++func newRotationFixture(t *testing.T, transform Transform) rotationFixture {
++	t.Helper()
++	s := testServer(t, t.TempDir())
++	member := &Member{ID: "gm", Name: "GM", Role: "gm", Secret: "secret"}
++	scene := newScene("scene", "Rotation")
++	scene.Published = true
++	floorID := firstFloorID(scene)
++	layerID := firstLayerID(scene, floorID)
++	source := Asset{ID: "source", SourceID: "source-bytes", RepresentationVersion: representationVersion, Filename: "source.png", MimeType: "image/png", Width: 120, Height: 60, Kind: assetKindScene, RenderMode: renderModeBitmap, RetentionPolicy: assetReclaimable}
++	element := SceneElement{ID: "element", FloorID: floorID, LayerID: layerID, AssetID: source.ID, Name: "Map", Transform: transform, ZOrder: 7, Visible: true, Opacity: .65}
++	scene.Elements[element.ID] = element
++	scene.rebuildRuntime()
++	session := &Session{ID: "campaign", Name: "Campaign", Invite: "invite", Members: map[string]*Member{member.ID: member}, Assets: map[string]Asset{source.ID: source}, Keys: map[string]string{member.Secret: member.ID}, Receipts: map[string]Receipt{}, CampaignRevision: 1, Scenes: map[string]*Scene{scene.ID: scene}}
++	s.sessions[session.ID] = session
++	s.dirty = true
++	if err := s.saveLocked(); err != nil {
++		t.Fatal(err)
++	}
++	p := &peer{member: member, session: session.ID, sceneID: scene.ID, out: make(chan any, 128)}
++	return rotationFixture{s, session, scene, member, p, element, source}
++}
++
++func fakeRotationAsset(t *testing.T, root string, source Asset, recipe rotationRecipe, recipeHash string) (Asset, error) {
++	t.Helper()
++	asset := Asset{
++		ID: representationID("derived:"+recipeHash, assetKindScene, representationVersion, renderModeBitmap), SourceID: "derived:" + recipeHash,
++		RepresentationVersion: representationVersion, Filename: "derived.png", MimeType: "image/png", Width: recipe.Plan.OutputWidth, Height: recipe.Plan.OutputHeight,
++		Kind: assetKindScene, RenderMode: renderModeBitmap, RetentionPolicy: assetReclaimable,
++		Provenance: &AssetProvenance{Operation: "fixRotation", SourceAssetID: source.ID, RecipeHash: recipeHash, RecipeVersion: recipe.Version, Transform: recipe.Transform, PixelDensity: recipe.Plan.PixelDensity},
++	}
++	dir := filepath.Join(root, "assets", asset.ID)
++	if err := os.MkdirAll(dir, 0755); err != nil {
++		return Asset{}, err
++	}
++	data, err := json.Marshal(asset)
++	if err == nil {
++		err = os.WriteFile(filepath.Join(dir, "meta.json"), data, 0600)
++	}
++	return asset, err
++}
++
++func receiveRotationAck(t *testing.T, p *peer) map[string]any {
++	t.Helper()
++	timer := time.NewTimer(3 * time.Second)
++	defer timer.Stop()
++	for {
++		select {
++		case raw := <-p.out:
++			message, ok := raw.(map[string]any)
++			if ok && message["type"] == "ack" {
++				return message
++			}
++		case <-timer.C:
++			t.Fatal("rotation ack timeout")
++		}
++	}
++}
++
++func runRotationCommand(t *testing.T, fixture rotationFixture, p *peer, command Command) {
++	t.Helper()
++	fixture.server.mu.Lock()
++	fixture.server.rotationCommand(fixture.session, p, command)
++	fixture.server.mu.Unlock()
++}
++
++func TestFixedRotationPlanPreservesCenterAndAnisotropicScale(t *testing.T) {
++	asset := Asset{Width: 120, Height: 60}
++	transform := Transform{X: -100, Y: -20, Width: 240, Height: 60, Rotation: 90}
++	plan, err := planFixedRotation(asset, transform)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if plan.PixelDensity != .5 || plan.ScaledWidth != 120 || plan.ScaledHeight != 30 || plan.OutputWidth != 30 || plan.OutputHeight != 120 {
++		t.Fatalf("unexpected raster plan: %#v", plan)
++	}
++	if math.Abs(plan.WorldX-(-10)) > 1e-9 || math.Abs(plan.WorldY-(-110)) > 1e-9 || math.Abs(plan.WorldWidth-60) > 1e-9 || math.Abs(plan.WorldHeight-240) > 1e-9 {
++		t.Fatalf("world footprint changed: %#v", plan)
++	}
++	beforeX, beforeY := transform.X+transform.Width/2, transform.Y+transform.Height/2
++	afterX, afterY := plan.WorldX+plan.WorldWidth/2, plan.WorldY+plan.WorldHeight/2
++	if beforeX != afterX || beforeY != afterY {
++		t.Fatalf("center moved from %v,%v to %v,%v", beforeX, beforeY, afterX, afterY)
++	}
++	transform.Rotation = 37
++	if arbitrary, err := planFixedRotation(asset, transform); err != nil || arbitrary.WorldX >= 0 || arbitrary.WorldY >= 0 || arbitrary.OutputWidth <= 0 || arbitrary.OutputHeight <= 0 {
++		t.Fatalf("arbitrary negative-coordinate rotation: %#v, %v", arbitrary, err)
++	}
++}
++
++func TestFixedRotationPipelinePreservesVisualOrientation(t *testing.T) {
++	root := t.TempDir()
++	input := image.NewNRGBA(image.Rect(0, 0, 120, 60))
++	colors := [4]color.NRGBA{{R: 240, A: 255}, {G: 240, A: 255}, {B: 240, A: 255}, {R: 240, G: 240, A: 255}}
++	for y := 0; y < 60; y++ {
++		for x := 0; x < 120; x++ {
++			input.SetNRGBA(x, y, colors[(y/30)*2+x/60])
++		}
++	}
++	var encoded bytes.Buffer
++	if err := png.Encode(&encoded, input); err != nil {
++		t.Fatal(err)
++	}
++	source, err := prepare(root, encoded.Bytes(), assetKindScene)
++	if err != nil {
++		t.Fatal(err)
++	}
++	transform := Transform{X: -100, Y: -20, Width: 240, Height: 60, Rotation: 90}
++	plan, err := planFixedRotation(source, transform)
++	if err != nil {
++		t.Fatal(err)
++	}
++	recipe, hash := fixedRotationRecipe(source, transform, plan)
++	derived, err := prepareFixedRotation(context.Background(), root, source, recipe, hash)
++	if err != nil {
++		t.Fatal(err)
++	}
++	file, err := os.Open(filepath.Join(root, "assets", derived.ID, "image.png"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	rotated, err := png.Decode(file)
++	file.Close()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if rotated.Bounds().Dx() != 30 || rotated.Bounds().Dy() != 120 {
++		t.Fatalf("rotated bitmap dimensions = %v", rotated.Bounds())
++	}
++	for _, sample := range []struct {
++		x, y int
++		want color.NRGBA
++	}{
++		{5, 15, colors[2]}, {24, 15, colors[0]}, {5, 104, colors[3]}, {24, 104, colors[1]},
++	} {
++		got := color.NRGBAModel.Convert(rotated.At(sample.x, sample.y)).(color.NRGBA)
++		if absByte(got.R, sample.want.R) > 4 || absByte(got.G, sample.want.G) > 4 || absByte(got.B, sample.want.B) > 4 || got.A < 250 {
++			t.Fatalf("visual orientation changed at %d,%d: got %#v want %#v", sample.x, sample.y, got, sample.want)
++		}
++	}
++	if derived.Provenance == nil || publicAsset(derived).Provenance != nil {
++		t.Fatal("derived provenance was not persisted privately")
++	}
++}
++
++func absByte(a, b uint8) int {
++	if a > b {
++		return int(a - b)
++	}
++	return int(b - a)
++}
++
++func TestFixedRotationTiledOutputRecordsTransparentTiles(t *testing.T) {
++	root := t.TempDir()
++	input := image.NewNRGBA(image.Rect(0, 0, 2048, 2048))
++	for y := 992; y < 1056; y++ {
++		for x := 992; x < 1056; x++ {
++			input.SetNRGBA(x, y, color.NRGBA{R: 220, G: 120, B: 40, A: 255})
++		}
++	}
++	var encoded bytes.Buffer
++	if err := png.Encode(&encoded, input); err != nil {
++		t.Fatal(err)
++	}
++	source, err := prepare(root, encoded.Bytes(), assetKindScene)
++	if err != nil {
++		t.Fatal(err)
++	}
++	transform := Transform{X: -300, Y: -200, Width: 2048, Height: 2048, Rotation: 37}
++	plan, err := planFixedRotation(source, transform)
++	if err != nil {
++		t.Fatal(err)
++	}
++	recipe, hash := fixedRotationRecipe(source, transform, plan)
++	derived, err := prepareFixedRotation(context.Background(), root, source, recipe, hash)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if derived.RenderMode != renderModeTiled || derived.TilePresence == "" || !validTilePresence(derived) {
++		t.Fatalf("sparse tiled manifest missing: %#v", derived)
++	}
++	original, err := os.Open(filepath.Join(root, "assets", derived.ID, "original"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	raster, err := png.Decode(original)
++	original.Close()
++	if err != nil {
++		t.Fatal(err)
++	}
++	corner := color.NRGBAModel.Convert(raster.At(0, 0)).(color.NRGBA)
++	center := color.NRGBAModel.Convert(raster.At(raster.Bounds().Dx()/2, raster.Bounds().Dy()/2)).(color.NRGBA)
++	if corner.A != 0 || center.A == 0 {
++		t.Fatalf("derived alpha damaged: corner=%#v center=%#v", corner, center)
++	}
++	w, h := derived.Width, derived.Height
++	missing, present := 0, 0
++	for z, encodedLevel := range strings.Split(derived.TilePresence, ".") {
++		bits, err := base64.StdEncoding.DecodeString(encodedLevel)
++		if err != nil {
++			t.Fatal(err)
++		}
++		nx, ny := (w+511)/512, (h+511)/512
++		for y := 0; y < ny; y++ {
++			for x := 0; x < nx; x++ {
++				index := y*nx + x
++				exists := bits[index/8]&(1<<uint(index%8)) != 0
++				_, statErr := os.Stat(filepath.Join(root, "assets", derived.ID, strings.Join([]string{strconv.Itoa(z), strconv.Itoa(x), strconv.Itoa(y)}, "_")+".png"))
++				if exists {
++					present++
++					if statErr != nil {
++						t.Fatalf("manifest points to missing tile %d/%d/%d: %v", z, x, y, statErr)
++					}
++				} else {
++					missing++
++					if !errors.Is(statErr, os.ErrNotExist) {
++						t.Fatalf("empty tile exists or stat failed %d/%d/%d: %v", z, x, y, statErr)
++					}
++				}
++			}
++		}
++		w, h = (w+1)/2, (h+1)/2
++	}
++	if missing == 0 || present == 0 {
++		t.Fatalf("sparse pyramid did not contain both empty and present tiles: missing=%d present=%d", missing, present)
++	}
++}
++
++func TestRotationReliableCommitRestartAndRetry(t *testing.T) {
++	fixture := newRotationFixture(t, Transform{X: -100, Y: -20, Width: 240, Height: 60, Rotation: 90})
++	originalPreparer := fixedRotationPreparer
++	fixedRotationPreparer = func(ctx context.Context, root string, source Asset, recipe rotationRecipe, hash string) (Asset, error) {
++		return fakeRotationAsset(t, root, source, recipe, hash)
++	}
++	defer func() { fixedRotationPreparer = originalPreparer }()
++	command := Command{Type: "elementFixRotation", Client: "editor", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}}
++	beforeRevision := fixture.scene.Revision
++	runRotationCommand(t, fixture, fixture.peer, command)
++	ack := receiveRotationAck(t, fixture.peer)
++	if issue, _ := ack["error"].(string); issue != "" {
++		t.Fatal(issue)
++	}
++	got := fixture.scene.Elements[fixture.element.ID]
++	if got.Transform.Rotation != 0 || got.AssetID == fixture.source.ID || got.Name != fixture.element.Name || got.Opacity != fixture.element.Opacity || got.ZOrder != fixture.element.ZOrder || got.FloorID != fixture.element.FloorID || got.LayerID != fixture.element.LayerID {
++		t.Fatalf("rotation commit damaged element state: %#v", got)
++	}
++	if fixture.scene.Revision != beforeRevision+1 || fixture.session.Receipts["gm:editor"].Seq != 1 {
++		t.Fatalf("revision/receipt not committed: revision=%d receipt=%#v", fixture.scene.Revision, fixture.session.Receipts["gm:editor"])
++	}
++	derived := fixture.session.Assets[got.AssetID]
++	if derived.Provenance == nil || derived.Provenance.SourceAssetID != fixture.source.ID || fixture.session.Assets[fixture.source.ID].ID == "" {
++		t.Fatalf("derived provenance/source retention missing: %#v", derived)
++	}
++	writes := fixture.server.writes
++	runRotationCommand(t, fixture, fixture.peer, command)
++	if duplicate := receiveRotationAck(t, fixture.peer); duplicate["error"] != "" || fixture.server.writes != writes {
++		t.Fatalf("completed command was not deduplicated: %#v writes=%d/%d", duplicate, fixture.server.writes, writes)
++	}
++
++	restarted := testServer(t, fixture.server.root)
++	restartedSession := restarted.sessions[fixture.session.ID]
++	restartedScene := restartedSession.Scenes[fixture.scene.ID]
++	restartedPeer := &peer{member: restartedSession.Members[fixture.member.ID], session: restartedSession.ID, sceneID: restartedScene.ID, out: make(chan any, 128)}
++	restarted.mu.Lock()
++	restarted.rotationCommand(restartedSession, restartedPeer, command)
++	restarted.mu.Unlock()
++	if retry := receiveRotationAck(t, restartedPeer); retry["error"] != "" {
++		t.Fatalf("restart forgot receipt: %#v", retry)
++	}
++	name := "Renamed after restart"
++	restarted.mu.Lock()
++	restarted.contentCommand(restartedSession, restartedPeer, Command{Type: "elementUpdate", Client: "editor", Seq: 2, SceneID: restartedScene.ID, Element: SceneElement{ID: got.ID}, ElementProperties: ElementProperties{Name: &name}})
++	restarted.mu.Unlock()
++	if next := receiveRotationAck(t, restartedPeer); next["error"] != "" || restartedScene.Elements[got.ID].Name != name {
++		t.Fatalf("next reliable seq rejected after restart: %#v", next)
++	}
++}
++
++func TestRotationJobRevalidatesRelevantStateAndAllowsUnrelatedEdit(t *testing.T) {
++	for _, test := range []struct {
++		name       string
++		mutate     func(*rotationFixture)
++		wantCommit bool
++	}{
++		{"rename", func(f *rotationFixture) {
++			e := f.scene.Elements[f.element.ID]
++			e.Name = "Concurrent rename"
++			f.scene.Elements[e.ID] = e
++			f.scene.Revision++
++		}, true},
++		{"transform", func(f *rotationFixture) {
++			e := f.scene.Elements[f.element.ID]
++			e.Transform.X++
++			f.scene.Elements[e.ID] = e
++			f.scene.Revision++
++		}, false},
++		{"delete", func(f *rotationFixture) { delete(f.scene.Elements, f.element.ID); f.scene.Revision++ }, false},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			fixture := newRotationFixture(t, Transform{X: 10, Y: 20, Width: 120, Height: 60, Rotation: 37})
++			started, release := make(chan struct{}), make(chan struct{})
++			originalPreparer := fixedRotationPreparer
++			fixedRotationPreparer = func(ctx context.Context, root string, source Asset, recipe rotationRecipe, hash string) (Asset, error) {
++				close(started)
++				select {
++				case <-release:
++					return fakeRotationAsset(t, root, source, recipe, hash)
++				case <-ctx.Done():
++					return Asset{}, ctx.Err()
++				}
++			}
++			defer func() { fixedRotationPreparer = originalPreparer }()
++			command := Command{Type: "elementFixRotation", Client: "race", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}}
++			runRotationCommand(t, fixture, fixture.peer, command)
++			<-started
++			fixture.server.mu.Lock()
++			test.mutate(&fixture)
++			fixture.server.mu.Unlock()
++			close(release)
++			ack := receiveRotationAck(t, fixture.peer)
++			issue, _ := ack["error"].(string)
++			if test.wantCommit && issue != "" {
++				t.Fatalf("unrelated edit invalidated job: %s", issue)
++			}
++			if !test.wantCommit && issue == "" {
++				t.Fatal("stale job committed")
++			}
++			if !test.wantCommit {
++				tracked := false
++				for assetID, asset := range fixture.session.Assets {
++					if assetID != fixture.source.ID && asset.Provenance != nil && asset.OrphanSince != nil {
++						tracked = true
++					}
++				}
++				if !tracked {
++					t.Fatal("unused completed result was not tracked as reclaimable")
++				}
++			}
++			if test.name == "rename" {
++				got := fixture.scene.Elements[fixture.element.ID]
++				if got.Name != "Concurrent rename" || got.Transform.Rotation != 0 {
++					t.Fatalf("concurrent rename lost: %#v", got)
++				}
++			}
++		})
++	}
++}
++
++func TestRotationPendingDuplicateAndGracefulShutdown(t *testing.T) {
++	fixture := newRotationFixture(t, Transform{Width: 120, Height: 60, Rotation: 15})
++	started := make(chan struct{})
++	originalPreparer := fixedRotationPreparer
++	fixedRotationPreparer = func(ctx context.Context, _ string, _ Asset, _ rotationRecipe, _ string) (Asset, error) {
++		close(started)
++		<-ctx.Done()
++		return Asset{}, ctx.Err()
++	}
++	defer func() { fixedRotationPreparer = originalPreparer }()
++	command := Command{Type: "elementFixRotation", Client: "shutdown", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}}
++	runRotationCommand(t, fixture, fixture.peer, command)
++	<-started
++	second := &peer{member: fixture.member, session: fixture.session.ID, sceneID: fixture.scene.ID, out: make(chan any, 128)}
++	runRotationCommand(t, fixture, second, command)
++	stopped := make(chan error, 1)
++	go func() { stopped <- fixture.server.stop() }()
++	select {
++	case err := <-stopped:
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-time.After(3 * time.Second):
++		t.Fatal("graceful shutdown did not cancel and join image job")
++	}
++	if fixture.session.Receipts["gm:shutdown"].Seq != 0 || fixture.scene.Elements[fixture.element.ID].AssetID != fixture.source.ID || len(fixture.server.rotationJobs) != 0 {
++		t.Fatal("cancelled job was committed or left pending")
++	}
++	select {
++	case fixture.server.imageJobs <- struct{}{}:
++		<-fixture.server.imageJobs
++	default:
++		t.Fatal("image worker slot leaked")
++	}
++}
++
++func TestRotationFailureAndNoOpLeaveElementUntouched(t *testing.T) {
++	for _, test := range []struct {
++		name      string
++		rotation  float64
++		prepare   func(context.Context, string, Asset, rotationRecipe, string) (Asset, error)
++		wantCalls int
++	}{
++		{"failure", 20, func(context.Context, string, Asset, rotationRecipe, string) (Asset, error) {
++			return Asset{}, errors.New("worker failed")
++		}, 1},
++		{"no-op", 0, func(context.Context, string, Asset, rotationRecipe, string) (Asset, error) {
++			return Asset{}, errors.New("must not run")
++		}, 0},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			fixture := newRotationFixture(t, Transform{Width: 120, Height: 60, Rotation: test.rotation})
++			calls := 0
++			originalPreparer := fixedRotationPreparer
++			fixedRotationPreparer = func(ctx context.Context, root string, source Asset, recipe rotationRecipe, hash string) (Asset, error) {
++				calls++
++				return test.prepare(ctx, root, source, recipe, hash)
++			}
++			defer func() { fixedRotationPreparer = originalPreparer }()
++			revision := fixture.scene.Revision
++			runRotationCommand(t, fixture, fixture.peer, Command{Type: "elementFixRotation", Client: "failure", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}})
++			ack := receiveRotationAck(t, fixture.peer)
++			if calls != test.wantCalls || fixture.scene.Revision != revision || fixture.scene.Elements[fixture.element.ID] != fixture.element || len(fixture.session.Assets) != 1 {
++				t.Fatalf("failed/no-op job changed state: calls=%d ack=%#v element=%#v", calls, ack, fixture.scene.Elements[fixture.element.ID])
++			}
++			if test.rotation != 0 && ack["error"] == "" {
++				t.Fatal("processing failure was acknowledged as success")
++			}
++		})
++	}
++}
 diff --git a/scene_commands.go b/scene_commands.go
 new file mode 100644
-index 0000000..ab25349
+index 0000000..19bbf9e
 --- /dev/null
 +++ b/scene_commands.go
-@@ -0,0 +1,587 @@
+@@ -0,0 +1,589 @@
 +package main
 +
 +import (
@@ -5587,6 +6583,8 @@ index 0000000..ab25349
 +	}
 +	if issue == "" {
 +		switch command.Type {
++		case "elementFixRotation":
++			issue = "Фиксация ротации отключена"
 +		case "boundsUpdate":
 +			if command.Bounds == nil || !validSceneBounds(*command.Bounds) {
 +				issue = "Некорректные границы сцены"
@@ -6706,10 +7704,10 @@ index 0000000..756a88c
 +}
 diff --git a/scene_content_test.go b/scene_content_test.go
 new file mode 100644
-index 0000000..528ad10
+index 0000000..f17f770
 --- /dev/null
 +++ b/scene_content_test.go
-@@ -0,0 +1,721 @@
+@@ -0,0 +1,734 @@
 +package main
 +
 +import (
@@ -6906,6 +7904,19 @@ index 0000000..528ad10
 +	if issue == "" {
 +		t.Fatal("scene element was placed into token layer")
 +	}
++
++	gmWS.WriteJSON(Command{Type: "elementFixRotation", Client: "fix-rotation-disabled", Seq: 1, SceneID: scene.ID, Element: SceneElement{ID: "lower"}})
++	ack = read(t, gmWS, "ack")
++	json.Unmarshal(ack["error"], &issue)
++	if issue != "Фиксация ротации отключена" {
++		t.Fatalf("disabled fix rotation returned unexpected error: %q", issue)
++	}
++	server.mu.Lock()
++	if len(server.rotationJobs) != 0 {
++		server.mu.Unlock()
++		t.Fatal("disabled fix rotation started a background job")
++	}
++	server.mu.Unlock()
 +
 +	playerWS := dial(t, host.URL, player)
 +	read(t, playerWS, "snapshot")
@@ -8834,10 +9845,10 @@ index 0000000..a19e9bb
 +Write-Output "Atlas will use $binary"
 diff --git a/web/app.js b/web/app.js
 new file mode 100644
-index 0000000..944743d
+index 0000000..3f93908
 --- /dev/null
 +++ b/web/app.js
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,441 @@
 +import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
 +import {drawTokens} from './token-renderer.js';
 +import {Outbox, Drafts, CacheWriteBudget} from './reliability.js';
@@ -8845,7 +9856,7 @@ index 0000000..944743d
 +import {SceneRenderIndex,compositeFloors,drawSceneStack,drawTransitionOverlay,drawWalkableOverlay,elementHandleAt,elementsAtPoint,hitElement,inversePoint,orderedFloors,orderedLayers,transitionHit,transformedFromDrag,walkableBounds} from './scene-content.js';
 +import {SceneTreeRuntime} from './scene-tree.js';
 +const $ = id => document.getElementById(id);
-+const CONTENT_COMMANDS=new Set(['move','final','properties','create','delete','boundsUpdate','floorCreate','floorUpdate','floorDelete','layerCreate','layerUpdate','layerDelete','elementCreate','elementUpdate','elementDelete','elementPreview','elementTransform','elementFixRotation','transitionCreate','transitionUpdate','transitionDelete','assetRetention']);
++const CONTENT_COMMANDS=new Set(['move','final','properties','create','delete','boundsUpdate','floorCreate','floorUpdate','floorDelete','layerCreate','layerUpdate','layerDelete','elementCreate','elementUpdate','elementDelete','elementPreview','elementTransform','transitionCreate','transitionUpdate','transitionDelete','assetRetention']);
 +const UPLOAD_LIMIT_BYTES=256*1024*1024;
 +const canvas = $('board'), ctx = canvas.getContext('2d');
 +const saveStatus=document.createElement('span');saveStatus.id='saveStatus';saveStatus.className='status';$('connection').after(saveStatus);
@@ -8858,7 +9869,7 @@ index 0000000..944743d
 +    const make=(key,position)=>new Outbox(sessionStorage,key,cmd=>{
 +      if(!send(cmd))return false;
 +      if(position){clearTimeout(positionCommandTimer);positionCommandTimer=setTimeout(()=>socket?.close(),8000);}
-+      else{clearTimeout(commandTimer);commandTimer=setTimeout(()=>socket?.close(),cmd.type==='elementFixRotation'?330000:8000);}
++      else{clearTimeout(commandTimer);commandTimer=setTimeout(()=>socket?.close(),8000);}
 +      return true;
 +    },updateCommandStatus,(cmd,error)=>{
 +      dirty=true;
@@ -8867,7 +9878,6 @@ index 0000000..944743d
 +        if(cmd.type==='transitionCreate'&&transitionDraft?.phase==='awaitingCreate'){transitionDraft={...transitionDraft,phase:'editingB'};delete transitionDraft.priorIds;fillTransitionProperties();}
 +        if(cmd.type==='transitionUpdate')send({type:'sync'});
 +      }else if(cmd.type==='properties'){drafts.confirm(cmd.token.id,cmd.properties);if(cmd.sceneId===state?.scene?.id)fillProperties();}
-+      else if(cmd.type==='elementFixRotation'){rotationProcessing.delete(cmd.element.id);if(!error)toast('Ротация зафиксирована');if(cmd.sceneId===state?.scene?.id)fillElementProperties();}
 +    });
 +    outbox=make(`atlas-outbox/${credentials.session}/${credentials.key}`,false);
 +    positionOutbox=make(`atlas-position-outbox/${credentials.session}/${credentials.key}`,true);
@@ -8882,7 +9892,7 @@ index 0000000..944743d
 +}
 +let credentials, state, campaign, desiredSceneID='', socket, reconnectTimer, selected, selectedElement, selectedTransition='', transitionDraft=null, transitionCursor=null, currentFloorID='', pendingActiveFocus='', confirmedActiveTokenID='', confirmedFloorID='', pendingActiveSwitch=null, drag, inviteCode, outbox, positionOutbox, commandTimer, positionCommandTimer, saveRetry, positionSaveRetry, outboxNeedsResume=true; const drafts=new Drafts();
 +const uploadControllers=new Set();
-+const rotationOverrides=new Set(),rotationProcessing=new Set();
++const rotationOverrides=new Set();
 +const scenes=new ScenesRuntime({homeAdd:$('homeSceneAdd'),back:$('toScenes'),home:$('campaignHome'),workspace:$('workspace'),footer:$('appFooter'),cards:$('sceneCards'),empty:$('emptyScenes'),campaignName:$('campaignName'),sceneTabs:$('sceneTabs')},{open:openScene,home:goCampaignHome,queue:queueCommand});
 +const sceneTree=new SceneTreeRuntime({tree:$('sceneTree'),addFloor:$('addFloor'),addLayer:$('addLayer'),boundsWidth:$('boundsWidth'),boundsHeight:$('boundsHeight'),boundsSave:$('boundsSave'),addTransition:$('addTransition'),controls:[$('addFloor').parentElement,$('boundsSave').parentElement,$('mapUpload').parentElement]},{queue:queueCommand,selectElement,selectTransition,beginTransition,setFloor,getFloor:()=>currentFloorID});
 +const sceneRenderIndex=new SceneRenderIndex();
@@ -9029,7 +10039,6 @@ index 0000000..944743d
 +  if(msg.type==='fatal'){fatal(msg.message);return;}
 +  if(msg.type==='ack'){const position=msg.client===positionOutbox?.data.client,target=position?positionOutbox:outbox;clearTimeout(position?positionCommandTimer:commandTimer);try{target.ack(msg);}catch(e){fatal('Не удалось сохранить очередь команд в браузере');}return;}
 +  if(msg.type==='saveError'){const position=msg.client===positionOutbox?.data.client,target=position?positionOutbox:outbox;clearTimeout(position?positionCommandTimer:commandTimer);commitStatus(msg.message);if(position){clearTimeout(positionSaveRetry);positionSaveRetry=setTimeout(()=>target.retry(),2000);}else{clearTimeout(saveRetry);saveRetry=setTimeout(()=>target.retry(),2000);}return;}
-+  if(msg.type==='job'&&msg.operation==='elementFixRotation'){if(msg.sceneId===state?.scene?.id){if(msg.status==='processing')rotationProcessing.add(msg.elementId);else rotationProcessing.delete(msg.elementId);if(msg.message)toast(msg.message);fillElementProperties();}return;}
 +  if(msg.type==='storageError'){const wasDegraded=!!storageDegraded;storageDegraded=msg.message||'Сервер временно не может сохранять изменения на диск';updateCommandStatus();if(!wasDegraded)toast(storageDegraded);return;}
 +  if(msg.type==='storageRecovered'){storageDegraded='';updateCommandStatus();return;}
 +  if(msg.type==='presence'&&state){
@@ -9111,7 +10120,7 @@ index 0000000..944743d
 + renderPanels();dirty=true;return true;
 +}
 +function abortUploads(){for(const controller of uploadControllers)controller.abort();uploadControllers.clear();}
-+function clearSceneState(){saveViewportNow();clearTimeout(viewportSaveTimer);viewportSaveTimer=null;viewportSaveDirty=false;abortUploads();select(null);selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;rotationOverrides.clear();rotationProcessing.clear();tokenIndex.clear();sceneRenderIndex.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;dirty=true;}
++function clearSceneState(){saveViewportNow();clearTimeout(viewportSaveTimer);viewportSaveTimer=null;viewportSaveDirty=false;abortUploads();select(null);selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;rotationOverrides.clear();tokenIndex.clear();sceneRenderIndex.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;dirty=true;}
 +function rebuildTokenIndex(){tokenIndex.clear();movingTokens.clear();for(const t of Object.values(state.tokens)){tokenIndex.set(t);const v=visuals.get(t.id);if(v&&(v.x!==t.x||v.y!==t.y))movingTokens.add(t.id);}}
 +function renderMembers(){
 + $('members').replaceChildren();let online=0;
@@ -9151,7 +10160,7 @@ index 0000000..944743d
 +function selectTransition(id){if(id&&state?.you.role!=='gm')return;select(null);selectedElement=null;transitionDraft=null;selectedTransition=id||'';fillProperties();fillElementProperties();fillTransitionProperties();if(state)sceneTree.update(state,selectedElement,selectedTransition);dirty=true;}
 +function setFloor(id,preserveTransition=false){if(!state?.floors?.[id]||state.you.role!=='gm'||id===currentFloorID)return;if(!preserveTransition){select(null);selectElement(null);selectedTransition='';transitionDraft=null;}const region=boundedRegion(currentViewRegion());if(send({type:'view',sceneId:state.scene.id,viewFloorId:id,region}))regionInFlight=true;}
 +function fillProperties(){const source=state?.tokens[selected];const t=source?{...source,...drafts.get(selected)}:null;$('properties').hidden=!t;updateInspectorState();if(!t)return;$('tokenName').value=t.name;$('tokenSize').value=t.size;$('tokenColor').value=/^#[0-9a-f]{6}$/i.test(t.color)?t.color:'#c2d89b';$('tokenHidden').checked=t.hidden;$('tokenPreview').style.background=t.color;$('tokenPreview').textContent=t.name.slice(0,1);$('tokenOwner').replaceChildren();const add=(id,name)=>{const option=document.createElement('option');option.value=id;option.textContent=name;$('tokenOwner').append(option);};add('','Только ведущий');for(const m of Object.values(state.members))if(m.role==='player')add(m.id,m.name);$('tokenOwner').value=t.owner;$('tokenFloor').replaceChildren();for(const floor of orderedFloors(state)){const option=document.createElement('option');option.value=floor.id;option.textContent=floor.name;$('tokenFloor').append(option);}$('tokenFloor').value=t.floorId;for(const el of $('properties').querySelectorAll('input,select'))el.disabled=state.you.role!=='gm';}
-+function fillElementProperties(){const element=state?.you.role==='gm'?state?.elements?.[selectedElement]:null;$('elementProperties').hidden=!element;updateInspectorState();if(!element)return;const t=element.transform;$('elementName').value=element.name;$('elementX').value=t.x;$('elementY').value=t.y;$('elementWidth').value=t.width;$('elementHeight').value=t.height;$('elementRotation').value=t.rotation;$('elementOpacity').value=element.opacity;$('elementVisible').checked=element.visible;$('elementLocked').checked=element.locked;$('elementLayer').replaceChildren();for(const layer of orderedLayers(state,element.floorId).filter(layer=>layer.kind==='visual')){const option=document.createElement('option');option.value=layer.id;option.textContent=layer.name;$('elementLayer').append(option);}$('elementLayer').value=element.layerId;const processing=rotationProcessing.has(element.id),rotationAllowed=elementRotationAllowed(element);$('allowElementRotation').hidden=rotationAllowed;$('fixElementRotation').disabled=processing||Math.abs(((t.rotation%360)+360)%360)<1e-9;$('fixElementRotation').textContent=processing?'Фиксация выполняется…':'Зафиксировать ротацию';for(const control of $('elementProperties').querySelectorAll('input,select,button'))if(control!==$('fixElementRotation'))control.disabled=state.you.role!=='gm'||processing;}
++function fillElementProperties(){const element=state?.you.role==='gm'?state?.elements?.[selectedElement]:null;$('elementProperties').hidden=!element;updateInspectorState();if(!element)return;const t=element.transform;$('elementName').value=element.name;$('elementX').value=t.x;$('elementY').value=t.y;$('elementWidth').value=t.width;$('elementHeight').value=t.height;$('elementRotation').value=t.rotation;$('elementOpacity').value=element.opacity;$('elementVisible').checked=element.visible;$('elementLocked').checked=element.locked;$('elementLayer').replaceChildren();for(const layer of orderedLayers(state,element.floorId).filter(layer=>layer.kind==='visual')){const option=document.createElement('option');option.value=layer.id;option.textContent=layer.name;$('elementLayer').append(option);}$('elementLayer').value=element.layerId;const rotationAllowed=elementRotationAllowed(element);$('allowElementRotation').hidden=rotationAllowed;for(const control of $('elementProperties').querySelectorAll('input,select,button'))control.disabled=state.you.role!=='gm';}
 +function transitionForInspector(){return transitionDraft||state?.transitions?.[selectedTransition]||null;}
 +function fillTransitionProperties(){const transition=state?.you.role==='gm'?transitionForInspector():null;$('transitionProperties').hidden=!transition;updateInspectorState();if(!transition)return;const draft=!!transitionDraft,waiting=draft&&transition.phase==='awaitingCreate',a=transition.endpointA,b=transition.endpointB;$('transitionDirection').value=transition.direction||'bidirectional';for(const [select,endpoint]of [[$('transitionFloorA'),a],[$('transitionFloorB'),b]]){select.replaceChildren();for(const floor of orderedFloors(state)){const option=document.createElement('option');option.value=floor.id;option.textContent=floor.name;select.append(option);}select.value=endpoint?.floorId||currentFloorID;select.disabled=!endpoint||waiting;}$('transitionRadiusA').value=a?.radius??'';$('transitionRadiusB').value=b?.radius??'';$('transitionRadiusA').disabled=!a||waiting;$('transitionRadiusB').disabled=!b||waiting;$('transitionGoA').disabled=!a;$('transitionGoB').disabled=!b;$('transitionDirection').disabled=draft;$('transitionConfirm').hidden=!(draft&&(transition.phase==='editingA'||transition.phase==='editingB'));$('transitionCancel').hidden=!draft||waiting;$('transitionSave').hidden=draft;$('deleteTransition').hidden=draft;}
 +function currentTransitionEndpoint(key){return transitionForInspector()?.[key]||null;}
@@ -9175,7 +10184,6 @@ index 0000000..944743d
 +$('delete').onclick=()=>{if(selected)queueCommand('delete',{token:{id:selected}});select(null);};
 +$('elementProperties').onsubmit=e=>{e.preventDefault();const element=state?.elements?.[selectedElement];if(!element)return;const layerId=$('elementLayer').value,layer=state.layers[layerId],properties={name:$('elementName').value.trim(),floorId:layer.floorId,layerId,visible:$('elementVisible').checked,locked:$('elementLocked').checked,opacity:Number($('elementOpacity').value)},transform={x:Number($('elementX').value),y:Number($('elementY').value),width:Number($('elementWidth').value),height:Number($('elementHeight').value),rotation:Number($('elementRotation').value)};queueCommand('elementUpdate',{element:{id:element.id},elementProperties:properties});queueTransform('elementTransform',{element:{id:element.id,transform}});};
 +$('allowElementRotation').onclick=()=>{if(selectedElement){rotationOverrides.add(selectedElement);fillElementProperties();dirty=true;}};
-+$('fixElementRotation').onclick=()=>{const element=state?.elements?.[selectedElement];if(!element||rotationProcessing.has(element.id)||!confirm('Создать оптимизированное изображение и обнулить ротацию?'))return;if(queueCommand('elementFixRotation',{element:{id:element.id}})){rotationProcessing.add(element.id);fillElementProperties();}};
 +$('deleteElement').onclick=()=>{if(selectedElement&&confirm('Удалить элемент сцены?'))queueCommand('elementDelete',{element:{id:selectedElement}});selectElement(null);};
 +$('duplicateElement').onclick=()=>{const element=state?.elements?.[selectedElement];if(!element)return;queueCommand('elementCreate',{element:{...element,id:'',name:`${element.name} копия`,transform:{...element.transform,x:element.transform.x+30,y:element.transform.y+30}}});};
 +function addToken(asset='',x=camera.x+viewport.w/(2*camera.scale),y=camera.y+viewport.h/(2*camera.scale)){if(!queueCommand('create',{token:{name:asset?'Новый персонаж':'Искатель',floorId:currentFloorID,x,y,size:80,rotation:0,color:'#c2d89b',owner:'',hidden:false,asset}}))toast('Дождитесь подключения к серверу');}
@@ -9195,7 +10203,7 @@ index 0000000..944743d
 +function transitionDefaultRadius(){return Math.max(24,Math.min(250,50/camera.scale));}
 +function draftTransitionHit(x,y){if(!transitionDraft)return null;const key=transitionDraft.phase==='editingA'?'endpointA':transitionDraft.phase==='editingB'?'endpointB':'';const endpoint=transitionDraft[key];if(!endpoint||endpoint.floorId!==currentFloorID)return null;const hit=10/camera.scale,radiusPoint={x:endpoint.position.x+endpoint.radius,y:endpoint.position.y};if(Math.hypot(x-radiusPoint.x,y-radiusPoint.y)<=hit)return {key,part:'radius'};if(Math.hypot(x-endpoint.position.x,y-endpoint.position.y)<=hit)return {key,part:'center'};const offset=endpoint.radius+18/camera.scale,size=14/camera.scale,confirmX=endpoint.position.x+offset,cancelX=confirmX+21/camera.scale,controlY=endpoint.position.y-14/camera.scale;if(Math.abs(x-confirmX)<=size/2&&Math.abs(y-controlY)<=size/2)return {key,part:'confirm'};if(Math.abs(x-cancelX)<=size/2&&Math.abs(y-controlY)<=size/2)return {key,part:'cancel'};return null;}
 +canvas.onwheel=e=>{e.preventDefault();const p=point(e);zoom(Math.exp(-e.deltaY*.001),p.x,p.y);};
-+canvas.onpointerdown=e=>{if(!state)return;canvas.focus();canvas.setPointerCapture(e.pointerId);const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,gm=state.you.role==='gm';if(gm&&transitionDraft&&transitionDraft.phase!=='awaitingCreate'&&e.button===0){if(transitionDraft.phase==='placingA'||transitionDraft.phase==='placingB'){const key=transitionDraft.phase==='placingA'?'endpointA':'endpointB',floorId=pickTransitionFloor(wx,wy),endpoint={floorId,position:clampTransitionPosition(floorId,{x:wx,y:wy}),radius:transitionDefaultRadius()};transitionDraft={...transitionDraft,[key]:endpoint,phase:key==='endpointA'?'editingA':'editingB'};drag={type:'transitionDraftRadius',key,start:{x:wx,y:wy},moved:false};fillTransitionProperties();dirty=true;return;}const hit=draftTransitionHit(wx,wy);if(hit?.part==='confirm'){confirmTransitionEndpoint();return;}if(hit?.part==='cancel'){cancelTransitionDraft();return;}if(hit){drag={type:hit.part==='radius'?'transitionDraftRadius':'transitionDraftCenter',key:hit.key,startEndpoint:cloneTransitionEndpoint(transitionDraft[hit.key]),start:{x:wx,y:wy},moved:false};return;}dirty=true;return;}const transitionHitResult=gm?transitionHit(state,currentFloorID,wx,wy,camera.scale,selectedTransition):null;if(transitionHitResult&&e.button===0&&!e.altKey){if(transitionHitResult.transition.id!==selectedTransition){selectTransition(transitionHitResult.transition.id);}else if(transitionHitResult.part==='center'||transitionHitResult.part==='radius'){drag={type:transitionHitResult.part==='center'?'transitionCenter':'transitionRadius',id:selectedTransition,key:transitionHitResult.key,startEndpoint:cloneTransitionEndpoint(transitionHitResult.transition[transitionHitResult.key]),start:{x:wx,y:wy},moved:false};}dirty=true;return;}const t=tokenIndex.query(wx,wy,wx,wy).reverse().find(t=>(gm?t.floorId===currentFloorID:canMove(t))&&Math.hypot(wx-t.x,wy-t.y)<=t.size/2),chosen=state.elements?.[selectedElement],handle=gm?elementHandleAt(chosen,wx,wy,camera.scale,elementRotationAllowed(chosen)):null,element=gm?(handle?chosen:hitElement(state,currentFloorID,wx,wy,sceneRenderIndex)):null;if(t&&e.button===0&&!e.altKey){if(!gm)activatePlayerToken(t,false);else select(t.id);if(canMove(t))drag={type:'token',id:t.id,floorId:t.floorId,dx:wx-t.x,dy:wy-t.y,x:t.x,y:t.y,moved:false};}else if(element&&e.button===0&&!e.altKey){selectElement(element.id);const layer=state.layers[element.layerId];if(!element.locked&&!layer.locked&&!rotationProcessing.has(element.id))drag={type:'element',id:element.id,mode:handle||'move',start:{...element.transform,pointerX:wx,pointerY:wy},pointerX:wx,pointerY:wy,transform:{...element.transform},moved:false};}else{select(null);selectElement(null);selectedTransition='';fillTransitionProperties();drag={type:'pan',px:p.x,py:p.y,x:camera.x,y:camera.y};}dirty=true;};
++canvas.onpointerdown=e=>{if(!state)return;canvas.focus();canvas.setPointerCapture(e.pointerId);const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,gm=state.you.role==='gm';if(gm&&transitionDraft&&transitionDraft.phase!=='awaitingCreate'&&e.button===0){if(transitionDraft.phase==='placingA'||transitionDraft.phase==='placingB'){const key=transitionDraft.phase==='placingA'?'endpointA':'endpointB',floorId=pickTransitionFloor(wx,wy),endpoint={floorId,position:clampTransitionPosition(floorId,{x:wx,y:wy}),radius:transitionDefaultRadius()};transitionDraft={...transitionDraft,[key]:endpoint,phase:key==='endpointA'?'editingA':'editingB'};drag={type:'transitionDraftRadius',key,start:{x:wx,y:wy},moved:false};fillTransitionProperties();dirty=true;return;}const hit=draftTransitionHit(wx,wy);if(hit?.part==='confirm'){confirmTransitionEndpoint();return;}if(hit?.part==='cancel'){cancelTransitionDraft();return;}if(hit){drag={type:hit.part==='radius'?'transitionDraftRadius':'transitionDraftCenter',key:hit.key,startEndpoint:cloneTransitionEndpoint(transitionDraft[hit.key]),start:{x:wx,y:wy},moved:false};return;}dirty=true;return;}const transitionHitResult=gm?transitionHit(state,currentFloorID,wx,wy,camera.scale,selectedTransition):null;if(transitionHitResult&&e.button===0&&!e.altKey){if(transitionHitResult.transition.id!==selectedTransition){selectTransition(transitionHitResult.transition.id);}else if(transitionHitResult.part==='center'||transitionHitResult.part==='radius'){drag={type:transitionHitResult.part==='center'?'transitionCenter':'transitionRadius',id:selectedTransition,key:transitionHitResult.key,startEndpoint:cloneTransitionEndpoint(transitionHitResult.transition[transitionHitResult.key]),start:{x:wx,y:wy},moved:false};}dirty=true;return;}const t=tokenIndex.query(wx,wy,wx,wy).reverse().find(t=>(gm?t.floorId===currentFloorID:canMove(t))&&Math.hypot(wx-t.x,wy-t.y)<=t.size/2),chosen=state.elements?.[selectedElement],handle=gm?elementHandleAt(chosen,wx,wy,camera.scale,elementRotationAllowed(chosen)):null,element=gm?(handle?chosen:hitElement(state,currentFloorID,wx,wy,sceneRenderIndex)):null;if(t&&e.button===0&&!e.altKey){if(!gm)activatePlayerToken(t,false);else select(t.id);if(canMove(t))drag={type:'token',id:t.id,floorId:t.floorId,dx:wx-t.x,dy:wy-t.y,x:t.x,y:t.y,moved:false};}else if(element&&e.button===0&&!e.altKey){selectElement(element.id);const layer=state.layers[element.layerId];if(!element.locked&&!layer.locked)drag={type:'element',id:element.id,mode:handle||'move',start:{...element.transform,pointerX:wx,pointerY:wy},pointerX:wx,pointerY:wy,transform:{...element.transform},moved:false};}else{select(null);selectElement(null);selectedTransition='';fillTransitionProperties();drag={type:'pan',px:p.x,py:p.y,x:camera.x,y:camera.y};}dirty=true;};
 +canvas.onpointermove=e=>{const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale;if(transitionDraft?.phase==='placingB'){transitionCursor={x:wx,y:wy};dirty=true;}if(!drag)return;if(drag.type==='pan'){camera.x=drag.x-(p.x-drag.px)/camera.scale;camera.y=drag.y-(p.y-drag.py)/camera.scale;scheduleViewportSave();}else if(drag.type==='token'){let x=wx-drag.dx,y=wy-drag.dy;if(state.you.role!=='gm'){const bounds=walkableBounds(state,currentFloorID);if(bounds){x=Math.max(bounds.x,Math.min(bounds.x+bounds.width,x));y=Math.max(bounds.y,Math.min(bounds.y+bounds.height,y));}}if(x!==drag.x||y!==drag.y)drag.moved=true;drag.x=x;drag.y=y;if(drag.moved&&performance.now()-lastMove>50&&!positionOutbox?.hasQueuedBehindInflight()){send({type:'move',token:{id:drag.id,floorId:drag.floorId,x:drag.x,y:drag.y}});lastMove=performance.now();}}else if(drag.type==='element'){const transform=transformedFromDrag(drag.start,drag.mode,wx-drag.pointerX,wy-drag.pointerY,e.shiftKey);drag.transform=transform;drag.moved=true;state.elements[drag.id]={...state.elements[drag.id],transform};if(performance.now()-lastMove>50&&!positionOutbox?.hasQueuedBehindInflight()){send({type:'elementPreview',element:{id:drag.id,transform}});lastMove=performance.now();}}else if(drag.type==='transitionDraftRadius'){const endpoint=transitionDraft?.[drag.key];if(endpoint){const radius=Math.max(8,Math.hypot(wx-endpoint.position.x,wy-endpoint.position.y));if(Math.abs(radius-endpoint.radius)>.01)drag.moved=true;transitionDraft[drag.key]={...endpoint,radius};}}else if(drag.type==='transitionDraftCenter'){const start=drag.startEndpoint,dx=wx-drag.start.x,dy=wy-drag.start.y;transitionDraft[drag.key]={...start,position:clampTransitionPosition(start.floorId,{x:start.position.x+dx,y:start.position.y+dy})};drag.moved=true;}else if(drag.type==='transitionRadius'||drag.type==='transitionCenter'){const transition=state.transitions?.[drag.id],start=drag.startEndpoint;if(transition){const endpoint=drag.type==='transitionRadius'?{...start,radius:Math.max(8,Math.hypot(wx-start.position.x,wy-start.position.y))}:{...start,position:clampTransitionPosition(start.floorId,{x:start.position.x+wx-drag.start.x,y:start.position.y+wy-drag.start.y})};state.transitions[drag.id]={...transition,[drag.key]:endpoint};drag.moved=true;}}dirty=true;};
 +function endDrag(){if(drag?.type==='token'&&drag.moved)queuePosition({token:{id:drag.id,floorId:drag.floorId,x:drag.x,y:drag.y}});if(drag?.type==='element'&&drag.moved)queueTransform('elementTransform',{element:{id:drag.id,transform:drag.transform}});if((drag?.type==='transitionRadius'||drag?.type==='transitionCenter')&&drag.moved){const transition=state?.transitions?.[drag.id];if(transition)queueCommand('transitionUpdate',{transition});}drag=null;fillElementProperties();fillTransitionProperties();dirty=true;}
 +canvas.onpointerup=endDrag;canvas.onpointercancel=endDrag;canvas.onlostpointercapture=endDrag;canvas.oncontextmenu=e=>e.preventDefault();
@@ -9284,7 +10292,7 @@ index 0000000..944743d
 +setInterval(()=>{fps=rendered;rendered=0;trimImages();if(failures.size)dirty=true;$('diagnostics').textContent=`${fps} кадров/с · ${frameTime.toFixed(1)} мс/кадр\nRAM изображений ${((memoryBytes+artwork.bytes)/MIB).toFixed(1)} / ${memoryLimit/MIB} МБ${imageMemorySetting==='auto'?' · Auto':''}\nДиск ${(diskBytes/1048576).toFixed(1)} / 128 МБ${diskEnabled?'':' · недоступен'} · R/W ${diskReads}/${diskWrites} · evict ${diskEvictions} · drop ${diskDrops}\nТайлы ↓ ${(tileBytes/1048576).toFixed(2)} МБ · кэш ${cacheHits}\nDecode ${decodeCount} · ${decodeMs.toFixed(0)} мс суммарно · edge ${decodeEdge}\nWS ↓ ${(bytesIn/1024).toFixed(1)} ↑ ${(bytesOut/1024).toFixed(1)} КБ\nЗагрузка ${activeLoads} · ошибки ${failures.size}`;},1000);
 diff --git a/web/index.html b/web/index.html
 new file mode 100644
-index 0000000..729461c
+index 0000000..474ee6f
 --- /dev/null
 +++ b/web/index.html
 @@ -0,0 +1,12 @@
@@ -9298,7 +10306,7 @@ index 0000000..729461c
 +<section id="campaignHome" class="campaign-home"><div class="campaign-home-head"><div><small>КАМПАНИЯ</small><h1 id="campaignName">Приключение</h1><p>Выберите сцену. Каждый участник может открыть свою.</p></div><div class="campaign-home-head-actions"><button id="leaveCampaign" class="subtle">Выйти из кампании</button><button id="homeSceneAdd" class="primary gm">Создать сцену +</button></div></div><div id="sceneCards" class="scene-cards"></div><div id="emptyScenes" class="empty-scenes" hidden><span>◇</span><h2>Сцен пока нет</h2><p class="gm">Создайте первую сцену.</p><p class="player-only">Ведущий ещё не опубликовал ни одной сцены.</p></div></section>
 +<div id="workspace" class="workspace" hidden><div id="sidebarFrame" class="sidebar-frame"><aside id="sidebar" class="sidebar"><section id="sidebarMap" class="sidebar-section"><div class="panel-heading"><span>СЦЕНА И СЛОИ</span><span class="gm"><button id="addFloor" class="icon" title="Добавить этаж">＋Э</button><button id="addLayer" class="icon" title="Добавить слой">＋С</button></span></div><div class="scene-bounds gm"><label>Ширина<input id="boundsWidth" type="number" min="1" max="1000000"></label><label>Высота<input id="boundsHeight" type="number" min="1" max="1000000"></label><button id="boundsSave" type="button" class="subtle">Размер</button></div><div id="sceneTree" class="scene-tree"></div><div class="scene-layer-actions gm"><label class="file-button">↑ Добавить изображение<input id="mapUpload" type="file" accept="image/png,image/jpeg" hidden></label><button id="addTransition" type="button" class="subtle wide">Создать переход</button></div></section><section id="sidebarObjects" class="sidebar-section" hidden><div class="panel-heading"><span>ТОКЕНЫ</span><button id="add" class="gm icon" title="Добавить токен">+</button></div><div id="tokens" class="token-list"></div><p id="emptyTokens" class="muted">Токены появятся здесь</p><label class="file-button gm">↑ Загрузить изображение токена<input id="tokenUpload" type="file" accept="image/png,image/jpeg" hidden></label></section><section id="sidebarMembers" class="sidebar-section" hidden><div class="panel-heading"><span>УЧАСТНИКИ</span><span id="memberCount"></span></div><div id="members"></div></section><div class="sidebar-bottom"><span class="live-dot"></span> Состояние хранится на сервере</div></aside><div id="sidebarResize" class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Изменить ширину левой панели" tabindex="0"></div><button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Свернуть левую панель" title="Свернуть левую панель">‹</button></div>
 +<main id="stage"><canvas id="board" tabindex="0" aria-label="Игровая карта. Перетаскивание фона перемещает камеру, колесо меняет масштаб."></canvas><div class="scene-label"><span class="live-dot"></span><span id="sceneLabel">Сцена 01</span></div><div id="emptyMap" class="empty-map"><span>◇</span><h2>Здесь начинается приключение</h2><p>Ведущий может загрузить карту.<br>Токены можно размещать уже сейчас.</p></div><div class="canvas-tools"><button id="fit" title="Показать всю карту">⛶</button><span></span><button id="minus" title="Уменьшить">−</button><output id="zoom">100%</output><button id="plus" title="Увеличить">+</button><span></span><button id="grid" class="active" title="Сетка">▦</button></div><div class="canvas-hint">Перетаскивание — камера <i>·</i> Колесо — масштаб <i>·</i> Токен — выбрать и двигать</div><div id="diagnostics" class="diagnostics"></div></main>
-+<aside class="inspector"><div class="panel-heading">СВОЙСТВА ОБЪЕКТА</div><div id="noSelection" class="no-selection"><span>◎</span><p>Выберите токен<br>или элемент сцены</p></div><form id="properties" hidden><div id="tokenPreview" class="token-preview">◆</div><label>Название<input id="tokenName" maxlength="80"></label><div class="two"><label>Размер<input id="tokenSize" type="number" min="16" max="1024"></label><label>Цвет<input id="tokenColor" type="color"></label></div><label>Этаж<select id="tokenFloor"></select></label><label>Управление<select id="tokenOwner"></select></label><label class="check"><input type="checkbox" id="tokenHidden"> Скрыть от игроков</label><button class="primary wide gm" type="submit">Сохранить свойства</button><button id="delete" class="danger wide gm" type="button">Удалить токен</button></form><form id="elementProperties" hidden><label>Название<input id="elementName" maxlength="120"></label><div class="two"><label>X<input id="elementX" type="number" step="any"></label><label>Y<input id="elementY" type="number" step="any"></label></div><div class="two"><label>Ширина<input id="elementWidth" type="number" min="1" step="any"></label><label>Высота<input id="elementHeight" type="number" min="1" step="any"></label></div><label>Поворот<input id="elementRotation" type="number" step="any"></label><label>Прозрачность<input id="elementOpacity" type="range" min="0" max="1" step="0.05"></label><label>Слой<select id="elementLayer"></select></label><label class="check"><input type="checkbox" id="elementVisible"> Видимый</label><label class="check"><input type="checkbox" id="elementLocked"> Заблокирован</label><button class="primary wide gm" type="submit">Сохранить элемент</button><button id="allowElementRotation" class="subtle wide gm" type="button">Разрешить вращение</button><button id="fixElementRotation" class="subtle wide gm" type="button">Зафиксировать ротацию</button><button id="duplicateElement" class="subtle wide gm" type="button">Дублировать</button><button id="deleteElement" class="danger wide gm" type="button">Удалить элемент</button></form><form id="transitionProperties" hidden><h2>Переход</h2><label>Направление<select id="transitionDirection"><option value="bidirectional">A ↔ B</option><option value="AToB">A → B</option><option value="BToA">A ← B</option></select></label><div class="transition-endpoint"><strong>Точка A</strong><label>Этаж<select id="transitionFloorA"></select></label><label>Радиус<input id="transitionRadiusA" type="number" min="8" step="any"></label><button id="transitionGoA" class="subtle wide" type="button">Перейти к A</button></div><div class="transition-endpoint"><strong>Точка B</strong><label>Этаж<select id="transitionFloorB"></select></label><label>Радиус<input id="transitionRadiusB" type="number" min="8" step="any"></label><button id="transitionGoB" class="subtle wide" type="button">Перейти к B</button></div><button id="transitionConfirm" class="primary wide" type="button" hidden>Подтвердить точку</button><button id="transitionCancel" class="subtle wide" type="button" hidden>Отменить создание</button><button id="transitionSave" class="primary wide gm" type="submit">Сохранить переход</button><button id="deleteTransition" class="danger wide gm" type="button">Удалить переход</button></form><div class="inspector-note"><b>Камера только ваша</b><p>Масштаб и положение карты не влияют на остальных участников.</p></div><details><summary>Диагностика</summary><label>RAM-кэш изображений<select id="imageCacheBudget"><option value="auto">Auto</option><option value="64">64 MiB</option><option value="128">128 MiB</option><option value="256">256 MiB</option><option value="512">512 MiB</option></select></label><label class="check"><input id="continuous" type="checkbox"> Постоянная отрисовка</label><button id="reconnect" class="subtle wide">Переподключиться</button><button id="clearCache" class="subtle wide">Очистить кэш изображений</button><button id="stress" class="subtle wide gm">Добавить 100 тестовых токенов</button></details></aside></div><footer id="appFooter" hidden><span>АТЛАС <b>PROTOTYPE 01</b></span><span id="revision">Ревизия 0</span><span>Canvas 2D / тайлы / этажи / слои</span></footer>
++<aside class="inspector"><div class="panel-heading">СВОЙСТВА ОБЪЕКТА</div><div id="noSelection" class="no-selection"><span>◎</span><p>Выберите токен<br>или элемент сцены</p></div><form id="properties" hidden><div id="tokenPreview" class="token-preview">◆</div><label>Название<input id="tokenName" maxlength="80"></label><div class="two"><label>Размер<input id="tokenSize" type="number" min="16" max="1024"></label><label>Цвет<input id="tokenColor" type="color"></label></div><label>Этаж<select id="tokenFloor"></select></label><label>Управление<select id="tokenOwner"></select></label><label class="check"><input type="checkbox" id="tokenHidden"> Скрыть от игроков</label><button class="primary wide gm" type="submit">Сохранить свойства</button><button id="delete" class="danger wide gm" type="button">Удалить токен</button></form><form id="elementProperties" hidden><label>Название<input id="elementName" maxlength="120"></label><div class="two"><label>X<input id="elementX" type="number" step="any"></label><label>Y<input id="elementY" type="number" step="any"></label></div><div class="two"><label>Ширина<input id="elementWidth" type="number" min="1" step="any"></label><label>Высота<input id="elementHeight" type="number" min="1" step="any"></label></div><label>Поворот<input id="elementRotation" type="number" step="any"></label><label>Прозрачность<input id="elementOpacity" type="range" min="0" max="1" step="0.05"></label><label>Слой<select id="elementLayer"></select></label><label class="check"><input type="checkbox" id="elementVisible"> Видимый</label><label class="check"><input type="checkbox" id="elementLocked"> Заблокирован</label><button class="primary wide gm" type="submit">Сохранить элемент</button><button id="allowElementRotation" class="subtle wide gm" type="button">Разрешить вращение</button><button id="duplicateElement" class="subtle wide gm" type="button">Дублировать</button><button id="deleteElement" class="danger wide gm" type="button">Удалить элемент</button></form><form id="transitionProperties" hidden><h2>Переход</h2><label>Направление<select id="transitionDirection"><option value="bidirectional">A ↔ B</option><option value="AToB">A → B</option><option value="BToA">A ← B</option></select></label><div class="transition-endpoint"><strong>Точка A</strong><label>Этаж<select id="transitionFloorA"></select></label><label>Радиус<input id="transitionRadiusA" type="number" min="8" step="any"></label><button id="transitionGoA" class="subtle wide" type="button">Перейти к A</button></div><div class="transition-endpoint"><strong>Точка B</strong><label>Этаж<select id="transitionFloorB"></select></label><label>Радиус<input id="transitionRadiusB" type="number" min="8" step="any"></label><button id="transitionGoB" class="subtle wide" type="button">Перейти к B</button></div><button id="transitionConfirm" class="primary wide" type="button" hidden>Подтвердить точку</button><button id="transitionCancel" class="subtle wide" type="button" hidden>Отменить создание</button><button id="transitionSave" class="primary wide gm" type="submit">Сохранить переход</button><button id="deleteTransition" class="danger wide gm" type="button">Удалить переход</button></form><div class="inspector-note"><b>Камера только ваша</b><p>Масштаб и положение карты не влияют на остальных участников.</p></div><details><summary>Диагностика</summary><label>RAM-кэш изображений<select id="imageCacheBudget"><option value="auto">Auto</option><option value="64">64 MiB</option><option value="128">128 MiB</option><option value="256">256 MiB</option><option value="512">512 MiB</option></select></label><label class="check"><input id="continuous" type="checkbox"> Постоянная отрисовка</label><button id="reconnect" class="subtle wide">Переподключиться</button><button id="clearCache" class="subtle wide">Очистить кэш изображений</button><button id="stress" class="subtle wide gm">Добавить 100 тестовых токенов</button></details></aside></div><footer id="appFooter" hidden><span>АТЛАС <b>PROTOTYPE 01</b></span><span id="revision">Ревизия 0</span><span>Canvas 2D / тайлы / этажи / слои</span></footer>
 +</div><div id="toast" role="status" hidden></div><script type="module" src="/app.js"></script></body></html>
 diff --git a/web/reliability.js b/web/reliability.js
 new file mode 100644
@@ -9999,1003 +11007,1210 @@ index 0000000..350ca2c
 + }
 + ctx.restore();return animating;
 +}
-diff --git a/derived_pipeline.go b/derived_pipeline.go
+diff --git "a/\320\221\320\273\320\270\320\266. \320\270\321\202\320\265\321\200\320\260\321\206\320\270\320\270.txt" "b/\320\221\320\273\320\270\320\266. \320\270\321\202\320\265\321\200\320\260\321\206\320\270\320\270.txt"
 new file mode 100644
-index 0000000..62b9710
+index 0000000..1cb0bea
 --- /dev/null
-+++ b/derived_pipeline.go
-@@ -0,0 +1,266 @@
-+package main
++++ "b/\320\221\320\273\320\270\320\266. \320\270\321\202\320\265\321\200\320\260\321\206\320\270\320\270.txt"	
+@@ -0,0 +1,1200 @@
++﻿Milestone 1 — пункты 1–7, 28–30, 33 и соответствующая часть 34. Floor/Layer model, максимум два этажа, Token Layer, Walkable Layer, opacity в обоих направлениях, Floor-aware player view, правильный render stack, permissions и миграция. Это один связный кусок: здесь одновременно определяется, что такое Floor и как он существует в runtime. Делить его мельче рискованно.
++Milestone 2 — пункт 8 и связанные проверки из 34. Нормальный UI и серверная семантика Transition точка/радиус → точка. Он зависит от уже стабильных Floors, но почти не затрагивает image pipeline, поэтому хорошо изолируется.
++Milestone 3 — пункты 9, 14–16, 25–26 и соответствующие performance/check sections. Унификация raster Asset/SceneElement, lazy loading и единая representationPolicy: когда bitmap, когда tiled LOD. Здесь же провести небольшой эмпирический подбор threshold. После этого исчезает архитектурная зависимость map/object → renderer.
++Milestone 4 — пункты 10–13 и 23 применительно к одному SceneElement. Rotation UI, explicit enable для нижнего слоя, Зафиксировать ротацию, derived raster и sparse transparent tiles. К этому моменту representation pipeline уже стабилен, поэтому operation строится поверх него, а не одновременно с ним.
++Milestone 5 — пункты 17–24, 27 и соответствующие проверки. Запечь слой, BakeRecipe, edit/unbake lifecycle, static subset, recipe hash и GC references. Он использует rasterization pipeline из Milestone 4, но добавляет совершенно другой lifecycle, поэтому совмещать их в одном prompt я бы не стал.
++Цель
++Доработать новую модель Scene/Floor/Layer/SceneElement так, чтобы она стала устойчивой основой для:
++* двухэтажных сцен;
++* Photoshop-подобных визуальных слоёв;
++* управляемого порядка токенов относительно визуальных объектов;
++* ограничений перемещения;
++* lazy loading всех визуальных ресурсов;
++* автоматического выбора между обычным bitmap и tiled LOD;
++* оптимизации повернутых крупных изображений;
++* запекания законченных визуальных слоёв;
++* будущих анимаций, overhead-объектов, interaction/collision/FOV без очередной миграции модели.
++Не реализовывать коллизии, полноценный FOV, свет, интерактивные объекты и combat в рамках этой задачи.
++Сначала изучить уже реализованные Floor, Layer, SceneElement, Scene.Bounds, tiled image pipeline, decoded cache, spatial loading, realtime/revisions и Asset Store. Адаптировать существующую реализацию минимально, не переписывать работающие подсистемы без необходимости.
++________________
 +
-+import (
-+	"context"
-+	"crypto/sha256"
-+	"encoding/hex"
-+	"encoding/json"
-+	"errors"
-+	"fmt"
-+	"image"
-+	"math"
-+	"os"
-+	"os/exec"
-+	"path/filepath"
-+	"runtime"
-+	"strconv"
-+	"strings"
-+	"time"
-+)
 +
-+const (
-+	rotationRecipeVersion  = "fix-rotation-v1"
-+	derivedJobTimeout      = 5 * time.Minute
-+	derivedTempBudgetBytes = int64(4 << 30)
-+)
++1. Целевая модель Floor
++На текущем этапе одна Scene поддерживает максимум два Floor.
++Scene
++    Bounds
 +
-+var fixedRotationPreparer = prepareFixedRotation
 +
-+// AssetProvenance stays server-side when asset metadata is sent to a client.
-+// It keeps source assets reachable and gives later derived operations a stable
-+// recipe without introducing a database or a second asset store.
-+type AssetProvenance struct {
-+	Operation     string    `json:"operation"`
-+	SourceAssetID string    `json:"sourceAssetId"`
-+	RecipeHash    string    `json:"recipeHash"`
-+	RecipeVersion string    `json:"recipeVersion"`
-+	Transform     Transform `json:"transform"`
-+	PixelDensity  float64   `json:"pixelDensity"`
++    Floor 1
++        visual layers
++        Token Layer
++        Walkable Layer
++
++
++    Floor 2      // optional
++        visual layers
++        Token Layer
++        Walkable Layer
++Сервер и UI должны явно запрещать создание третьего Floor.
++Это временное продуктовое ограничение. Формат данных не должен принципиально исключать поддержку большего количества Floors в будущем, но текущие команды и UI должны возвращать понятную ошибку при попытке создать Floor 3.
++Floor должен содержать настройки отображения:
++Floor {
++    ...
++    opacity
++    opacityWhenViewedFromBelow
++}
++Где:
++opacity: 0..1
++— базовая непрозрачность всего содержимого Floor.
++Она применяется:
++* когда пользователь находится на этом Floor;
++* когда этот Floor отображается пользователю, находящемуся этажом выше.
++opacityWhenViewedFromBelow: 0..1
++— дополнительный множитель непрозрачности Floor только тогда, когда Floor отображается пользователю, находящемуся этажом ниже.
++Рекомендуемые значения по умолчанию:
++opacity = 1
++opacityWhenViewedFromBelow = 0
++То есть Floor полностью видим сам по себе, а верхний этаж по умолчанию не просвечивает пользователю снизу.
++В UI лучше использовать термин Непрозрачность, если значение 100% означает полностью видимый Floor.
++Если в интерфейсе используется термин Прозрачность, направление шкалы должно быть обратным и не должно создавать неоднозначности.
++
++
++________________
++
++
++2. Visual Layers
++Основа, Объекты, Overhead остаются обычными visual Layers.
++Каждый visual Layer имеет собственный:
++opacity: 0..1
++Layer opacity комбинируется с Floor opacity и opacity отдельного SceneElement.
++Не складывать проценты арифметически.
++Использовать обычную multiplicative alpha semantics.
++Для visual SceneElement:
++effectiveAlpha =
++    floorEffectiveAlpha
++    × layer.opacity
++    × element.opacity
++Пример:
++Floor opacity = 50%
++Layer opacity = 50%
++Element opacity = 100%
++
++
++effectiveAlpha = 25%
++Фактическое наложение нескольких изображений затем выполняется обычным Canvas alpha compositing.
++Token Layer также получает effective Floor alpha, когда весь Floor показывается с прозрачностью.
++Walkable Layer является editor overlay и не должен изменяться визуальной opacity Floor
++
++
++________________
++
++
++3. Token Layer
++У каждого Floor существует один специальный:
++Layer {
++    kind: tokens
 +}
 +
-+type rotationPlan struct {
-+	PixelDensity       float64
-+	ScaledWidth        int
-+	ScaledHeight       int
-+	OutputWidth        int
-+	OutputHeight       int
-+	WorldX             float64
-+	WorldY             float64
-+	WorldWidth         float64
-+	WorldHeight        float64
-+	EstimatedTempBytes int64
++
++Token Layer участвует в общем render order наравне с visual Layers.
++GM может переместить Token Layer выше или ниже visual Layers.
++Это необходимо для сценариев:
++Layer "Overhead"
++    chandelier.png
++    tree-crown.png
++
++
++Token Layer
++
++
++Layer "Furniture"
++    table.png
++
++
++Layer "Основа"
++    floor.png
++
++
++Тогда токен автоматически рисуется:
++* над мебелью;
++* под люстрой.
++Не выполнять per-pixel анализ alpha overhead-объектов.
++Обычное Canvas compositing уже обеспечивает нужный результат: прозрачные пиксели PNG показывают токен, непрозрачные перекрывают его.
++Token Layer:
++* нельзя запечь;
++* нельзя удалить;
++* нельзя поместить в него SceneElement;
++* нельзя переместить SceneElement из visual Layer в Token Layer;
++* нельзя переместить Token в обычный visual Layer.
++Token при этом остаётся отдельной игровой сущностью, а Token Layer определяет только его место в render stack.
++________________
++
++
++4. Walkable Layer
++У каждого Floor существует специальный функциональный Walkable Layer.
++Он используется только GM при редактировании и определяет допустимое пространство движения Token данного Floor.
++В первой версии не реализовывать произвольные polygon regions.
++Использовать простой axis-aligned rectangular:
++WalkableBounds {
++    x
++    y
++    width
++    height
 +}
 +
-+type rotationRecipe struct {
-+	Version   string       `json:"version"`
-+	AssetID   string       `json:"assetId"`
-+	Width     int          `json:"width"`
-+	Height    int          `json:"height"`
-+	Transform Transform    `json:"transform"`
-+	Plan      rotationPlan `json:"plan"`
++
++По умолчанию:
++WalkableBounds = Scene.Bounds
++
++
++GM может изменить WalkableBounds конкретного Floor.
++Обычный Player не может переместить Token так, чтобы его допустимая позиция оказалась за WalkableBounds.
++Проверка должна выполняться authoritative на сервере, а не только клиентом.
++GM может иметь административную возможность переместить Token за WalkableBounds в режиме редактирования, но UI должен явно показывать, что Token находится вне игровой области.
++Walkable Layer:
++* не является raster;
++* не участвует в обычном player render;
++* не является Asset;
++* не запекается;
++* игроку не показывается;
++* в GM editor отображается как редактируемая рамка/overlay.
++________________
++
++
++5. Scene Bounds и Walkable Bounds
++Не смешивать их.
++Scene.Bounds
++Определяет логическую рабочую область Scene и общую координатную систему.
++Большие Scene.Bounds не должны создавать raster соответствующего размера.
++Scene размером:
++20000 × 20000
++
++
++должна оставаться дешёвой, если в viewport нет тяжёлых ресурсов.
++Floor.WalkableBounds
++Определяет, где Token данного Floor может перемещаться.
++SceneElement может физически находиться за WalkableBounds.
++Данные за Scene.Bounds также не должны автоматически уничтожаться или clamp'иться.
++Если элемент находится за Scene.Bounds, он сохраняется для GM, но обычный Player не должен:
++* видеть его;
++* взаимодействовать с ним;
++* загружать его Asset;
++* учитывать его при FOV/collision в будущем.
++Это позволяет уменьшить Scene.Bounds без потери данных.
++________________
++
++
++6. Отображение двух Floors и directional opacity
++Поддержать только:
++Floor 1
++Floor 2
++В зависимости от текущего Floor пользователя правила compositing различаются.
++Пользователь находится на Floor 1
++Сначала отображается Floor 1.
++Его effective alpha:
++Floor1.opacity
++Floor 2 также может отображаться поверх Floor 1.
++Его effective alpha:
++Floor2.opacity × Floor2.opacityWhenViewedFromBelow
++Таким образом GM может настроить, насколько верхний этаж виден пользователю снизу.
++Пример:
++Floor2.opacity = 100%
++Floor2.opacityWhenViewedFromBelow = 50%
++Пользователь Floor 1 видит Floor 2 с effective alpha 50%.
++Если:
++Floor2.opacity = 50%
++Floor2.opacityWhenViewedFromBelow = 50%
++effective alpha Floor 2 снизу равен 25%.
++Если:
++Floor2.opacityWhenViewedFromBelow = 0
++Floor 2 вообще не рендерится пользователю Floor 1 и его визуальные Assets не должны загружаться ради такого просмотра.
++Пользователь находится на Floor 2
++Сначала отображается Floor 1:
++effective alpha = Floor1.opacity
++Затем поверх него отображается Floor 2:
++effective alpha = Floor2.opacity
++Floor2.opacityWhenViewedFromBelow в этом случае не применяется.
++Таким образом Floor 2 может иметь прозрачные участки либо общую уменьшенную opacity, через которые пользователь сверху видит Floor 1.
++Что входит в Floor composition
++Floor composition включает:
++* все его visible visual Layers;
++* Token Layer;
++* SceneElements этих Layers.
++Walkable Layer в обычный render не входит.
++Поэтому, если Floor 2 показывается пользователю Floor 1 с opacity 50%, его Tokens также видны с соответствующим Floor alpha.
++Не выполнять per-pixel вычисления видимости между Floors.
++Не реализовывать vertical FOV.
++Не вычислять геометрическую высоту.
++Не поддерживать Floor 3.
++________________
++
++
++7. Player Floor
++Player имеет один текущий Floor, определяемый Floor его управляемого Token либо authoritative scene-view state.
++Player не может произвольно переключить текущий Floor через editor UI.
++При этом другой Floor может быть визуально отображён согласно правилам section 6.
++Визуальное отображение другого Floor не означает смену игрового Floor.
++То есть Player, находящийся на Floor 1:
++* может видеть Floor 2, если opacityWhenViewedFromBelow > 0;
++* не получает права перемещать свой Token по Floor 2;
++* не может использовать editor selection Floor 2;
++* не меняет token.floorId;
++* не взаимодействует автоматически с объектами Floor 2 только потому, что они визуально отображаются.
++Аналогично пользователь Floor 2 может видеть Floor 1, но остаётся игровым участником Floor 2.
++Смена token.floorId происходит только через разрешённый Transition либо административное действие GM.
++
++
++
++
++________________
++
++
++8. Transitions
++Упростить Transition первой версии.
++Не использовать длинные rectangles/polygons как пользовательскую модель перехода.
++Использовать:
++Transition {
++    sourceFloorId
++    sourcePosition
++    sourceRadius
++
++
++    destinationFloorId
++    destinationPosition
 +}
 +
-+func normalizedRotation(angle float64) float64 {
-+	angle = math.Mod(angle, 360)
-+	if angle < 0 {
-+		angle += 360
-+	}
-+	if math.Abs(angle-360) < 1e-9 || math.Abs(angle) < 1e-9 {
-+		return 0
-+	}
-+	return angle
++
++То есть фактически:
++небольшая область вокруг точки A
++→
++точка B
++
++
++Это покрывает:
++* лестницу;
++* люк;
++* портал;
++* обычный переход между этажами.
++GM UI:
++1. выбрать Создать переход;
++2. кликнуть source point;
++3. указать небольшой radius либо использовать разумный default;
++4. переключиться/выбрать destination Floor;
++5. кликнуть destination point;
++6. сохранить.
++Не использовать цепочку browser prompt() для координат.
++Не реализовывать сейчас:
++* длинный обрыв;
++* region→region mapping;
++* сохранение относительной позиции вдоль края;
++* polygon source areas.
++Это можно добавить отдельным типом Transition позже.
++________________
++
++
++9. SceneElement и карта
++Не возвращать фундаментальный тип Map.
++Большая карта, стул, пол, дом и декоративный объект являются одним типом визуального экземпляра:
++SceneElement {
++    assetId
++    floorId
++    layerId
++    transform
++    zOrder
++    opacity
++    ...
 +}
 +
-+func planFixedRotation(asset Asset, transform Transform) (rotationPlan, error) {
-+	angle := normalizedRotation(transform.Rotation)
-+	if angle == 0 {
-+		return rotationPlan{}, errors.New("Ротация уже зафиксирована")
-+	}
-+	radians := angle * math.Pi / 180
-+	c, sine := math.Abs(math.Cos(radians)), math.Abs(math.Sin(radians))
-+	worldWidth := c*transform.Width + sine*transform.Height
-+	worldHeight := sine*transform.Width + c*transform.Height
-+	if !validNumber(worldWidth) || !validNumber(worldHeight) || worldWidth <= 0 || worldHeight <= 0 {
-+		return rotationPlan{}, errors.New("Некорректная геометрия результата")
-+	}
-+	density := math.Min(float64(asset.Width)/transform.Width, float64(asset.Height)/transform.Height)
-+	if density <= 0 || math.IsNaN(density) || math.IsInf(density, 0) {
-+		return rotationPlan{}, errors.New("Некорректная плотность изображения")
-+	}
-+	// Never upscale either source axis. Reduce density further when the rotated
-+	// bounding box would exceed the ordinary scene-raster limits.
-+	density = math.Min(density, float64(maxMapSide-2)/worldWidth)
-+	density = math.Min(density, float64(maxMapSide-2)/worldHeight)
-+	density = math.Min(density, math.Sqrt(float64(maxMapPixels-4)/worldWidth/worldHeight))
-+	if density <= 0 {
-+		return rotationPlan{}, errors.New("Результат не помещается в лимиты изображения")
-+	}
-+	scaledWidth := max(1, int(math.Round(transform.Width*density)))
-+	scaledHeight := max(1, int(math.Round(transform.Height*density)))
-+	// libvips rotate rounds the enclosing output size to the nearest pixel.
-+	outputWidth := max(1, int(math.Round(c*float64(scaledWidth)+sine*float64(scaledHeight))))
-+	outputHeight := max(1, int(math.Round(sine*float64(scaledWidth)+c*float64(scaledHeight))))
-+	if err := validateImageDimensions(assetKindScene, outputWidth, outputHeight); err != nil {
-+		return rotationPlan{}, fmt.Errorf("Результат фиксации: %w", err)
-+	}
-+	sourcePixels := int64(asset.Width) * int64(asset.Height)
-+	scaledPixels := int64(scaledWidth) * int64(scaledHeight)
-+	outputPixels := int64(outputWidth) * int64(outputHeight)
-+	// Native intermediates plus a conservative allowance for PNG and pyramid
-+	// output. This is a disk-work budget, not a claimed hard RSS limit.
-+	tempBytes := (sourcePixels+scaledPixels)*4 + outputPixels*10
-+	if tempBytes > derivedTempBudgetBytes {
-+		return rotationPlan{}, fmt.Errorf("Для фиксации требуется около %.1f ГиБ временного места; лимит %.0f ГиБ", float64(tempBytes)/(1<<30), float64(derivedTempBudgetBytes)/(1<<30))
-+	}
-+	centerX, centerY := transform.X+transform.Width/2, transform.Y+transform.Height/2
-+	return rotationPlan{
-+		PixelDensity: density, ScaledWidth: scaledWidth, ScaledHeight: scaledHeight,
-+		OutputWidth: outputWidth, OutputHeight: outputHeight,
-+		WorldX: centerX - worldWidth/2, WorldY: centerY - worldHeight/2,
-+		WorldWidth: worldWidth, WorldHeight: worldHeight, EstimatedTempBytes: tempBytes,
-+	}, nil
++
++Различие между картой и стулом определяется Asset representation и размером ресурса, а не semantic type.
++________________
++
++
++10. Rotation UI
++Backend/data model продолжает поддерживать:
++rotation
++
++
++для любого SceneElement.
++Однако GM interface должен быть консервативным.
++Default
++Если SceneElement находится в самом нижнем visual Layer текущего Floor, rotation handle не показывается.
++Причина: нижний слой обычно используется как основа карты, а произвольная rotation крупных tiled assets усложняет tile selection и может увеличивать overfetch.
++Override
++Для выбранного SceneElement добавить действие:
++Разрешить вращение
++
++
++После этого в текущей editing session появляется rotation handle.
++Не требуется вводить отдельный server-side тип «карта».
++Это UI-policy.
++Если элемент уже имеет rotation != 0, его rotation сохраняется независимо от позиции Layer.
++________________
++
++
++11. Зафиксировать ротацию
++Добавить отдельную оптимизационную операцию для статического raster SceneElement:
++Зафиксировать ротацию
++
++
++Она особенно полезна для крупных tiled assets.
++Операция выполняется только явно по команде GM.
++Никогда не запускать дорогое raster preprocessing после каждого pointermove/rotation.
++Поведение
++Исходно:
++SceneElement
++    assetId = A
++    rotation = 37°
++
++
++Backend создаёт derived raster Asset:
++A_rotated
++
++
++с уже применённой rotation.
++Полученный raster axis-aligned.
++Пустые углы имеют alpha transparency.
++После успешной обработки SceneElement переключается на новый derived Asset и:
++rotation = 0
++
++
++Положение и effective visual footprint должны остаться визуально эквивалентными состоянию до операции.
++Не запекать обычный runtime scale без необходимости: основная цель этой операции — убрать arbitrary rotation из tiled render path.
++________________
++
++
++12. Sparse tiles для зафиксированной rotation
++Если resulting derived raster использует tiled pyramid:
++* полностью прозрачные tiles не сохранять;
++* не передавать их клиенту;
++* manifest должен позволять понять, что tile пуст;
++* отсутствие transparent tile не должно считаться ошибкой загрузки.
++Таким образом повернутая карта может храниться как axis-aligned raster с прозрачными участками без необходимости скачивать полностью прозрачные области.
++________________
++
++
++13. Lifecycle derived rotation Asset
++Derived Asset после Зафиксировать ротацию:
++* является server-side derived resource;
++* reclaimable;
++* не обязан отображаться пользователю как отдельный элемент Asset Library;
++* должен иметь ссылку на source Asset / processing recipe, достаточную для корректного reference tracking.
++Исходный Asset не удалять только потому, что SceneElement переключился на derived representation, если он нужен для обратимости или другого использования.
++Не требуется обязательно реализовывать UI Отменить фиксацию в этой задаче, но архитектура не должна терять происхождение derived resource.
++________________
++
++
++14. Lazy loading для всех visual Assets
++Любой visual Asset должен загружаться лениво.
++Сам факт существования SceneElement:
++* на другой Scene;
++* на другом Floor;
++* вне Scene.Bounds;
++* вне relevant viewport;
++* внутри source recipe baked Layer;
++не является причиной загружать его binary на клиент.
++Player получает только Asset references, действительно необходимые его текущему scene view.
++________________
++
++
++15. Image representation policy
++Не запускать image pyramid/tiled LOD для каждого изображения.
++Маленькому chair.png это создаёт лишние:
++* preprocessing;
++* metadata;
++* files;
++* requests;
++* disk usage.
++Ввести централизованную функцию/политику вида:
++representationPolicy(assetMetadata)
++
++
++которая выбирает representation.
++Минимально:
++small raster
++→ обычный bitmap
++
++
++large raster
++→ tiled image pyramid / LOD
++
++
++При необходимости допустим промежуточный режим:
++medium raster
++→ original + несколько resolution variants
++
++
++но добавлять его только если существующий код делает это простым.
++________________
++
++
++16. Как выбирать необходимость tiled LOD
++Не использовать compressed file size как основной признак.
++Главные признаки:
++pixelCount = width × height
++maxDimension
++estimatedDecodedBytes ≈ width × height × 4
++
++
++Дополнительно учитывать текущий tile size и реальные decoded cache budgets.
++Threshold должен быть централизован, а не размазан по нескольким файлам.
++Порог подобрать эмпирически на текущем pipeline.
++Минимальный тестовый набор должен включать raster assets примерно разных классов:
++512²
++1024²
++2048²
++4096²
++очень крупную карту существующего target case
++
++
++Сравнить хотя бы:
++* preprocessing cost;
++* createImageBitmap/decode cost;
++* decoded RAM;
++* количество запросов;
++* tile/request overhead;
++* поведение при pan/zoom;
++* повторное использование cache.
++Цель — найти точку, где экономия от partial decode/tile LOD становится значимее стоимости pyramid и дополнительных запросов.
++Если полноценный benchmark в рамках задачи слишком дорог, выбрать простой консервативный threshold на основании текущей реализации больших карт, вынести его в одно место и явно документировать как tuning parameter.
++________________
++
++
++17. Запечь слой
++Архитектурно предусмотреть bake для любого:
++Layer.kind == visual
++
++
++Не разрешать bake:
++Token Layer
++Walkable Layer
++
++
++Операция:
++Запечь слой
++
++
++является отдельной от Заблокировать слой.
++Заблокировать слой
++Только запрещает случайное редактирование.
++Не создаёт Asset.
++Запечь слой
++Создаёт оптимизированное runtime-представление композиции.
++________________
++
++
++18. Bake recipe
++При bake не уничтожать информацию о составляющих слоя.
++Сохранить server-side recipe примерно такого вида:
++BakeRecipe {
++    version
++    elements [
++        {
++            assetId
++            x
++            y
++            width
++            height
++            rotation
++            opacity
++            zOrder
++        }
++    ]
 +}
 +
-+func fixedRotationRecipe(asset Asset, transform Transform, plan rotationPlan) (rotationRecipe, string) {
-+	recipe := rotationRecipe{Version: rotationRecipeVersion, AssetID: asset.ID, Width: asset.Width, Height: asset.Height, Transform: transform, Plan: plan}
-+	encoded, _ := json.Marshal(recipe)
-+	sum := sha256.Sum256(encoded)
-+	return recipe, hex.EncodeToString(sum[:])
++
++Можно хранить эту структуру в Scene storage/JSON либо эквивалентном persisted формате.
++Обычному Player recipe не передавать.
++В обычном runtime source SceneElements baked Layer не должны материализовываться как активные SceneElements.
++Иначе bake не даст выигрыша в:
++* scene state;
++* spatial index;
++* asset discovery;
++* client RAM;
++* draw calls.
++________________
++
++
++19. Baked representation
++Backend создаёт один derived raster Asset для статической части слоя.
++Если размер требует tiled LOD, derived Asset проходит обычную representationPolicy.
++Таким образом:
++100 static SceneElements
++→
++1 runtime baked SceneElement/representation
++
++
++Player получает только baked representation и необходимые ему tiles.
++Исходные Assets остаются на серверном диске.
++________________
++
++
++20. Animated elements при bake
++Не пытаться flatten'ить анимированные элементы в статический PNG.
++Если visual Layer содержит:
++80 static elements
++2 animated elements
++
++
++результат:
++1 baked static representation
++2 animated SceneElements
++
++
++То есть bake применяется к static subset.
++Animated subset остаётся отдельным runtime content.
++До появления полноценной animation subsystem достаточно архитектурно поддержать это разделение.
++________________
++
++
++21. Редактирование baked Layer
++При переходе в режим редактирования baked Layer:
++1. сервер отдаёт BakeRecipe GM-клиенту;
++2. исходные элементы материализуются для editor;
++3. их Assets загружаются лениво;
++4. baked representation временно не является источником редактируемой композиции.
++При изменении recipe существующий baked Asset помечается stale.
++Для первой реализации допустимо автоматически перевести Layer обратно в unbaked/edit mode.
++После завершения GM снова явно выбирает:
++Запечь слой
++
++
++Не выполнять дорогое rebake после каждого drag/resize.
++________________
++
++
++22. Recipe hash / version
++Добавить стабильный hash или version recipe:
++recipeHash
++
++
++Он должен зависеть как минимум от:
++* assetId;
++* transform;
++* opacity;
++* zOrder;
++* содержимого recipe.
++Baked representation хранит hash recipe, из которого она была построена.
++Если hash не совпадает, representation считается stale.
++________________
++
++
++23. Общий preprocessing backend
++Зафиксировать ротацию и Запечь слой должны использовать общий низкоуровневый pipeline:
++source raster composition
++→ rasterize
++→ trim/compute bounds при необходимости
++→ derived Asset
++→ representationPolicy
++→ optional tiled pyramid
++→ sparse transparent tile handling
++
++
++Но бизнес-операции остаются разными.
++Fix Rotation
++Scope:
++1 SceneElement
++
++
++Результат:
++1 optimized derived Asset
++
++
++Bake Layer
++Scope:
++N static SceneElements
++
++
++Результат:
++1 composed derived Asset + BakeRecipe
++
++
++Не дублировать image processing implementation.
++________________
++
++
++24. Почему операции не объединять
++Не делать единую пользовательскую кнопку Запечь.
++Причина:
++для оптимизации одной повернутой крупной карты не должно требоваться объединение остальных элементов её Layer.
++Кроме того, bake Layer:
++* меняет количество runtime SceneElements;
++* требует recipe;
++* влияет на asset discovery;
++* требует edit/unbake lifecycle.
++Fix Rotation этого не требует.
++________________
++
++
++25. Asset storage после bake
++Server disk остаётся источником истины.
++Хранить:
++original Assets
++derived Assets
++tile pyramids
++BakeRecipes
++Scene state
++
++
++Не держать бинарники исходных Assets постоянно в server RAM.
++Server RAM может хранить metadata/reference indexes/recipe metadata.
++Player client после bake не должен получать исходные Assets, если они нигде больше не используются в его текущем scene view.
++________________
++
++
++26. Client caches
++Сохранить разделение:
++Server disk
++→ источник истины
++
++
++Client disk/browser cache
++→ bounded disposable cache compressed resources
++
++
++Client decoded RAM
++→ bounded cache ImageBitmap/decoded resources
++
++
++Исходные элементы baked Layer не должны занимать decoded RAM клиента только потому, что они существуют в BakeRecipe.
++После Редактировать слой GM-клиент получает их лениво по мере необходимости.
++________________
++
++
++27. GC и references baked content
++BakeRecipe считается полноценным Asset reference source.
++Если source Asset отсутствует среди активных SceneElements, но присутствует в BakeRecipe:
++Asset != orphan
++
++
++Derived baked Asset считается reclaimable.
++Если Layer:
++* удалён;
++* изменён;
++* rebaked;
++старый derived Asset может стать orphan и позже удаляться общим GC.
++Не выполнять мгновенное физическое удаление.
++________________
++
++
++28. Player UI
++Player не должен видеть editor-oriented:
++* Asset list;
++* Floor/Layer Photoshop tree;
++* BakeRecipe;
++* Walkable Layer;
++* rotation/resize handles;
++* обычный SceneElement selection.
++Позднее интерактивные объекты получат отдельный player interaction mechanism.
++Не использовать GM selection SceneElement как будущий механизм взаимодействия Player с объектами.
++________________
++
++
++29. Floor-aware loading
++Spatial loading, Scene state delivery и Asset authorization должны учитывать не только текущий Floor, но и Floors, которые реально участвуют в текущем compositing.
++Player находится на Floor 1
++Всегда загружать релевантное viewport-содержимое Floor 1.
++Floor 2 загружать только если:
++Floor2.opacity × Floor2.opacityWhenViewedFromBelow > 0
++Если effective alpha Floor 2 равен нулю:
++* не загружать его visual SceneElements;
++* не запрашивать его visual Assets;
++* не декодировать его изображения;
++* не расходовать decoded cache на этот Floor.
++Player находится на Floor 2
++Всегда загружать релевантное содержимое Floor 2.
++Floor 1 загружать только если:
++Floor1.opacity > 0
++и только для relevant viewport / bounded prefetch area.
++Не загружать Floor целиком только потому, что он участвует в compositing.
++Правильная последовательность:
++visible Floors
++→ relevant spatial regions
++→ relevant SceneElements/Tokens
++→ необходимые Asset references
++→ необходимые binary resources/tiles
++Не возвращаться к full-floor eager loading.
++________________
++
++
++30. Token rendering относительно Layers и Floors
++Token Layer участвует в render order собственного Floor.
++Не использовать схему:
++draw SceneElements
++draw all Tokens afterwards
++Для каждого Floor формируется ordered render stack:
++visual Layer
++Token Layer
++visual Layer
++visual Layer
++и содержимое рисуется в соответствии с Layer order.
++После определения порядка внутри Floor применяется effective Floor alpha из section 6.
++Пример при просмотре Floor 2:
++Floor 1:
++    effectiveFloorAlpha = Floor1.opacity
++
++
++Floor 2:
++    effectiveFloorAlpha = Floor2.opacity
++Пример при просмотре Floor 1 снизу вверх:
++Floor 1:
++    effectiveFloorAlpha = Floor1.opacity
++
++
++Floor 2:
++    effectiveFloorAlpha =
++        Floor2.opacity
++        × Floor2.opacityWhenViewedFromBelow
++Tokens каждого Floor получают тот же Floor alpha, что и его visual content.
++Не делать отдельный финальный Token pass после compositing Floors.
++
++
++________________
++
++
++31. Дополнительные performance invariants для Floor opacity
++Не реализовывать Floor opacity через создание полного offscreen raster размером Scene/Floor.
++Например, Scene:
++20000 × 20000
++не должна ради opacity=0.5 создавать промежуточный Canvas 20000 × 20000.
++Предпочтительно применять рассчитанный Floor alpha как множитель при draw calls соответствующего render stack.
++Viewport-sized intermediate buffer допустим только если он действительно необходим для корректного compositing и остаётся bounded размером viewport.
++Если effective Floor alpha равен нулю, Floor должен максимально рано исключаться из:
++* spatial asset discovery;
++* binary loading;
++* decoding;
++* render traversal.
++Изменение opacity само по себе не должно пересоздавать Asset, tile pyramid или BakeRecipe.
++Это только render/view property.
++
++
++________________
++
++
++32. Что сознательно не реализовывать
++Не делать в этой задаче:
++* Floor 3+;
++* polygon Walkable Regions;
++* union сложных walkable polygons;
++* vertical FOV;
++* высоту объектов;
++* 3D/2.5D geometry;
++* per-pixel collision/occlusion;
++* per-pixel Token/Overhead calculations;
++* long-edge Transition;
++* region→region teleport mapping;
++* автоматический bake на каждое изменение;
++* pyramid для каждого маленького Asset;
++* flatten animated content в один static raster;
++* полноценный Asset Library UI, если его ещё нет;
++* physical GC без существующего безопасного orphan lifecycle.
++________________
++
++
++33. Миграция текущего состояния
++Существующие visual Layers должны сохраниться как:
++kind=visual
++
++
++Создать/обеспечить для каждого Floor:
++Token Layer
++Walkable Layer
++
++
++Существующие Tokens привязать к Token Layer соответствующего Floor.
++Текущий нижний visual Layer можно сохранить как Основа, но имя не должно иметь специальной backend-семантики.
++Существующие Maps остаются SceneElements.
++Не возвращать singleton Scene.Map.
++________________
++
++
++34. Дополнительные проверки для Floors
++Проверить следующие сценарии.
++Собственный Floor
++Floor1.opacity = 0.5
++Player находится Floor1
++Floor 1 отображается с effective alpha 0.5.
++Нижний Floor при просмотре сверху
++Floor1.opacity = 0.5
++Player находится Floor2
++Floor 1 отображается с effective alpha 0.5.
++Верхний Floor при просмотре снизу
++Floor2.opacity = 1
++Floor2.opacityWhenViewedFromBelow = 0.5
++Player находится Floor1
++Floor 2 отображается с effective alpha 0.5.
++Комбинация двух настроек
++Floor2.opacity = 0.5
++Floor2.opacityWhenViewedFromBelow = 0.5
++Player находится Floor1
++Floor 2 отображается с effective alpha 0.25.
++Layer opacity
++Floor effective alpha = 0.5
++Layer.opacity = 0.5
++Element.opacity = 1
++Element отрисовывается с alpha 0.25.
++Полностью скрытый верхний Floor
++Floor2.opacityWhenViewedFromBelow = 0
++Player находится Floor1
++Убедиться, что Floor 2:
++* не отрисовывается;
++* не вызывает загрузку visual Assets;
++* не занимает decoded cache только из-за своего существования.
++Token Layer
++Убедиться, что Tokens соседнего отображаемого Floor получают ту же directional opacity, что и остальное содержимое Floor.
++Third Floor
++Попытка создать Floor 3 отклоняется и backend, и UI.
++________________
++
++
++35. Приоритет реализации
++Сначала исправить модель render stack и Floor-aware loading.
++Затем WalkableBounds и двухэтажную семантику.
++После этого centralized representationPolicy.
++Далее Зафиксировать ротацию.
++Затем общий rasterization pipeline переиспользовать для Запечь слой.
++GC и физическую очистку Derived Assets включать только после проверки всех reference sources.
++Не смешивать эту работу с collision/FOV/interaction features.
++
++
++
++
++
++
++8. Transitions
++Упростить Transition первой версии и сделать его создание непосредственно на сцене без ввода координат вручную.
++Не использовать длинные rectangles/polygons как пользовательскую модель перехода.
++Переход первой версии состоит из двух круглых зон, связанных между собой:
++Transition {
++    id
++
++
++    endpointA {
++        floorId
++        position
++        radius
++    }
++
++
++    endpointB {
++        floorId
++        position
++        radius
++    }
++
++
++    direction // bidirectional | AToB | BToA
 +}
 +
-+func publicAsset(asset Asset) Asset {
-+	asset.Provenance = nil
-+	return asset
-+}
 +
-+func vipsHeader(ctx context.Context, tool, field, path string) (string, error) {
-+	name := "vipsheader"
-+	if runtime.GOOS == "windows" {
-+		name += ".exe"
-+	}
-+	header := filepath.Join(filepath.Dir(tool), name)
-+	cmd := exec.CommandContext(ctx, header, "-f", field, path)
-+	configureImageProcess(cmd)
-+	var output limitedOutput
-+	cmd.Stdout, cmd.Stderr = &output, &output
-+	if err := cmd.Run(); err != nil {
-+		return "", fmt.Errorf("vipsheader: %w: %s", err, strings.TrimSpace(output.String()))
-+	}
-+	return strings.TrimSpace(output.String()), nil
-+}
++По умолчанию переход двусторонний.
++То есть фактически:
++круглая зона A
++↔
++круглая зона B
 +
-+func ensureRotationAlpha(ctx context.Context, tool, stage, source string) (string, error) {
-+	interpretation, err := vipsHeader(ctx, tool, "interpretation", source)
-+	if err != nil {
-+		return "", err
-+	}
-+	current := source
-+	if strings.EqualFold(interpretation, "cmyk") {
-+		current = filepath.Join(stage, "srgb.v")
-+		if err = runVips(ctx, tool, stage, "colourspace", source, current, "srgb"); err != nil {
-+			return "", err
-+		}
-+	}
-+	bandsText, err := vipsHeader(ctx, tool, "bands", current)
-+	if err != nil {
-+		return "", err
-+	}
-+	bands, err := strconv.Atoi(bandsText)
-+	if err != nil {
-+		return "", errors.New("libvips: неизвестное число каналов")
-+	}
-+	if bands == 2 || bands == 4 {
-+		return current, nil
-+	}
-+	if bands != 1 && bands != 3 {
-+		return "", fmt.Errorf("Неподдерживаемое число каналов: %d", bands)
-+	}
-+	withAlpha := filepath.Join(stage, "alpha.v")
-+	if err = runVips(ctx, tool, stage, "addalpha", current, withAlpha); err != nil {
-+		return "", err
-+	}
-+	return withAlpha, nil
-+}
 +
-+func prepareFixedRotation(ctx context.Context, root string, source Asset, recipe rotationRecipe, recipeHash string) (Asset, error) {
-+	mode := representationPolicy(rasterMetadata{Width: recipe.Plan.OutputWidth, Height: recipe.Plan.OutputHeight}).Mode
-+	asset := Asset{
-+		SourceID: "derived:" + recipeHash, RepresentationVersion: representationVersion,
-+		Filename: source.Filename + " — rotation", MimeType: "image/png",
-+		Width: recipe.Plan.OutputWidth, Height: recipe.Plan.OutputHeight,
-+		Kind: assetKindScene, RenderMode: mode, RetentionPolicy: assetReclaimable, CreatedAt: time.Now().Unix(),
-+		Provenance: &AssetProvenance{Operation: "fixRotation", SourceAssetID: source.ID, RecipeHash: recipeHash, RecipeVersion: recipe.Version, Transform: recipe.Transform, PixelDensity: recipe.Plan.PixelDensity},
-+	}
-+	asset.ID = representationID(asset.SourceID, asset.Kind, asset.RepresentationVersion, asset.RenderMode)
-+	assetsRoot, err := filepath.Abs(filepath.Join(root, "assets"))
-+	if err != nil {
-+		return Asset{}, err
-+	}
-+	dest := filepath.Join(assetsRoot, asset.ID)
-+	if metadata, readErr := os.ReadFile(filepath.Join(dest, "meta.json")); readErr == nil {
-+		var cached Asset
-+		if json.Unmarshal(metadata, &cached) != nil || cached.ID != asset.ID || cached.Provenance == nil || cached.Provenance.RecipeHash != recipeHash {
-+			return Asset{}, errors.New("Повреждены метаданные derived asset")
-+		}
-+		return cached, nil
-+	} else if !errors.Is(readErr, os.ErrNotExist) {
-+		return Asset{}, readErr
-+	}
-+	tool, err := findVips()
-+	if err != nil {
-+		return Asset{}, err
-+	}
-+	stage, err := os.MkdirTemp(assetsRoot, ".derived-*")
-+	if err != nil {
-+		return Asset{}, err
-+	}
-+	defer os.RemoveAll(stage)
-+	ctx, cancel := context.WithTimeout(ctx, derivedJobTimeout)
-+	defer cancel()
-+	sourcePath := filepath.Join(assetsRoot, source.ID, "original")
-+	current, err := ensureRotationAlpha(ctx, tool, stage, sourcePath)
-+	if err != nil {
-+		return Asset{}, err
-+	}
-+	if recipe.Plan.ScaledWidth != source.Width || recipe.Plan.ScaledHeight != source.Height {
-+		scaled := filepath.Join(stage, "scaled.v")
-+		hScale := float64(recipe.Plan.ScaledWidth) / float64(source.Width)
-+		vScale := float64(recipe.Plan.ScaledHeight) / float64(source.Height)
-+		if err = runVips(ctx, tool, stage, "resize", current, scaled, strconv.FormatFloat(hScale, 'g', 17, 64), "--vscale", strconv.FormatFloat(vScale, 'g', 17, 64)); err != nil {
-+			return Asset{}, err
-+		}
-+		current = scaled
-+	}
-+	derivedPNG := filepath.Join(stage, "derived.png")
-+	angle := normalizedRotation(recipe.Transform.Rotation)
-+	if err = runVips(ctx, tool, stage, "rotate", current, derivedPNG+"[compression=6,keep=none]", strconv.FormatFloat(angle, 'g', 17, 64), "--background", "0 0 0 0"); err != nil {
-+		return Asset{}, err
-+	}
-+	f, err := os.Open(derivedPNG)
-+	if err != nil {
-+		return Asset{}, err
-+	}
-+	config, _, decodeErr := image.DecodeConfig(f)
-+	f.Close()
-+	if decodeErr != nil || config.Width != asset.Width || config.Height != asset.Height {
-+		return Asset{}, fmt.Errorf("libvips: ожидался результат %dx%d, получен %dx%d", asset.Width, asset.Height, config.Width, config.Height)
-+	}
-+	if stat, statErr := os.Stat(derivedPNG); statErr == nil {
-+		asset.Size = stat.Size()
-+	}
-+	original := filepath.Join(stage, "original")
-+	if err = os.Rename(derivedPNG, original); err != nil {
-+		return Asset{}, err
-+	}
-+	if err = prepareRepresentationFilesWithOptions(ctx, tool, stage, original, &asset, true); err != nil {
-+		return Asset{}, err
-+	}
-+	metadata, _ := json.Marshal(asset)
-+	if err = os.WriteFile(filepath.Join(stage, "meta.json"), metadata, 0600); err != nil {
-+		return Asset{}, err
-+	}
-+	if err = os.Rename(stage, dest); err != nil {
-+		return Asset{}, fmt.Errorf("Не удалось опубликовать derived asset: %w", err)
-+	}
-+	return asset, nil
-+}
-diff --git a/rotation_jobs.go b/rotation_jobs.go
-new file mode 100644
-index 0000000..757e255
---- /dev/null
-+++ b/rotation_jobs.go
-@@ -0,0 +1,268 @@
-+package main
++При входе токена в одну зону он перемещается в центр второй зоны.
++Это покрывает:
++* лестницу;
++* люк;
++* портал;
++* обычный переход между этажами;
++* переход между разными областями одного этажа.
++В первой версии оба endpoint должны принадлежать одной Scene. Переходы между разными Scene можно добавить позднее без изменения основной UX-модели.
++8.1. Создание перехода
++В GM UI должна быть команда:
++Создать переход
++После её выбора приложение входит в режим создания Transition.
++Обычный выбор объектов и другие инструменты сцены на время создания перехода не должны перехватывать клики по карте.
++Создание состоит из двух последовательных этапов:
++поставить endpoint A
++→
++подтвердить endpoint A
++→
++поставить endpoint B
++→
++подтвердить endpoint B
++→
++Transition создан и выбран
 +
-+import (
-+	"crypto/sha256"
-+	"encoding/hex"
-+	"encoding/json"
-+	"fmt"
-+	"os"
-+	"path/filepath"
-+	"time"
-+)
 +
-+type rotationJob struct {
-+	key        string
-+	sessionID  string
-+	sceneID    string
-+	elementID  string
-+	memberID   string
-+	client     string
-+	seq        uint64
-+	digest     string
-+	recipe     rotationRecipe
-+	recipeHash string
-+	source     Asset
-+	waiters    map[*peer]bool
-+}
++Не использовать browser prompt() для координат, radius, floor или направления.
++8.2. Постановка endpoint A
++После выбора Создать переход следующий клик по сцене начинает создание endpoint A.
++При pointerdown:
++* центр endpoint устанавливается в мировой координате указателя;
++* автоматически определяется Floor;
++* создаётся зона с разумным default radius;
++* зона сразу отображается на сцене как выбранная и редактируемая.
++Default radius должен быть визуально заметным. Не создавать точку с практически нулевой областью срабатывания.
++Если пользователь после pointerdown продолжает drag, расстояние от центра endpoint до курсора задаёт radius.
++Таким образом поддерживаются оба сценария:
++клик
++→
++создать зону стандартного размера
 +
-+func rotationJobKey(sessionID, memberID, client string, seq uint64) string {
-+	return fmt.Sprintf("%s:%s:%s:%d", sessionID, memberID, client, seq)
-+}
 +
-+func rotationCommandDigest(command Command) string {
-+	encoded, _ := json.Marshal(command)
-+	sum := sha256.Sum256(encoded)
-+	return hex.EncodeToString(sum[:])
-+}
++и:
++pointerdown
++→
++drag
++→
++сразу задать нужный radius
++→
++pointerup
 +
-+func (s *Server) sendRotationJob(job *rotationJob, status, message string) {
-+	for waiter := range job.waiters {
-+		s.send(waiter, map[string]any{"type": "job", "operation": "elementFixRotation", "status": status, "sceneId": job.sceneID, "elementId": job.elementID, "client": job.client, "seq": job.seq, "message": message})
-+	}
-+}
 +
-+func (s *Server) sendRotationAck(job *rotationJob, session *Session, issue string) {
-+	for waiter := range job.waiters {
-+		s.send(waiter, map[string]any{"type": "ack", "client": job.client, "seq": job.seq, "error": issue, "revision": sceneRevision(session, job.sceneID), "sceneId": job.sceneID})
-+	}
-+}
++Минимальный radius должен быть ограничен, чтобы пользователь случайно не создавал практически несрабатывающую область.
++8.3. Редактирование только что поставленной зоны
++Пока endpoint не подтверждён, он находится в активном состоянии.
++На самой зоне должны быть доступны:
++* перемещение центра;
++* изменение radius;
++* изменение Floor;
++* подтверждение;
++* отмена создания.
++Центр зоны должен иметь понятный drag-handle для перемещения.
++На окружности должен быть отдельный radius-handle. Drag этого handle изменяет radius, не перемещая центр.
++Не использовать одну и ту же drag-механику одновременно для перемещения центра и изменения размера.
++Элементы управления должны визуально находиться рядом с выбранной зоной, но не перекрывать её полностью.
++Дополнительно:
++* Enter может подтверждать текущий endpoint;
++* Esc отменяет создание Transition целиком;
++* после подтверждения endpoint A начинается постановка endpoint B.
++8.4. Автоматический выбор Floor
++При постановке endpoint приложение должно автоматически выбирать тот Floor, artwork которого фактически находится под указателем.
++Нельзя определять Floor только по прямоугольным bounds изображения.
++Если верхний Floor в данной мировой координате прозрачен, а ниже виден artwork другого Floor, должен быть выбран нижний Floor.
 +
-+func (s *Server) persistRotationReceipt(session *Session, job *rotationJob, unused *Asset, issue string) bool {
-+	stream := job.memberID + ":" + job.client
-+	previous, previousExists := session.Receipts[stream]
-+	oldDirty := s.dirty
-+	var oldAssets map[string]Asset
-+	if unused != nil && unused.ID != "" {
-+		oldAssets = make(map[string]Asset, len(session.Assets))
-+		for assetID, existing := range session.Assets {
-+			oldAssets[assetID] = existing
-+		}
-+		session.Assets[unused.ID] = *unused
-+		refreshAssetOrphans(session, time.Now())
-+	}
-+	session.Receipts[stream] = Receipt{Seq: job.seq, Error: issue, Digest: job.digest, Updated: time.Now().Unix()}
-+	s.dirty = true
-+	if err := s.saveLocked(); err != nil {
-+		if oldAssets != nil {
-+			session.Assets = oldAssets
-+		}
-+		if previousExists {
-+			session.Receipts[stream] = previous
-+		} else {
-+			delete(session.Receipts, stream)
-+		}
-+		s.dirty = oldDirty
-+		for waiter := range job.waiters {
-+			s.send(waiter, map[string]any{"type": "saveError", "client": job.client, "seq": job.seq, "message": "Не удалось сохранить результат обработки. Команда не подтверждена; будет повторена"})
-+		}
-+		return false
-+	}
-+	if pruneReceipts(session, stream) {
-+		s.dirty = true
-+	}
-+	status := "error"
-+	if issue == "" {
-+		status = "completed"
-+	}
-+	s.sendRotationJob(job, status, issue)
-+	s.sendRotationAck(job, session, issue)
-+	return true
-+}
 +
-+func (s *Server) rejectRotationCommand(session *Session, p *peer, command Command, digest, issue string) {
-+	job := &rotationJob{sessionID: session.ID, sceneID: command.SceneID, elementID: command.Element.ID, memberID: p.member.ID, client: command.Client, seq: command.Seq, digest: digest, waiters: map[*peer]bool{p: true}}
-+	s.persistRotationReceipt(session, job, nil, issue)
-+}
++Клик в прозрачное отверстие Floor 2 должен выбрать Floor 1.
++Для этого использовать alpha-aware hit testing artwork.
++Не требуется выполнять такой анализ постоянно каждый frame. Он нужен только при операциях выбора/постановки endpoint и поэтому не является hot path.
++Не использовать чтение итогового composited Canvas как единственный источник истины, если это можно определить по данным конкретного artwork. В итоговом Canvas могут одновременно присутствовать несколько Floor, opacity и прочие визуальные эффекты.
++Допустима оптимизированная alpha/occupancy mask, созданная при preprocessing artwork, если текущая архитектура позволяет сделать это без значительного усложнения.
++Автоматический выбор Floor является только первоначальным значением.
++Пользователь всегда должен иметь возможность вручную изменить Floo:
++После ручной смены Floor мировая position endpoint сохраняется, если она допустима для выбранного Floor.
++8.5. Переход к endpoint B
++После подтверждения endpoint A приложение автоматически начинает создание endpoint B.
++От endpoint A до текущего положения курсора отображается пунктирная preview-линия.
++Пример:
++(A) · · · · · · · · · · +
++                         cursor
 +
-+func (s *Server) rotationCommand(session *Session, p *peer, command Command) {
-+	sceneID := command.SceneID
-+	if sceneID == "" {
-+		sceneID = p.sceneID
-+	}
-+	command.SceneID = sceneID
-+	stream := p.member.ID + ":" + command.Client
-+	if session.Receipts == nil {
-+		session.Receipts = map[string]Receipt{}
-+	}
-+	previous := session.Receipts[stream]
-+	if command.Seq == 0 || command.Client == "" || len(command.Client) > 80 {
-+		s.send(p, map[string]string{"type": "fatal", "message": "Некорректный поток команд"})
-+		return
-+	}
-+	digest := rotationCommandDigest(command)
-+	if command.Seq == previous.Seq {
-+		if previous.Digest != digest {
-+			s.send(p, map[string]string{"type": "fatal", "message": "Номер команды уже занят другой командой. Откройте стол в новой вкладке"})
-+			return
-+		}
-+		s.send(p, map[string]any{"type": "ack", "client": command.Client, "seq": command.Seq, "error": previous.Error, "revision": sceneRevision(session, sceneID), "sceneId": sceneID})
-+		return
-+	}
-+	if command.Seq < previous.Seq || command.Seq != previous.Seq+1 {
-+		s.send(p, map[string]string{"type": "fatal", "message": "Нарушена последовательность команд. Откройте новую вкладку"})
-+		return
-+	}
-+	key := rotationJobKey(session.ID, p.member.ID, command.Client, command.Seq)
-+	if pending := s.rotationJobs[key]; pending != nil {
-+		if pending.digest != digest {
-+			s.send(p, map[string]string{"type": "fatal", "message": "Номер команды уже занят другой командой. Откройте стол в новой вкладке"})
-+			return
-+		}
-+		pending.waiters[p] = true
-+		s.send(p, map[string]any{"type": "job", "operation": "elementFixRotation", "status": "processing", "sceneId": sceneID, "elementId": pending.elementID, "client": command.Client, "seq": command.Seq, "message": "Фиксация ротации выполняется"})
-+		return
-+	}
-+	if p.member.Role != "gm" {
-+		s.rejectRotationCommand(session, p, command, digest, "Действие доступно ведущему")
-+		return
-+	}
-+	scene := session.Scenes[sceneID]
-+	if scene == nil {
-+		s.rejectRotationCommand(session, p, command, digest, "Сцена не найдена")
-+		return
-+	}
-+	element, ok := scene.Elements[command.Element.ID]
-+	if !ok {
-+		s.rejectRotationCommand(session, p, command, digest, "Элемент не найден")
-+		return
-+	}
-+	if normalizedRotation(element.Transform.Rotation) == 0 {
-+		s.rejectRotationCommand(session, p, command, digest, "")
-+		return
-+	}
-+	source, ok := session.Assets[element.AssetID]
-+	if !ok || !isSceneRasterKind(source.Kind) {
-+		s.rejectRotationCommand(session, p, command, digest, "Исходное изображение не найдено")
-+		return
-+	}
-+	plan, err := planFixedRotation(source, element.Transform)
-+	if err != nil {
-+		s.rejectRotationCommand(session, p, command, digest, err.Error())
-+		return
-+	}
-+	recipe, recipeHash := fixedRotationRecipe(source, element.Transform, plan)
-+	select {
-+	case s.imageJobs <- struct{}{}:
-+	default:
-+		s.rejectRotationCommand(session, p, command, digest, "Сервер уже обрабатывает другое изображение")
-+		return
-+	}
-+	job := &rotationJob{key: key, sessionID: session.ID, sceneID: sceneID, elementID: element.ID, memberID: p.member.ID, client: command.Client, seq: command.Seq, digest: digest, recipe: recipe, recipeHash: recipeHash, source: source, waiters: map[*peer]bool{p: true}}
-+	s.rotationJobs[key] = job
-+	s.sendRotationJob(job, "processing", "Фиксация ротации выполняется")
-+	s.jobWG.Add(1)
-+	go s.runRotationJob(job)
-+}
 +
-+func (s *Server) runRotationJob(job *rotationJob) {
-+	defer s.jobWG.Done()
-+	defer func() { <-s.imageJobs }()
-+	asset, processErr := fixedRotationPreparer(s.jobContext, s.root, job.source, job.recipe, job.recipeHash)
-+	s.mu.Lock()
-+	defer s.mu.Unlock()
-+	delete(s.rotationJobs, job.key)
-+	if s.stopping {
-+		return
-+	}
-+	session := s.sessions[job.sessionID]
-+	if session == nil {
-+		return
-+	}
-+	if processErr != nil {
-+		s.persistRotationReceipt(session, job, nil, processErr.Error())
-+		return
-+	}
-+	member := session.Members[job.memberID]
-+	if member == nil || member.Role != "gm" {
-+		s.persistRotationReceipt(session, job, &asset, "Права ведущего изменились во время обработки")
-+		return
-+	}
-+	scene := session.Scenes[job.sceneID]
-+	if scene == nil {
-+		s.persistRotationReceipt(session, job, &asset, "Сцена удалена во время обработки")
-+		return
-+	}
-+	current, ok := scene.Elements[job.elementID]
-+	if !ok {
-+		s.persistRotationReceipt(session, job, &asset, "Элемент удалён во время обработки")
-+		return
-+	}
-+	currentSource, ok := session.Assets[current.AssetID]
-+	if !ok {
-+		s.persistRotationReceipt(session, job, &asset, "Исходное изображение изменилось")
-+		return
-+	}
-+	currentPlan, err := planFixedRotation(currentSource, current.Transform)
-+	if err != nil {
-+		s.persistRotationReceipt(session, job, &asset, "Transform элемента изменился во время обработки")
-+		return
-+	}
-+	_, currentHash := fixedRotationRecipe(currentSource, current.Transform, currentPlan)
-+	if currentHash != job.recipeHash {
-+		s.persistRotationReceipt(session, job, &asset, "Элемент изменился во время обработки; результат не применён")
-+		return
-+	}
-+	if _, err = os.Stat(filepath.Join(s.root, "assets", asset.ID, "meta.json")); err != nil {
-+		s.persistRotationReceipt(session, job, nil, "Подготовленный asset не опубликован")
-+		return
-+	}
-+	oldRevision, oldDirty := scene.Revision, s.dirty
-+	oldElement := current
-+	oldAssets := make(map[string]Asset, len(session.Assets))
-+	for assetID, existing := range session.Assets {
-+		oldAssets[assetID] = existing
-+	}
-+	stream := job.memberID + ":" + job.client
-+	previousReceipt, previousReceiptExists := session.Receipts[stream]
-+	session.Assets[asset.ID] = asset
-+	current.AssetID = asset.ID
-+	current.Transform = Transform{X: job.recipe.Plan.WorldX, Y: job.recipe.Plan.WorldY, Width: job.recipe.Plan.WorldWidth, Height: job.recipe.Plan.WorldHeight}
-+	scene.Elements[current.ID] = current
-+	refreshAssetOrphans(session, time.Now())
-+	scene.Revision++
-+	session.Receipts[stream] = Receipt{Seq: job.seq, Digest: job.digest, Updated: time.Now().Unix()}
-+	s.dirty = true
-+	if err = s.saveLocked(); err != nil {
-+		session.Assets = oldAssets
-+		scene.Elements[oldElement.ID] = oldElement
-+		scene.Revision = oldRevision
-+		scene.rebuildRuntime()
-+		if previousReceiptExists {
-+			session.Receipts[stream] = previousReceipt
-+		} else {
-+			delete(session.Receipts, stream)
-+		}
-+		s.dirty = oldDirty
-+		for waiter := range job.waiters {
-+			s.send(waiter, map[string]any{"type": "saveError", "client": job.client, "seq": job.seq, "message": "Не удалось сохранить результат обработки. Команда не подтверждена; будет повторена"})
-+		}
-+		return
-+	}
-+	if pruneReceipts(session, stream) {
-+		s.dirty = true
-+	}
-+	scene.applyElementRuntimeChange(oldElement, true, current, true)
-+	s.publishElement(session, scene.ID, oldElement, true, current, true, false)
-+	s.sendRotationJob(job, "completed", "Ротация зафиксирована")
-+	s.sendRotationAck(job, session, "")
-+}
-diff --git a/rotation_jobs_test.go b/rotation_jobs_test.go
-new file mode 100644
-index 0000000..6f32746
---- /dev/null
-+++ b/rotation_jobs_test.go
-@@ -0,0 +1,448 @@
-+package main
++Для endpoint B используется та же механика, что и для A:
++* автоматический выбор Floor;
++* клик создаёт default radius;
++* drag при создании задаёт radius;
++* центр можно перемещать;
++* radius можно менять;
++* Floor можно изменить вручную;
++* endpoint необходимо подтвердить.
++После подтверждения B создаётся Transition.
++Никаких дополнительных модальных окон после этого открывать не требуется.
++Созданный Transition автоматически остаётся выбранным, чтобы пользователь при необходимости мог сразу изменить направление или параметры.
++8.6. Визуальное представление Transition
++Когда Transition выбран, показывать:
++* обе зоны endpoint;
++* связь между ними;
++* направление перехода.
++Пунктир и служебные элементы Transition не должны постоянно загромождать сцену.
++По умолчанию подробную связь показывать:
++* во время создания;
++* когда Transition выбран;
++* при hover, если это потребуется позднее.
++Для невыбранных Transition достаточно ненавязчивого обозначения их зон либо другого минимального маркера согласно общей системе отображения объектов Scene.
++8.7. Transition между Floor
++Если A и B находятся на разных Floor, при редактировании Transition пользователь всё равно должен иметь доступ к обоим endpoint.
++В инспекторе Transition предоставить действия:
++[ Перейти к A ]
++[ Перейти к B ]
 +
-+import (
-+	"bytes"
-+	"context"
-+	"encoding/base64"
-+	"encoding/json"
-+	"errors"
-+	"image"
-+	"image/color"
-+	"image/png"
-+	"math"
-+	"os"
-+	"path/filepath"
-+	"strconv"
-+	"strings"
-+	"testing"
-+	"time"
-+)
 +
-+type rotationFixture struct {
-+	server  *Server
-+	session *Session
-+	scene   *Scene
-+	member  *Member
-+	peer    *peer
-+	element SceneElement
-+	source  Asset
-+}
++Действие должно:
++1. переключить активный Floor при необходимости;
++2. переместить viewport к соответствующему endpoint;
++3. оставить Transition выбранным.
++Если endpoint другого Floor отображается одновременно благодаря механике отображения соседних Floor, его можно показать ghost-стилем, но редактирование должно однозначно учитывать его реальный floorId.
++8.8. Настройка направления
++По умолчанию новый Transition имеет:
++bidirectional
 +
-+func newRotationFixture(t *testing.T, transform Transform) rotationFixture {
-+	t.Helper()
-+	s := testServer(t, t.TempDir())
-+	member := &Member{ID: "gm", Name: "GM", Role: "gm", Secret: "secret"}
-+	scene := newScene("scene", "Rotation")
-+	scene.Published = true
-+	floorID := firstFloorID(scene)
-+	layerID := firstLayerID(scene, floorID)
-+	source := Asset{ID: "source", SourceID: "source-bytes", RepresentationVersion: representationVersion, Filename: "source.png", MimeType: "image/png", Width: 120, Height: 60, Kind: assetKindScene, RenderMode: renderModeBitmap, RetentionPolicy: assetReclaimable}
-+	element := SceneElement{ID: "element", FloorID: floorID, LayerID: layerID, AssetID: source.ID, Name: "Map", Transform: transform, ZOrder: 7, Visible: true, Opacity: .65}
-+	scene.Elements[element.ID] = element
-+	scene.rebuildRuntime()
-+	session := &Session{ID: "campaign", Name: "Campaign", Invite: "invite", Members: map[string]*Member{member.ID: member}, Assets: map[string]Asset{source.ID: source}, Keys: map[string]string{member.Secret: member.ID}, Receipts: map[string]Receipt{}, CampaignRevision: 1, Scenes: map[string]*Scene{scene.ID: scene}}
-+	s.sessions[session.ID] = session
-+	s.dirty = true
-+	if err := s.saveLocked(); err != nil {
-+		t.Fatal(err)
-+	}
-+	p := &peer{member: member, session: session.ID, sceneID: scene.ID, out: make(chan any, 128)}
-+	return rotationFixture{s, session, scene, member, p, element, source}
-+}
 +
-+func fakeRotationAsset(t *testing.T, root string, source Asset, recipe rotationRecipe, recipeHash string) (Asset, error) {
-+	t.Helper()
-+	asset := Asset{
-+		ID: representationID("derived:"+recipeHash, assetKindScene, representationVersion, renderModeBitmap), SourceID: "derived:" + recipeHash,
-+		RepresentationVersion: representationVersion, Filename: "derived.png", MimeType: "image/png", Width: recipe.Plan.OutputWidth, Height: recipe.Plan.OutputHeight,
-+		Kind: assetKindScene, RenderMode: renderModeBitmap, RetentionPolicy: assetReclaimable,
-+		Provenance: &AssetProvenance{Operation: "fixRotation", SourceAssetID: source.ID, RecipeHash: recipeHash, RecipeVersion: recipe.Version, Transform: recipe.Transform, PixelDensity: recipe.Plan.PixelDensity},
-+	}
-+	dir := filepath.Join(root, "assets", asset.ID)
-+	if err := os.MkdirAll(dir, 0755); err != nil {
-+		return Asset{}, err
-+	}
-+	data, err := json.Marshal(asset)
-+	if err == nil {
-+		err = os.WriteFile(filepath.Join(dir, "meta.json"), data, 0600)
-+	}
-+	return asset, err
-+}
++Во время первоначальной постановки A и B направление выбирать не требуется.
++После создания Transition направление можно изменить в properties/inspector выбранного объекта.
++Использовать простой контрол:
++Внутренние endpoint A и B должны сохранять свою идентичность независимо от текущего направления.
++Изменение направления не должно менять координаты, Floor или radius endpoint.
++8.9. Выбор существующего Transition
++Transition является объектом Scene и должен быть доступен через общий UI выбора объектов сцены.
++Если объекты сцены отображаются в правой панели/Inspector, Transition должен находиться там же.
++Например:
++Объекты сцены
 +
-+func receiveRotationAck(t *testing.T, p *peer) map[string]any {
-+	t.Helper()
-+	timer := time.NewTimer(3 * time.Second)
-+	defer timer.Stop()
-+	for {
-+		select {
-+		case raw := <-p.out:
-+			message, ok := raw.(map[string]any)
-+			if ok && message["type"] == "ack" {
-+				return message
-+			}
-+		case <-timer.C:
-+			t.Fatal("rotation ack timeout")
-+		}
-+	}
-+}
 +
-+func runRotationCommand(t *testing.T, fixture rotationFixture, p *peer, command Command) {
-+	t.Helper()
-+	fixture.server.mu.Lock()
-+	fixture.server.rotationCommand(fixture.session, p, command)
-+	fixture.server.mu.Unlock()
-+}
++Токены
++Декорации
++Интерактивные объекты
++Переходы
++    Переход #1
++    Переход #2
++    Переход #3
 +
-+func TestFixedRotationPlanPreservesCenterAndAnisotropicScale(t *testing.T) {
-+	asset := Asset{Width: 120, Height: 60}
-+	transform := Transform{X: -100, Y: -20, Width: 240, Height: 60, Rotation: 90}
-+	plan, err := planFixedRotation(asset, transform)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	if plan.PixelDensity != .5 || plan.ScaledWidth != 120 || plan.ScaledHeight != 30 || plan.OutputWidth != 30 || plan.OutputHeight != 120 {
-+		t.Fatalf("unexpected raster plan: %#v", plan)
-+	}
-+	if math.Abs(plan.WorldX-(-10)) > 1e-9 || math.Abs(plan.WorldY-(-110)) > 1e-9 || math.Abs(plan.WorldWidth-60) > 1e-9 || math.Abs(plan.WorldHeight-240) > 1e-9 {
-+		t.Fatalf("world footprint changed: %#v", plan)
-+	}
-+	beforeX, beforeY := transform.X+transform.Width/2, transform.Y+transform.Height/2
-+	afterX, afterY := plan.WorldX+plan.WorldWidth/2, plan.WorldY+plan.WorldHeight/2
-+	if beforeX != afterX || beforeY != afterY {
-+		t.Fatalf("center moved from %v,%v to %v,%v", beforeX, beforeY, afterX, afterY)
-+	}
-+	transform.Rotation = 37
-+	if arbitrary, err := planFixedRotation(asset, transform); err != nil || arbitrary.WorldX >= 0 || arbitrary.WorldY >= 0 || arbitrary.OutputWidth <= 0 || arbitrary.OutputHeight <= 0 {
-+		t.Fatalf("arbitrary negative-coordinate rotation: %#v, %v", arbitrary, err)
-+	}
-+}
 +
-+func TestFixedRotationPipelinePreservesVisualOrientation(t *testing.T) {
-+	root := t.TempDir()
-+	input := image.NewNRGBA(image.Rect(0, 0, 120, 60))
-+	colors := [4]color.NRGBA{{R: 240, A: 255}, {G: 240, A: 255}, {B: 240, A: 255}, {R: 240, G: 240, A: 255}}
-+	for y := 0; y < 60; y++ {
-+		for x := 0; x < 120; x++ {
-+			input.SetNRGBA(x, y, colors[(y/30)*2+x/60])
-+		}
-+	}
-+	var encoded bytes.Buffer
-+	if err := png.Encode(&encoded, input); err != nil {
-+		t.Fatal(err)
-+	}
-+	source, err := prepare(root, encoded.Bytes(), assetKindScene)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	transform := Transform{X: -100, Y: -20, Width: 240, Height: 60, Rotation: 90}
-+	plan, err := planFixedRotation(source, transform)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	recipe, hash := fixedRotationRecipe(source, transform, plan)
-+	derived, err := prepareFixedRotation(context.Background(), root, source, recipe, hash)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	file, err := os.Open(filepath.Join(root, "assets", derived.ID, "image.png"))
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	rotated, err := png.Decode(file)
-+	file.Close()
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	if rotated.Bounds().Dx() != 30 || rotated.Bounds().Dy() != 120 {
-+		t.Fatalf("rotated bitmap dimensions = %v", rotated.Bounds())
-+	}
-+	for _, sample := range []struct {
-+		x, y int
-+		want color.NRGBA
-+	}{
-+		{5, 15, colors[2]}, {24, 15, colors[0]}, {5, 104, colors[3]}, {24, 104, colors[1]},
-+	} {
-+		got := color.NRGBAModel.Convert(rotated.At(sample.x, sample.y)).(color.NRGBA)
-+		if absByte(got.R, sample.want.R) > 4 || absByte(got.G, sample.want.G) > 4 || absByte(got.B, sample.want.B) > 4 || got.A < 250 {
-+			t.Fatalf("visual orientation changed at %d,%d: got %#v want %#v", sample.x, sample.y, got, sample.want)
-+		}
-+	}
-+	if derived.Provenance == nil || publicAsset(derived).Provenance != nil {
-+		t.Fatal("derived provenance was not persisted privately")
-+	}
-+}
++Не создавать отдельную независимую систему управления Transition, если существующая архитектура Scene Objects уже позволяет включить их туда.
++Transition также можно выбирать непосредственно на карте через его зону или служебный marker в GM mode.
++При выборе Transition становятся видны обе его зоны и связь между ними.
++8.10. Inspector выбранного Transition
++Минимальный inspector:
++Переход
 +
-+func absByte(a, b uint8) int {
-+	if a > b {
-+		return int(a - b)
-+	}
-+	return int(b - a)
-+}
 +
-+func TestFixedRotationTiledOutputRecordsTransparentTiles(t *testing.T) {
-+	root := t.TempDir()
-+	input := image.NewNRGBA(image.Rect(0, 0, 2048, 2048))
-+	for y := 992; y < 1056; y++ {
-+		for x := 992; x < 1056; x++ {
-+			input.SetNRGBA(x, y, color.NRGBA{R: 220, G: 120, B: 40, A: 255})
-+		}
-+	}
-+	var encoded bytes.Buffer
-+	if err := png.Encode(&encoded, input); err != nil {
-+		t.Fatal(err)
-+	}
-+	source, err := prepare(root, encoded.Bytes(), assetKindScene)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	transform := Transform{X: -300, Y: -200, Width: 2048, Height: 2048, Rotation: 37}
-+	plan, err := planFixedRotation(source, transform)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	recipe, hash := fixedRotationRecipe(source, transform, plan)
-+	derived, err := prepareFixedRotation(context.Background(), root, source, recipe, hash)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	if derived.RenderMode != renderModeTiled || derived.TilePresence == "" || !validTilePresence(derived) {
-+		t.Fatalf("sparse tiled manifest missing: %#v", derived)
-+	}
-+	original, err := os.Open(filepath.Join(root, "assets", derived.ID, "original"))
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	raster, err := png.Decode(original)
-+	original.Close()
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	corner := color.NRGBAModel.Convert(raster.At(0, 0)).(color.NRGBA)
-+	center := color.NRGBAModel.Convert(raster.At(raster.Bounds().Dx()/2, raster.Bounds().Dy()/2)).(color.NRGBA)
-+	if corner.A != 0 || center.A == 0 {
-+		t.Fatalf("derived alpha damaged: corner=%#v center=%#v", corner, center)
-+	}
-+	w, h := derived.Width, derived.Height
-+	missing, present := 0, 0
-+	for z, encodedLevel := range strings.Split(derived.TilePresence, ".") {
-+		bits, err := base64.StdEncoding.DecodeString(encodedLevel)
-+		if err != nil {
-+			t.Fatal(err)
-+		}
-+		nx, ny := (w+511)/512, (h+511)/512
-+		for y := 0; y < ny; y++ {
-+			for x := 0; x < nx; x++ {
-+				index := y*nx + x
-+				exists := bits[index/8]&(1<<uint(index%8)) != 0
-+				_, statErr := os.Stat(filepath.Join(root, "assets", derived.ID, strings.Join([]string{strconv.Itoa(z), strconv.Itoa(x), strconv.Itoa(y)}, "_")+".png"))
-+				if exists {
-+					present++
-+					if statErr != nil {
-+						t.Fatalf("manifest points to missing tile %d/%d/%d: %v", z, x, y, statErr)
-+					}
-+				} else {
-+					missing++
-+					if !errors.Is(statErr, os.ErrNotExist) {
-+						t.Fatalf("empty tile exists or stat failed %d/%d/%d: %v", z, x, y, statErr)
-+					}
-+				}
-+			}
-+		}
-+		w, h = (w+1)/2, (h+1)/2
-+	}
-+	if missing == 0 || present == 0 {
-+		t.Fatalf("sparse pyramid did not contain both empty and present tiles: missing=%d present=%d", missing, present)
-+	}
-+}
++Направление
++[ A ↔ B ] [ A → B ] [ A ← B ]
 +
-+func TestRotationReliableCommitRestartAndRetry(t *testing.T) {
-+	fixture := newRotationFixture(t, Transform{X: -100, Y: -20, Width: 240, Height: 60, Rotation: 90})
-+	originalPreparer := fixedRotationPreparer
-+	fixedRotationPreparer = func(ctx context.Context, root string, source Asset, recipe rotationRecipe, hash string) (Asset, error) {
-+		return fakeRotationAsset(t, root, source, recipe, hash)
-+	}
-+	defer func() { fixedRotationPreparer = originalPreparer }()
-+	command := Command{Type: "elementFixRotation", Client: "editor", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}}
-+	beforeRevision := fixture.scene.Revision
-+	runRotationCommand(t, fixture, fixture.peer, command)
-+	ack := receiveRotationAck(t, fixture.peer)
-+	if issue, _ := ack["error"].(string); issue != "" {
-+		t.Fatal(issue)
-+	}
-+	got := fixture.scene.Elements[fixture.element.ID]
-+	if got.Transform.Rotation != 0 || got.AssetID == fixture.source.ID || got.Name != fixture.element.Name || got.Opacity != fixture.element.Opacity || got.ZOrder != fixture.element.ZOrder || got.FloorID != fixture.element.FloorID || got.LayerID != fixture.element.LayerID {
-+		t.Fatalf("rotation commit damaged element state: %#v", got)
-+	}
-+	if fixture.scene.Revision != beforeRevision+1 || fixture.session.Receipts["gm:editor"].Seq != 1 {
-+		t.Fatalf("revision/receipt not committed: revision=%d receipt=%#v", fixture.scene.Revision, fixture.session.Receipts["gm:editor"])
-+	}
-+	derived := fixture.session.Assets[got.AssetID]
-+	if derived.Provenance == nil || derived.Provenance.SourceAssetID != fixture.source.ID || fixture.session.Assets[fixture.source.ID].ID == "" {
-+		t.Fatalf("derived provenance/source retention missing: %#v", derived)
-+	}
-+	writes := fixture.server.writes
-+	runRotationCommand(t, fixture, fixture.peer, command)
-+	if duplicate := receiveRotationAck(t, fixture.peer); duplicate["error"] != "" || fixture.server.writes != writes {
-+		t.Fatalf("completed command was not deduplicated: %#v writes=%d/%d", duplicate, fixture.server.writes, writes)
-+	}
 +
-+	restarted := testServer(t, fixture.server.root)
-+	restartedSession := restarted.sessions[fixture.session.ID]
-+	restartedScene := restartedSession.Scenes[fixture.scene.ID]
-+	restartedPeer := &peer{member: restartedSession.Members[fixture.member.ID], session: restartedSession.ID, sceneID: restartedScene.ID, out: make(chan any, 128)}
-+	restarted.mu.Lock()
-+	restarted.rotationCommand(restartedSession, restartedPeer, command)
-+	restarted.mu.Unlock()
-+	if retry := receiveRotationAck(t, restartedPeer); retry["error"] != "" {
-+		t.Fatalf("restart forgot receipt: %#v", retry)
-+	}
-+	name := "Renamed after restart"
-+	restarted.mu.Lock()
-+	restarted.contentCommand(restartedSession, restartedPeer, Command{Type: "elementUpdate", Client: "editor", Seq: 2, SceneID: restartedScene.ID, Element: SceneElement{ID: got.ID}, ElementProperties: ElementProperties{Name: &name}})
-+	restarted.mu.Unlock()
-+	if next := receiveRotationAck(t, restartedPeer); next["error"] != "" || restartedScene.Elements[got.ID].Name != name {
-+		t.Fatalf("next reliable seq rejected after restart: %#v", next)
-+	}
-+}
++Точка A
++Floor: Этаж 1
++Radius: 1.5
++[ Перейти к A ]
 +
-+func TestRotationJobRevalidatesRelevantStateAndAllowsUnrelatedEdit(t *testing.T) {
-+	for _, test := range []struct {
-+		name       string
-+		mutate     func(*rotationFixture)
-+		wantCommit bool
-+	}{
-+		{"rename", func(f *rotationFixture) {
-+			e := f.scene.Elements[f.element.ID]
-+			e.Name = "Concurrent rename"
-+			f.scene.Elements[e.ID] = e
-+			f.scene.Revision++
-+		}, true},
-+		{"transform", func(f *rotationFixture) {
-+			e := f.scene.Elements[f.element.ID]
-+			e.Transform.X++
-+			f.scene.Elements[e.ID] = e
-+			f.scene.Revision++
-+		}, false},
-+		{"delete", func(f *rotationFixture) { delete(f.scene.Elements, f.element.ID); f.scene.Revision++ }, false},
-+	} {
-+		t.Run(test.name, func(t *testing.T) {
-+			fixture := newRotationFixture(t, Transform{X: 10, Y: 20, Width: 120, Height: 60, Rotation: 37})
-+			started, release := make(chan struct{}), make(chan struct{})
-+			originalPreparer := fixedRotationPreparer
-+			fixedRotationPreparer = func(ctx context.Context, root string, source Asset, recipe rotationRecipe, hash string) (Asset, error) {
-+				close(started)
-+				select {
-+				case <-release:
-+					return fakeRotationAsset(t, root, source, recipe, hash)
-+				case <-ctx.Done():
-+					return Asset{}, ctx.Err()
-+				}
-+			}
-+			defer func() { fixedRotationPreparer = originalPreparer }()
-+			command := Command{Type: "elementFixRotation", Client: "race", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}}
-+			runRotationCommand(t, fixture, fixture.peer, command)
-+			<-started
-+			fixture.server.mu.Lock()
-+			test.mutate(&fixture)
-+			fixture.server.mu.Unlock()
-+			close(release)
-+			ack := receiveRotationAck(t, fixture.peer)
-+			issue, _ := ack["error"].(string)
-+			if test.wantCommit && issue != "" {
-+				t.Fatalf("unrelated edit invalidated job: %s", issue)
-+			}
-+			if !test.wantCommit && issue == "" {
-+				t.Fatal("stale job committed")
-+			}
-+			if !test.wantCommit {
-+				tracked := false
-+				for assetID, asset := range fixture.session.Assets {
-+					if assetID != fixture.source.ID && asset.Provenance != nil && asset.OrphanSince != nil {
-+						tracked = true
-+					}
-+				}
-+				if !tracked {
-+					t.Fatal("unused completed result was not tracked as reclaimable")
-+				}
-+			}
-+			if test.name == "rename" {
-+				got := fixture.scene.Elements[fixture.element.ID]
-+				if got.Name != "Concurrent rename" || got.Transform.Rotation != 0 {
-+					t.Fatalf("concurrent rename lost: %#v", got)
-+				}
-+			}
-+		})
-+	}
-+}
 +
-+func TestRotationPendingDuplicateAndGracefulShutdown(t *testing.T) {
-+	fixture := newRotationFixture(t, Transform{Width: 120, Height: 60, Rotation: 15})
-+	started := make(chan struct{})
-+	originalPreparer := fixedRotationPreparer
-+	fixedRotationPreparer = func(ctx context.Context, _ string, _ Asset, _ rotationRecipe, _ string) (Asset, error) {
-+		close(started)
-+		<-ctx.Done()
-+		return Asset{}, ctx.Err()
-+	}
-+	defer func() { fixedRotationPreparer = originalPreparer }()
-+	command := Command{Type: "elementFixRotation", Client: "shutdown", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}}
-+	runRotationCommand(t, fixture, fixture.peer, command)
-+	<-started
-+	second := &peer{member: fixture.member, session: fixture.session.ID, sceneID: fixture.scene.ID, out: make(chan any, 128)}
-+	runRotationCommand(t, fixture, second, command)
-+	stopped := make(chan error, 1)
-+	go func() { stopped <- fixture.server.stop() }()
-+	select {
-+	case err := <-stopped:
-+		if err != nil {
-+			t.Fatal(err)
-+		}
-+	case <-time.After(3 * time.Second):
-+		t.Fatal("graceful shutdown did not cancel and join image job")
-+	}
-+	if fixture.session.Receipts["gm:shutdown"].Seq != 0 || fixture.scene.Elements[fixture.element.ID].AssetID != fixture.source.ID || len(fixture.server.rotationJobs) != 0 {
-+		t.Fatal("cancelled job was committed or left pending")
-+	}
-+	select {
-+	case fixture.server.imageJobs <- struct{}{}:
-+		<-fixture.server.imageJobs
-+	default:
-+		t.Fatal("image worker slot leaked")
-+	}
-+}
++Точка B
++Floor: Этаж 2
++Radius: 2.0
++[ Перейти к B ]
 +
-+func TestRotationFailureAndNoOpLeaveElementUntouched(t *testing.T) {
-+	for _, test := range []struct {
-+		name      string
-+		rotation  float64
-+		prepare   func(context.Context, string, Asset, rotationRecipe, string) (Asset, error)
-+		wantCalls int
-+	}{
-+		{"failure", 20, func(context.Context, string, Asset, rotationRecipe, string) (Asset, error) {
-+			return Asset{}, errors.New("worker failed")
-+		}, 1},
-+		{"no-op", 0, func(context.Context, string, Asset, rotationRecipe, string) (Asset, error) {
-+			return Asset{}, errors.New("must not run")
-+		}, 0},
-+	} {
-+		t.Run(test.name, func(t *testing.T) {
-+			fixture := newRotationFixture(t, Transform{Width: 120, Height: 60, Rotation: test.rotation})
-+			calls := 0
-+			originalPreparer := fixedRotationPreparer
-+			fixedRotationPreparer = func(ctx context.Context, root string, source Asset, recipe rotationRecipe, hash string) (Asset, error) {
-+				calls++
-+				return test.prepare(ctx, root, source, recipe, hash)
-+			}
-+			defer func() { fixedRotationPreparer = originalPreparer }()
-+			revision := fixture.scene.Revision
-+			runRotationCommand(t, fixture, fixture.peer, Command{Type: "elementFixRotation", Client: "failure", Seq: 1, SceneID: fixture.scene.ID, Element: SceneElement{ID: fixture.element.ID}})
-+			ack := receiveRotationAck(t, fixture.peer)
-+			if calls != test.wantCalls || fixture.scene.Revision != revision || fixture.scene.Elements[fixture.element.ID] != fixture.element || len(fixture.session.Assets) != 1 {
-+				t.Fatalf("failed/no-op job changed state: calls=%d ack=%#v element=%#v", calls, ack, fixture.scene.Elements[fixture.element.ID])
-+			}
-+			if test.rotation != 0 && ack["error"] == "" {
-+				t.Fatal("processing failure was acknowledged as success")
-+			}
-+		})
-+	}
-+}
++
++[ Удалить переход ]
++
++
++Radius можно менять непосредственно на карте. Числовое поле в inspector допустимо как дополнительный способ точного редактирования, но не должно быть единственным.
++Название Transition в первой версии можно генерировать автоматически. Ручное именование можно добавить позже, если оно не требуется текущей модели объектов Scene.
++8.11. Срабатывание перехода
++Для определения попадания в Transition использовать logical position/anchor токена.
++Не использовать визуальные bounds artwork токена как условие входа.
++Срабатывание происходит при переходе состояния:
++outside
++→
++inside
++
++
++То есть Transition должен сработать, когда anchor токена пересекает границу зоны и оказывается внутри неё.
++Условно:
++previousPosition outside zone
++currentPosition inside zone
++→
++trigger Transition
++
++
++При срабатывании A → B:
++token.position = endpointB.position
++token.floorId = endpointB.floorId
++
++
++То есть токен появляется в центре destination zone.
++Radius destination endpoint используется как зона входа для движения в обратную сторону, если оно разрешено.
++8.12. Защита от мгновенного обратного перехода
++После телепорта токен оказывается внутри destination zone.
++Это не должно немедленно вызывать обратный Transition.
++Поэтому Transition нельзя реализовывать как:
++if token is inside zone:
++    teleport
++
++
++Срабатывать должно именно событие входа снаружи внутрь.
++После переноса в B токен считается уже находящимся внутри B.
++Чтобы B → A мог сработать, токен сначала должен выйти из B, а затем снова войти в неё.
++Пример:
++вошёл в A
++→
++перенесён в центр B
++→
++B не срабатывает
++
++
++вышел за пределы B
++→
++снова вошёл в B
++→
++B срабатывает
++
++
++Не вводить искусственный cooldown Transition только для решения этой проблемы.
++8.13. Перемещение через Transition
++Если токен перемещается по траектории и пересекает границу входной зоны, движение завершается телепортацией к центру destination endpoint.
++Положение внутри source zone не должно пропорционально переноситься в destination zone.
++Не реализовывать сейчас region-to-region mapping и сохранение относительной позиции.
++В первой версии destination всегда является центром второго endpoint.
++8.14. Редактирование существующего Transition
++Для выбранного Transition GM должен иметь возможность:
++* переместить endpoint A;
++* изменить radius A;
++* сменить Floor A;
++* переместить endpoint B;
++* изменить radius B;
++* сменить Floor B;
++* изменить направление;
++* удалить Transition.
++Перемещение одного endpoint не должно автоматически менять второй.
++Изменение radius одного endpoint не должно менять radius второго.
++Endpoint могут иметь разные radius.
++Endpoint A и B могут находиться:
++* на разных Floor;
++* на одном Floor;
++* в одной и той же мировой координате на разных Floor.
++Последний вариант является нормальным кейсом для вертикальной лестницы, люка или лифта.
++8.15. Отмена незавершённого создания
++Если пользователь отменяет создание до подтверждения endpoint A:
++* временный endpoint удаляется;
++* Transition не создаётся.
++Если endpoint A уже подтверждён, но B ещё не подтверждён, Esc также отменяет создание Transition целиком и удаляет временный A.
++Не сохранять полуготовый Transition с одним endpoint.
++При переключении инструмента во время незавершённого создания использовать ту же семантику отмены либо явно завершать режим создания согласно общей UX-модели редактора.
++8.16. Что не реализовывать сейчас
++Не реализовывать в этой итерации:
++* длинные переходы вдоль края;
++* rectangle source areas;
++* polygon source areas;
++* arbitrary region → region mapping;
++* сохранение относительной позиции внутри source area;
++* сохранение позиции вдоль длинного края;
++* переходы, зависящие от конкретного участка polygon;
++* сложные кривые области срабатывания;
++* несколько destination у одного Transition;
++* условия вида «только определённый тип токена»;
++* ключи, проверки характеристик и игровые условия;
++* анимации перехода;
++* задержку перед переходом;
++* пользовательские скрипты Transition.
++Такие механики позднее можно реализовать отдельными типами или расширениями Transition, не меняя базовую модель endpoint A ↔ endpoint B.
++8.17. UX acceptance criteria
++Реализация считается соответствующей базовому UX, если GM может выполнить полный сценарий без ввода координат вручную:
++Создать переход
++→
++кликнуть/растянуть A
++→
++при необходимости изменить Floor
++→
++подтвердить A
++→
++кликнуть/растянуть B
++→
++при необходимости изменить Floor
++→
++подтвердить B
++→
++получить готовый двусторонний Transition
++
++
++После создания GM может выбрать Transition через Scene Objects, перейти к любому endpoint, изменить обе зоны и переключить направление между:
++A ↔ B
++A → B
++A ← B
++
++
++При игровом перемещении вход в разрешённую source zone переносит anchor токена в центр соответствующей destination zone и на её Floor.
++Перенос в destination zone не вызывает немедленного обратного перехода. Для повторного срабатывания токен должен сначала покинуть эту зону и затем войти в неё снова.
+\ No newline at end of file

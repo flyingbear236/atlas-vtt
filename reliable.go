@@ -142,10 +142,6 @@ type Command struct {
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {
-	if c.Type == "elementFixRotation" {
-		s.rotationCommand(ss, p, c)
-		return
-	}
 	if c.Type == "sceneCreate" || c.Type == "sceneUpdate" || c.Type == "sceneDelete" {
 		s.sceneCommand(ss, p, c)
 		return
