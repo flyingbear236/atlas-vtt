@@ -322,13 +322,16 @@ func TestProfileCanvasLifecycle(t *testing.T) {
 		json.Unmarshal(afterActivity, &afterCounters)
 		strategies[variant] = strategyResult
 		if variant == "backing-reset" || variant == "context-replacement" {
+			type surfaceState struct {
+				Camera    struct{ X, Y, Scale float64 } `json:"camera"`
+				Width     int                           `json:"width"`
+				Height    int                           `json:"height"`
+				Handlers  bool                          `json:"handlers"`
+				Signature string                        `json:"signature"`
+			}
 			var surface struct {
-				Before, After struct {
-					Camera        struct{ X, Y, Scale float64 } `json:"camera"`
-					Width, Height int                           `json:"width"`
-					Handlers      bool                          `json:"handlers"`
-					Signature     string                        `json:"signature"`
-				} `json:"before"`
+				Before surfaceState `json:"before"`
+				After  surfaceState `json:"after"`
 			}
 			json.Unmarshal(strategyResult, &surface)
 			if surface.Before.Camera != surface.After.Camera || surface.Before.Width != surface.After.Width || surface.Before.Height != surface.After.Height || !surface.After.Handlers || surface.Before.Signature != surface.After.Signature {

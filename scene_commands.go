@@ -61,7 +61,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 	issue := ""
 	if scene == nil {
 		issue = "Сцена не найдена"
-	} else if peer.member.Role != "gm" && !scene.Published {
+	} else if !memberIsGM(peer.member) && !scene.Published {
 		issue = "Сцена скрыта"
 	}
 	oldRevision, oldDirty := uint64(0), s.dirty
@@ -78,7 +78,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 	var tokenExisted, tokenExists bool
 	var assetsBeforeMutation map[string]Asset
 
-	if issue == "" && peer.member.Role != "gm" {
+	if issue == "" && !memberIsGM(peer.member) {
 		issue = "Действие доступно ведущему"
 	}
 	if issue == "" {
@@ -151,7 +151,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				}
 				floor.OpacityWhenViewedFromBelow = *props.OpacityWhenViewedFromBelow
 			}
-			if floor != old {
+			if floor.Name != old.Name || floor.Order != old.Order || floor.Opacity != old.Opacity || floor.OpacityWhenViewedFromBelow != old.OpacityWhenViewedFromBelow {
 				scene.Floors[floor.ID] = floor
 				changed, structural = true, true
 				restore = func() { scene.Floors[old.ID] = old }
@@ -547,7 +547,7 @@ func elementVisibleToPeer(peer *peer, scene *Scene, element SceneElement) bool {
 	if _, visible := visibleFloorSet(scene, currentFloorForPeer(peer, scene))[element.FloorID]; !visible {
 		return false
 	}
-	return peer.member.Role == "gm" || scene.ensureRuntime().elementPublic(element)
+	return memberIsGM(peer.member) || scene.ensureRuntime().elementPublic(element)
 }
 
 func elementLoadedForPeer(peer *peer, scene *Scene, element SceneElement) bool {
@@ -565,11 +565,17 @@ func (s *Server) publishElement(session *Session, sceneID string, old SceneEleme
 		}
 		oldLoaded := existed && elementLoadedForPeer(peer, scene, old)
 		newLoaded := nextExists && elementLoadedForPeer(peer, scene, next)
-		if !oldLoaded && !newLoaded {
+		gmCatalog := memberIsGM(peer.member) && !compact
+		if !oldLoaded && !newLoaded && !gmCatalog {
 			continue
 		}
 		message := map[string]any{"type": "elementUpsert", "sceneId": sceneID, "revision": scene.Revision, "id": next.ID}
 		switch {
+		case !oldLoaded && !newLoaded && nextExists:
+			message["type"] = "elementCatalogUpsert"
+		case !oldLoaded && !newLoaded:
+			message["type"] = "elementCatalogDelete"
+			message["id"] = old.ID
 		case oldLoaded && !newLoaded:
 			message["type"] = "elementDelete"
 			message["id"] = old.ID
@@ -580,6 +586,13 @@ func (s *Server) publishElement(session *Session, sceneID string, old SceneEleme
 			message["element"] = next
 			if asset, ok := session.Assets[next.AssetID]; ok {
 				message["asset"] = publicAsset(asset)
+			}
+		}
+		if gmCatalog {
+			if nextExists {
+				message["catalogElement"] = catalogElement(next)
+			} else {
+				message["catalogDeleted"] = true
 			}
 		}
 		peer.delivery++

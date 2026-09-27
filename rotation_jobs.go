@@ -132,7 +132,7 @@ func (s *Server) rotationCommand(session *Session, p *peer, command Command) {
 		s.send(p, map[string]any{"type": "job", "operation": "elementFixRotation", "status": "processing", "sceneId": sceneID, "elementId": pending.elementID, "client": command.Client, "seq": command.Seq, "message": "Фиксация ротации выполняется"})
 		return
 	}
-	if p.member.Role != "gm" {
+	if !memberIsGM(p.member) {
 		s.rejectRotationCommand(session, p, command, digest, "Действие доступно ведущему")
 		return
 	}
@@ -193,7 +193,7 @@ func (s *Server) runRotationJob(job *rotationJob) {
 		return
 	}
 	member := session.Members[job.memberID]
-	if member == nil || member.Role != "gm" {
+	if !memberIsGM(member) {
 		s.persistRotationReceipt(session, job, &asset, "Права ведущего изменились во время обработки")
 		return
 	}

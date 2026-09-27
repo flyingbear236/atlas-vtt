@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,37 @@ import (
 	"testing"
 	"time"
 )
+
+func TestFloorGeometryJSONRoundTrip(t *testing.T) {
+	restricted := Floor{
+		ID:                 "restricted",
+		Name:               "Restricted",
+		WalkableMode:       walkableModeRestricted,
+		WalkableComponents: []WalkableComponent{},
+		RenderBounds:       nil,
+		GeometryRevision:   4,
+	}
+	unrestricted := Floor{ID: "unrestricted", Name: "Unrestricted", WalkableMode: walkableModeUnrestricted}
+
+	encoded, err := json.Marshal([]Floor{restricted, unrestricted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"walkableComponents":[]`)) || !bytes.Contains(encoded, []byte(`"renderBounds":null`)) {
+		t.Fatalf("geometry zero values lost in JSON: %s", encoded)
+	}
+
+	var decoded []Floor
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded[0].WalkableMode != walkableModeRestricted || decoded[0].WalkableComponents == nil || len(decoded[0].WalkableComponents) != 0 {
+		t.Fatalf("restricted empty geometry was not preserved: %#v", decoded[0])
+	}
+	if decoded[1].WalkableMode != walkableModeUnrestricted || decoded[0].RenderBounds != nil {
+		t.Fatalf("floor modes or null render bounds changed: %#v", decoded)
+	}
+}
 
 func elementFrom(t *testing.T, message map[string]json.RawMessage) SceneElement {
 	t.Helper()

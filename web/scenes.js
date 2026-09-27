@@ -16,9 +16,9 @@ export class ScenesRuntime {
     const {cards,empty,campaignName}=this.elements;
     campaignName.textContent=campaign.name;
     cards.replaceChildren();
-    for(const scene of campaign.scenes||[])cards.append(this.card(scene,campaign.you.role==='gm'));
+    for(const scene of campaign.scenes||[])cards.append(this.card(scene,!!(campaign.you.gm||campaign.you.role==='gm')));
     empty.hidden=!!campaign.scenes?.length;
-    document.querySelectorAll('.player-only').forEach(element=>element.hidden=campaign.you.role==='gm');
+    document.querySelectorAll('.player-only').forEach(element=>element.hidden=!!(campaign.you.gm||campaign.you.role==='gm'));
   }
 
   card(scene,isGM) {

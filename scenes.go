@@ -420,7 +420,7 @@ func ssScene(ss *Session, sceneID string) *Scene {
 }
 
 func sceneVisible(scene *Scene, member *Member) bool {
-	return scene != nil && (member.Role == "gm" || scene.Published)
+	return scene != nil && (memberIsGM(member) || scene.Published)
 }
 
 func (s *Server) sceneList(ss *Session, member *Member) []SceneSummary {
@@ -450,7 +450,7 @@ func sceneEntryPoint(scene *Scene, member *Member) *ScenePoint {
 		return nil
 	}
 	for _, token := range scene.Tokens {
-		if token.Owner == member.ID && (member.Role == "gm" || !token.Hidden) {
+		if token.Owner == member.ID && (memberIsGM(member) || !token.Hidden) {
 			return &ScenePoint{X: token.X, Y: token.Y}
 		}
 	}
@@ -459,7 +459,7 @@ func sceneEntryPoint(scene *Scene, member *Member) *ScenePoint {
 
 func ownedTokenLocators(scene *Scene, member *Member) map[string]Token {
 	owned := map[string]Token{}
-	if scene == nil || member == nil || member.Role != "player" {
+	if scene == nil || member == nil || memberIsGM(member) {
 		return owned
 	}
 	for tokenID, token := range scene.Tokens {
@@ -495,7 +495,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 	if region != nil {
 		runtime := scene.ensureRuntime()
 		for _, token := range runtime.query(*region) {
-			if _, visible := visibleFloors[tokenFloorID(scene, token)]; visible && (member.Role == "gm" || !token.Hidden) {
+			if _, visible := visibleFloors[tokenFloorID(scene, token)]; visible && (memberIsGM(member) || !token.Hidden) {
 				tokens[token.ID] = token
 				if asset, ok := ss.Assets[token.Asset]; ok {
 					assets[asset.ID] = publicAsset(asset)
@@ -506,7 +506,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 			if _, visible := visibleFloors[element.FloorID]; !visible {
 				continue
 			}
-			if member.Role != "gm" && !runtime.elementPublic(element) {
+			if !memberIsGM(member) && !runtime.elementPublic(element) {
 				continue
 			}
 			elements[element.ID] = element
@@ -533,7 +533,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 	}
 	layers := make(map[string]Layer, len(scene.Layers))
 	for layerID, layer := range scene.Layers {
-		if member.Role == "gm" {
+		if memberIsGM(member) {
 			layers[layerID] = layer
 		} else if _, visible := visibleFloors[layer.FloorID]; visible && layer.Kind != layerKindWalkable {
 			layer.WalkableBounds = nil
@@ -541,13 +541,13 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 		}
 	}
 	transitions := scene.Transitions
-	if member.Role != "gm" {
+	if !memberIsGM(member) {
 		// Transition geometry is editor state. Runtime triggering is authoritative
 		// on the server, so players do not need endpoint metadata.
 		transitions = map[string]Transition{}
 	}
 	movementBounds, _ := walkableBoundsForFloor(scene, floorID)
-	return map[string]any{
+	snapshot := map[string]any{
 		"type":           "snapshot",
 		"id":             ss.ID,
 		"name":           ss.Name,
@@ -568,6 +568,27 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 		"region":         region,
 		"entry":          entry,
 	}
+	if memberIsGM(member) && region == nil {
+		snapshot["elementCatalog"] = sceneElementCatalog(scene)
+	}
+	return snapshot
+}
+
+// The editor catalog deliberately omits asset references. It supports the GM
+// tree and navigation without authorizing or loading image bytes outside the
+// current spatial region.
+func sceneElementCatalog(scene *Scene) map[string]SceneElement {
+	catalog := make(map[string]SceneElement, len(scene.Elements))
+	for elementID, element := range scene.Elements {
+		element.AssetID = ""
+		catalog[elementID] = element
+	}
+	return catalog
+}
+
+func catalogElement(element SceneElement) SceneElement {
+	element.AssetID = ""
+	return element
 }
 
 // Delivery is local to one Scene subscription. Scene revision describes the
@@ -598,7 +619,18 @@ func (s *Server) publishCampaign(ss *Session) {
 func (s *Server) publishSceneSnapshot(ss *Session, sceneID string) {
 	for p := range s.peers {
 		if p.session == ss.ID && p.sceneID == sceneID {
-			s.send(p, s.snapshotSceneForPeer(ss, p))
+			snapshot := s.snapshotSceneForPeer(ss, p)
+			// Structural operations are rare and can create, move or remove many
+			// elements at once. Refresh the GM-only catalog with that snapshot;
+			// ordinary viewport snapshots intentionally omit it.
+			if memberIsGM(p.member) {
+				if value, ok := snapshot.(map[string]any); ok && value["type"] == "snapshot" {
+					if scene := ss.Scenes[sceneID]; scene != nil {
+						value["elementCatalog"] = sceneElementCatalog(scene)
+					}
+				}
+			}
+			s.send(p, snapshot)
 		}
 	}
 }
@@ -619,7 +651,7 @@ func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, active
 		return false
 	}
 	rt := scene.ensureRuntime()
-	if member.Role == "gm" {
+	if memberIsGM(member) {
 		return rt.assetAll[assetID] > 0
 	}
 	floorID := currentFloorForMember(scene, member, "")

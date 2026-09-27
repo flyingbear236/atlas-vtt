@@ -139,10 +139,12 @@ type Command struct {
 	Transition        Transition        `json:"transition,omitempty"`
 	AssetID           string            `json:"assetId,omitempty"`
 	RetentionPolicy   string            `json:"retentionPolicy,omitempty"`
+	MemberID          string            `json:"memberId,omitempty"`
+	GM                *bool             `json:"gm,omitempty"`
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {
-	if c.Type == "sceneCreate" || c.Type == "sceneUpdate" || c.Type == "sceneDelete" {
+	if c.Type == "sceneCreate" || c.Type == "sceneUpdate" || c.Type == "sceneDelete" || c.Type == "memberUpdate" {
 		s.sceneCommand(ss, p, c)
 		return
 	}
@@ -199,7 +201,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	accessIssue := ""
 	if scene == nil {
 		accessIssue = "Сцена не найдена"
-	} else if p.member.Role != "gm" && !scene.Published {
+	} else if !memberIsGM(p.member) && !scene.Published {
 		accessIssue = "Сцена скрыта"
 	}
 	if accessIssue != "" {
@@ -228,7 +230,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	}
 	old, exists := scene.Tokens[c.Token.ID]
 	t := old
-	gm := p.member.Role == "gm"
+	gm := memberIsGM(p.member)
 	kind := "upsert"
 	var issue string
 	switch c.Type {
@@ -443,13 +445,40 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 
 	oldRevision, oldDirty := ss.CampaignRevision, s.dirty
 	var oldAssets map[string]Asset
-	var issue, changedSceneID string
-	if p.member.Role != "gm" {
+	var issue, changedSceneID, changedMemberID string
+	if !memberIsGM(p.member) {
 		issue = "Действие доступно ведущему"
 	}
 	var restore func()
 	switch {
 	case issue != "":
+	case c.Type == "memberUpdate":
+		member := ss.Members[c.MemberID]
+		if member == nil || c.GM == nil {
+			issue = "Участник не найден"
+			break
+		}
+		if memberIsGM(member) && !*c.GM {
+			gmCount := 0
+			for _, candidate := range ss.Members {
+				if memberIsGM(candidate) {
+					gmCount++
+				}
+			}
+			if gmCount <= 1 {
+				issue = "В кампании должен остаться хотя бы один ведущий"
+				break
+			}
+		}
+		oldRole, oldGM := member.Role, member.GM
+		member.GM = *c.GM
+		if member.GM {
+			member.Role = "gm"
+		} else {
+			member.Role = "player"
+		}
+		changedMemberID = member.ID
+		restore = func() { member.Role, member.GM = oldRole, oldGM }
 	case c.Type == "sceneCreate":
 		name := strings.TrimSpace(c.SceneName)
 		if name == "" || utf8.RuneCountInString(name) > 80 {
@@ -527,11 +556,32 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 			if peer.session != ss.ID || peer.sceneID != changedSceneID {
 				continue
 			}
-			if c.Type == "sceneDelete" || (c.Type == "sceneUpdate" && !ss.Scenes[changedSceneID].Published && peer.member.Role != "gm") {
+			if c.Type == "sceneDelete" || (c.Type == "sceneUpdate" && !ss.Scenes[changedSceneID].Published && !memberIsGM(peer.member)) {
 				peer.sceneID = ""
 			}
 		}
 		s.publishCampaign(ss)
+		if changedMemberID != "" {
+			for peer := range s.peers {
+				if peer.session != ss.ID || peer.sceneID == "" {
+					continue
+				}
+				scene := ss.Scenes[peer.sceneID]
+				if scene == nil {
+					peer.sceneID = ""
+					continue
+				}
+				if peer.member.ID == changedMemberID {
+					if !memberIsGM(peer.member) && !scene.Published {
+						peer.sceneID = ""
+						continue
+					}
+					// A newly promoted GM needs the one-time catalog-bearing snapshot.
+					peer.region = nil
+				}
+				s.send(peer, s.snapshotSceneForPeer(ss, peer))
+			}
+		}
 	} else if c.Seq == 0 {
 		s.send(p, map[string]string{"type": "error", "message": issue})
 	}
@@ -541,7 +591,7 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 }
 
 func tokenVisibleToPeer(p *peer, token Token) bool {
-	return p.member.Role == "gm" || !token.Hidden
+	return memberIsGM(p.member) || !token.Hidden
 }
 
 func tokenLoadedForPeer(p *peer, scene *Scene, token Token) bool {
@@ -566,11 +616,11 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 
 		previousFloor, previousActive := p.floorID, p.activeTokenID
 		p.floorID = currentFloorForPeer(p, scene)
-		if p.member.Role != "gm" && previousFloor != "" && previousFloor != p.floorID {
+		if !memberIsGM(p.member) && previousFloor != "" && previousFloor != p.floorID {
 			s.send(p, s.snapshotSceneForPeer(ss, p))
 			continue
 		}
-		if p.member.Role != "gm" && previousActive != p.activeTokenID {
+		if !memberIsGM(p.member) && previousActive != p.activeTokenID {
 			s.send(p, s.snapshotSceneForPeer(ss, p))
 		}
 		oldLoaded := existed && tokenLoadedForPeer(p, scene, old)

@@ -27,6 +27,11 @@ const (
 	assetReclaimable = "reclaimable"
 )
 
+const (
+	walkableModeUnrestricted = "unrestricted"
+	walkableModeRestricted   = "restricted"
+)
+
 // Transform is the shared world-space representation used by visual elements
 // and by token helpers. It deliberately contains no renderer-specific state.
 type Transform struct {
@@ -50,11 +55,15 @@ type WalkableBounds struct {
 }
 
 type Floor struct {
-	ID                         string  `json:"id"`
-	Name                       string  `json:"name"`
-	Order                      int     `json:"order"`
-	Opacity                    float64 `json:"opacity"`
-	OpacityWhenViewedFromBelow float64 `json:"opacityWhenViewedFromBelow"`
+	ID                         string              `json:"id"`
+	Name                       string              `json:"name"`
+	Order                      int                 `json:"order"`
+	Opacity                    float64             `json:"opacity"`
+	OpacityWhenViewedFromBelow float64             `json:"opacityWhenViewedFromBelow"`
+	WalkableMode               string              `json:"walkableMode"`
+	WalkableComponents         []WalkableComponent `json:"walkableComponents"`
+	RenderBounds               *Polygon            `json:"renderBounds"`
+	GeometryRevision           uint64              `json:"geometryRevision"`
 }
 
 type Layer struct {
@@ -241,7 +250,7 @@ func currentFloorForMember(scene *Scene, member *Member, preferred string) strin
 	if scene == nil {
 		return ""
 	}
-	if member == nil || member.Role == "gm" {
+	if member == nil || memberIsGM(member) {
 		if scene.Floors[preferred].ID != "" {
 			return preferred
 		}
@@ -264,7 +273,7 @@ func currentFloorForMember(scene *Scene, member *Member, preferred string) strin
 }
 
 func activeTokenForMember(scene *Scene, member *Member, tokenID string) (Token, bool) {
-	if scene == nil || member == nil || member.Role != "player" || tokenID == "" {
+	if scene == nil || member == nil || memberIsGM(member) || tokenID == "" {
 		return Token{}, false
 	}
 	token, ok := scene.Tokens[tokenID]
@@ -275,7 +284,7 @@ func currentFloorForPeer(peer *peer, scene *Scene) string {
 	if peer == nil {
 		return firstFloorID(scene)
 	}
-	if peer.member == nil || peer.member.Role == "gm" {
+	if peer.member == nil || memberIsGM(peer.member) {
 		return currentFloorForMember(scene, peer.member, peer.floorID)
 	}
 	if token, ok := activeTokenForMember(scene, peer.member, peer.activeTokenID); ok {

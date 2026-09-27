@@ -87,8 +87,14 @@ type Member struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Role   string `json:"role"`
+	GM     bool   `json:"gm"`
 	Secret string `json:"-"`
 }
+
+func memberIsGM(member *Member) bool {
+	return member != nil && (member.GM || member.Role == "gm")
+}
+
 type Session struct {
 	ID               string             `json:"id"`
 	Name             string             `json:"name"`
@@ -220,6 +226,14 @@ func newServer(root string) (*Server, error) {
 			if m == nil || m.ID != memberID || (m.Role != "gm" && m.Role != "player") {
 				return nil, fmt.Errorf("invalid member in session %s", sessionID)
 			}
+			if m.Role == "gm" && !m.GM {
+				m.GM = true
+				migrated = true
+			}
+			if m.GM && m.Role != "gm" {
+				m.Role = "gm"
+				migrated = true
+			}
 		}
 		for k, v := range ss.Keys {
 			if m := ss.Members[v]; m != nil {
@@ -346,7 +360,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "Сервер останавливается")
 		return
 	}
-	m := &Member{ID: id(), Name: "Ведущий", Role: "gm", Secret: id()}
+	m := &Member{ID: id(), Name: "Ведущий", Role: "gm", GM: true, Secret: id()}
 	sceneID := id()
 	scene := newScene(sceneID, "Сцена 1")
 	scene.Published = true
@@ -509,7 +523,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				s.send(p, map[string]string{"type": "error", "message": "Некорректная область сцены"})
 			} else {
 				scene := ss.Scenes[p.sceneID]
-				if m.Role == "gm" && msg.ViewFloorID != "" {
+				if memberIsGM(m) && msg.ViewFloorID != "" {
 					if scene.Floors[msg.ViewFloorID].ID == "" {
 						s.send(p, map[string]string{"type": "error", "message": "Этаж не найден"})
 						s.mu.Unlock()
@@ -523,7 +537,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				s.send(p, s.snapshotSceneForPeer(ss, p))
 			}
 		} else if msg.Type == "activeToken" {
-			if p.sceneID == "" || msg.SceneID != p.sceneID || m.Role != "player" {
+			if p.sceneID == "" || msg.SceneID != p.sceneID || memberIsGM(m) {
 				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Токен нельзя сделать активным"})
 			} else if token, ok := activeTokenForMember(ss.Scenes[p.sceneID], m, msg.ActiveTokenID); !ok {
 				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Токен не принадлежит игроку"})
@@ -550,7 +564,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				p.region = nil
 				p.delivery = 0
 				s.send(p, s.snapshotCampaign(ss, m))
-			} else if scene := ss.Scenes[msg.SceneID]; scene == nil || (m.Role != "gm" && !scene.Published) {
+			} else if scene := ss.Scenes[msg.SceneID]; scene == nil || (!memberIsGM(m) && !scene.Published) {
 				s.send(p, map[string]string{"type": "error", "message": "Сцена недоступна"})
 			} else {
 				p.sceneID = msg.SceneID
@@ -575,7 +589,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	ss, m := s.auth(r)
 	sceneID := r.URL.Query().Get("scene")
 	scene := ssScene(ss, sceneID)
-	allowed := m != nil && m.Role == "gm" && scene != nil
+	allowed := memberIsGM(m) && scene != nil
 	s.mu.Unlock()
 	if !allowed {
 		fail(w, 403, "Нужны права ведущего")
@@ -624,7 +638,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	currentSession, currentMember := s.auth(r)
-	if currentSession != ss || currentMember == nil || currentMember.Role != "gm" || ss.Scenes[sceneID] != scene {
+	if currentSession != ss || !memberIsGM(currentMember) || ss.Scenes[sceneID] != scene {
 		s.mu.Unlock()
 		fail(w, http.StatusConflict, "Сцена была закрыта во время загрузки")
 		return

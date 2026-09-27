@@ -1,572 +1,1016 @@
-diff --git a/profile_probe_test.go b/profile_probe_test.go
-index dbf5920..166fd88 100644
---- a/profile_probe_test.go
-+++ b/profile_probe_test.go
-@@ -1,21 +1,33 @@
- package main
+diff --git a/go.mod b/go.mod
+index e8235d2..1b10044 100644
+--- a/go.mod
++++ b/go.mod
+@@ -2,4 +2,12 @@ module planar
  
--// Served only by the isolated profiling host. Production app.js is unchanged.
-+// Served only by the isolated profiling host. The host makes the test copy of
-+// app.js canvas/context bindings mutable so replacement can be measured without
-+// changing production app.js before the causal experiment succeeds.
- const profileProbe = `
--const probe={durations:[],latencies:[],decodes:0,decodeMs:0,closed:0,drawImages:0,peakBitmaps:0,peakBytes:0,lastX:null,timers:[],measuring:false};
-+const probe={durations:[],latencies:[],decodes:0,decodeMs:0,closed:0,drawImages:0,peakBitmaps:0,peakBytes:0,lastX:null,timers:[],measuring:false,resetDurations:[],resetFrameGaps:[],resetMeasuring:false,bitmapCreated:0,bitmapCreatedBytes:0,bitmapClosed:0,bitmapClosedBytes:0,liveBitmaps:0};
-+const bitmapBytes=new WeakMap(),closedBitmaps=new WeakSet();
- const originalBitmap=globalThis.createImageBitmap;
--globalThis.createImageBitmap=async(...args)=>{const at=performance.now();const result=await originalBitmap(...args);probe.decodes++;probe.decodeMs+=performance.now()-at;return result};
--const originalClose=ImageBitmap.prototype.close;ImageBitmap.prototype.close=function(){probe.closed++;return originalClose.call(this)};
-+globalThis.createImageBitmap=async(...args)=>{const at=performance.now(),result=await originalBitmap(...args),bytes=(result.width||0)*(result.height||0)*4;bitmapBytes.set(result,bytes);probe.bitmapCreated++;probe.bitmapCreatedBytes+=bytes;probe.liveBitmaps++;probe.decodes++;probe.decodeMs+=performance.now()-at;return result};
-+const originalClose=ImageBitmap.prototype.close;ImageBitmap.prototype.close=function(){probe.closed++;if(!closedBitmaps.has(this)){closedBitmaps.add(this);const bytes=bitmapBytes.get(this)||0;probe.bitmapClosed++;probe.bitmapClosedBytes+=bytes;probe.liveBitmaps=Math.max(0,probe.liveBitmaps-1)}return originalClose.call(this)};
- const originalDrawImage=CanvasRenderingContext2D.prototype.drawImage;CanvasRenderingContext2D.prototype.drawImage=function(...args){if(probe.measuring)probe.drawImages++;return originalDrawImage.apply(this,args)};
--const originalDraw=draw;draw=function(now){const at=performance.now();originalDraw(now);probe.durations.push(performance.now()-at);const t=state?.tokens['moving'];if(t&&probe.lastX!==t.x){probe.lastX=t.x;if(probe.latencyOn)probe.latencies.push(((Date.now()%10000)-t.x*10+10000)%10000)}probe.peakBitmaps=Math.max(probe.peakBitmaps,memory.size);probe.peakBytes=Math.max(probe.peakBytes,memoryBytes)};
- const distribution=a=>{const s=[...a].sort((a,b)=>a-b);return {count:s.length,mean:s.reduce((a,b)=>a+b,0)/(s.length||1),p50:s[Math.floor(s.length*.5)]||0,p95:s[Math.floor(s.length*.95)]||0,p99:s[Math.floor(s.length*.99)]||0,max:s.at(-1)||0}};
--probe.reset=()=>{probe.durations=[];probe.latencies=[];probe.decodes=0;probe.decodeMs=0;probe.closed=0;probe.drawImages=0;probe.fallbackAt=lodFallbacks;probe.degradeAt=imageDegradations;probe.peakBitmaps=memory.size;probe.peakBytes=memoryBytes;probe.at=performance.now();};
-+const startResetFrameMonitor=(previousWall=0)=>{let last=performance.now(),first=true;const tick=now=>{if(!probe.resetMeasuring)return;if(first&&previousWall)probe.resetFrameGaps.push(Math.max(0,Date.now()-previousWall));else probe.resetFrameGaps.push(Math.max(0,now-last));first=false;last=now;probe.resetLastFrameWall=Date.now();requestAnimationFrame(tick)};requestAnimationFrame(tick)};
-+const originalDraw=draw;draw=function(now){const at=performance.now();originalDraw(now);const elapsed=performance.now()-at;if(probe.measuring)probe.durations.push(elapsed);if(probe.resetMeasuring)probe.resetDurations.push(elapsed);const t=state?.tokens['moving'];if(t&&probe.lastX!==t.x){probe.lastX=t.x;if(probe.latencyOn)probe.latencies.push(((Date.now()%10000)-t.x*10+10000)%10000)}probe.peakBitmaps=Math.max(probe.peakBitmaps,memory.size);probe.peakBytes=Math.max(probe.peakBytes,memoryBytes)};
-+probe.reset=()=>{probe.durations=[];probe.latencies=[];probe.decodes=0;probe.decodeMs=0;probe.closed=0;probe.drawImages=0;probe.fallbackAt=lodFallbacks;probe.degradeAt=imageDegradations;probe.peakBitmaps=memory.size;probe.peakBytes=memoryBytes;probe.at=performance.now()};
- probe.sample=async()=>{const db=await dbPromise;let disk={count:0,bytes:0};if(db)await new Promise(resolve=>{const req=db.transaction('assets').objectStore('assets').openCursor();req.onsuccess=()=>{const c=req.result;if(c){disk.count++;disk.bytes+=c.value.size;c.continue()}else resolve()};req.onerror=resolve});const elapsed=performance.now()-probe.at,frames=probe.durations.length,serialized=state?new Blob([JSON.stringify(state)]).size:0;return {elapsedMs:elapsed,fps:frames/(elapsed/1000),frame:distribution(probe.durations),latency:distribution(probe.latencies),drawImages:probe.drawImages,drawImagesPerFrame:probe.drawImages/(frames||1),bitmaps:memory.size,bitmapBytes:memoryBytes,artworkBytes:typeof artwork==='undefined'?0:artwork.bytes,peakBitmaps:probe.peakBitmaps,peakBitmapBytes:probe.peakBytes,decodeEdge,decodes:probe.decodes,decodeMs:probe.decodeMs,closed:probe.closed,lodFallbacks:lodFallbacks-probe.fallbackAt,degradations:imageDegradations-probe.degradeAt,disk,cacheHits,activeLoads,failures:failures.size,jsHeap:performance.memory?.usedJSHeapSize||0,tokens:Object.keys(state?.tokens||{}).length,elements:Object.keys(state?.elements||{}).length,stateBytes:serialized,queue:(outbox?.data.queue.length||0)+(positionOutbox?.data.queue.length||0),diagnostics:$('diagnostics').textContent}};
--probe.stop=()=>{for(const timer of probe.timers)clearInterval(timer);probe.timers=[];$('continuous').checked=false;probe.latencyOn=false;probe.measuring=false;};
-+probe.stop=()=>{for(const timer of probe.timers)clearInterval(timer);probe.timers=[];$('continuous').checked=false;probe.latencyOn=false;probe.measuring=false};
- probe.start=(mode)=>{probe.stop();probe.reset();probe.measuring=true;probe.latencyOn=mode==='receive';if(mode==='render'||mode==='receive'){$('continuous').checked=true;dirty=true}if(mode==='pan'){const began=performance.now();probe.timers.push(setInterval(()=>{const t=(performance.now()-began)/1000;camera.scale=.13+.6*(.5+.5*Math.sin(t*.8));camera.x=1000+1000*Math.sin(t*.4);camera.y=700+700*Math.cos(t*.5);dirty=true},16))}if(mode==='move'){let tick=0;probe.timers.push(setInterval(()=>{const t={id:'moving',x:(Date.now()%10000)/10,y:500};send({type:'move',token:t});if(++tick%20===0)queuePosition({token:t})},50))}};
- probe.clearImages=async()=>{await $('clearCache').onclick();return true};
--probe.imageMemory=()=>{let bitmapBytes=0,fallbackBytes=0;for(const entry of memory.values()){bitmapBytes+=entry.bitmapSize||0;fallbackBytes+=entry.fallback?.size||0;}return {entries:memory.size,trackedBytes:memoryBytes,bitmapBytes,fallbackBytes,artworkBytes:typeof artwork==='undefined'?0:artwork.bytes,pending:pending.size,activeLoads,canvasBytes:canvas.width*canvas.height*4};};
--probe.memorySweep=()=>{probe.stop();probe.reset();probe.measuring=true;const began=performance.now();probe.timers.push(setInterval(()=>{const bounds=state?.scene?.bounds;if(!bounds)return;const t=(performance.now()-began)/1000,scale=.18+.72*(.5+.5*Math.sin(t*.37)),maxX=Math.max(0,bounds.width-viewport.w/scale),maxY=Math.max(0,bounds.height-viewport.h/scale);camera.scale=scale;camera.x=maxX*(.5+.5*Math.sin(t*.53));camera.y=maxY*(.5+.5*Math.cos(t*.41));dirty=true},16));};
-+probe.trimImages=()=>{trimImages();return probe.lifecycle()};
-+probe.imageMemory=()=>{let bitmapBytesInCache=0,fallbackBytes=0;for(const entry of memory.values()){bitmapBytesInCache+=entry.bitmapSize||0;fallbackBytes+=entry.fallback?.size||0}return {entries:memory.size,trackedBytes:memoryBytes,bitmapBytes:bitmapBytesInCache,fallbackBytes,artworkBytes:typeof artwork==='undefined'?0:artwork.bytes,pending:pending.size,activeLoads,canvasBytes:canvas.width*canvas.height*4,liveBitmaps:probe.liveBitmaps,bitmapCreated:probe.bitmapCreated,bitmapClosed:probe.bitmapClosed,bitmapCloseCalls:probe.closed,bitmapCreatedBytes:probe.bitmapCreatedBytes,bitmapClosedBytes:probe.bitmapClosedBytes,decodeCount,diskReads}};
-+probe.lifecycle=()=>({camera:{x:camera.x,y:camera.y,scale:camera.scale},sceneState:{sceneId:state?.scene?.id||'',sceneRevision:state?.scene?.revision||0,floorId:currentFloorID||'',selectedToken:selected||'',selectedElement:selectedElement||'',selectedTransition:selectedTransition||'',transitionDraftPhase:transitionDraft?.phase||'',tokens:Object.keys(state?.tokens||{}).length,elements:Object.keys(state?.elements||{}).length},canvas:{width:canvas.width,height:canvas.height,viewportWidth:viewport.w,viewportHeight:viewport.h,dpr:viewport.w?canvas.width/viewport.w:0,devicePixelRatio:globalThis.devicePixelRatio||1},images:probe.imageMemory(),resetFrames:distribution(probe.resetFrameGaps),resetDraws:distribution(probe.resetDurations)});
-+probe.beginReset=()=>{probe.resetDurations=[];probe.resetFrameGaps=[];probe.resetMeasuring=true;probe.resetStartedWall=Date.now();probe.resetLastFrameWall=Date.now();startResetFrameMonitor();return probe.lifecycle()};
-+probe.prepareReloadReset=()=>{try{sessionStorage.setItem('__atlas-profile-reset',JSON.stringify({startedWall:probe.resetStartedWall||Date.now(),lastFrameWall:probe.resetLastFrameWall||Date.now(),frameGaps:probe.resetFrameGaps,drawDurations:probe.resetDurations}))}catch{}return true};
-+probe.endReset=()=>{probe.resetMeasuring=false;return {elapsedMs:Date.now()-(probe.resetStartedWall||Date.now()),frame:distribution(probe.resetFrameGaps),draw:distribution(probe.resetDurations)}};
-+probe.backingReset=()=>{const width=canvas.width,height=canvas.height,at=performance.now();canvas.width=0;canvas.height=0;canvas.width=width;canvas.height=height;dirty=true;draw(performance.now());return {elapsedMs:performance.now()-at,state:probe.lifecycle()}};
-+probe.replaceCanvas=()=>{const oldCanvas=canvas,width=oldCanvas.width,height=oldCanvas.height,next=document.createElement('canvas');for(const attr of oldCanvas.attributes)next.setAttribute(attr.name,attr.value);next.width=width;next.height=height;const nextCtx=next.getContext('2d');if(!nextCtx)throw Error('2D context replacement failed');const at=performance.now();canvas=next;ctx=nextCtx;dirty=true;draw(performance.now());oldCanvas.replaceWith(next);return {elapsedMs:performance.now()-at,state:probe.lifecycle()}};
-+probe.memorySweep=()=>{probe.stop();probe.reset();probe.measuring=true;const began=performance.now();probe.timers.push(setInterval(()=>{const bounds=state?.scene?.bounds;if(!bounds)return;const t=(performance.now()-began)/1000,scale=.18+.72*(.5+.5*Math.sin(t*.37)),maxX=Math.max(0,bounds.width-viewport.w/scale),maxY=Math.max(0,bounds.height-viewport.h/scale);camera.scale=scale;camera.x=maxX*(.5+.5*Math.sin(t*.53));camera.y=maxY*(.5+.5*Math.cos(t*.41));dirty=true},16))};
-+try{const saved=JSON.parse(sessionStorage.getItem('__atlas-profile-reset')||'null');if(saved){sessionStorage.removeItem('__atlas-profile-reset');probe.resetDurations=Array.isArray(saved.drawDurations)?saved.drawDurations:[];probe.resetFrameGaps=Array.isArray(saved.frameGaps)?saved.frameGaps:[];probe.resetStartedWall=Number(saved.startedWall)||Date.now();probe.resetMeasuring=true;startResetFrameMonitor(Number(saved.lastFrameWall)||Date.now())}}catch{}
- probe.view=()=>{camera={x:0,y:0,scale:.22};dirty=true};probe.enter=c=>enter(c);probe.openScene=id=>openScene(id);probe.home=()=>goCampaignHome();probe.fit=()=>fit();probe.connected=()=>socket?.readyState===1;probe.ready=()=>!!state&&socket?.readyState===1;probe.scene=n=>Object.keys(state?.tokens||{}).length===n;probe.layer=n=>Object.keys(state?.elements||{}).length>=n;probe.layerSettled=n=>probe.layer(n)&&activeLoads===0&&!regionInFlight;probe.layerStatus=()=>({elements:Object.keys(state?.elements||{}).length,activeLoads,regionInFlight});
- globalThis.__atlasProbe=probe;
- `
-diff --git a/profile_test.go b/profile_test.go
-index b228cdb..9badbdb 100644
---- a/profile_test.go
-+++ b/profile_test.go
-@@ -99,7 +99,17 @@ func TestProfileHost(t *testing.T) {
- 	mux.HandleFunc("/app.js", func(w http.ResponseWriter, r *http.Request) {
- 		w.Header().Set("Content-Type", "text/javascript")
- 		b, _ := web.ReadFile("web/app.js")
--		w.Write(b)
-+		source := string(b)
-+		const canvasBinding = "const canvas = $('board'), ctx = canvas.getContext('2d');"
-+		if !strings.Contains(source, canvasBinding) {
-+			http.Error(w, "profiling canvas binding not found", http.StatusInternalServerError)
-+			return
-+		}
-+		// The replacement experiment needs to redirect the renderer to a new
-+		// surface. Do that only in the isolated profiling copy of app.js so Phase
-+		// 1 does not change production renderer semantics before measurements.
-+		source = strings.Replace(source, canvasBinding, "let canvas = $('board'), ctx = canvas.getContext('2d');", 1)
-+		io.WriteString(w, source)
- 		io.WriteString(w, profileProbe)
- 	})
- 	mux.HandleFunc("POST /__bench/scene", func(w http.ResponseWriter, r *http.Request) {
-@@ -388,6 +398,373 @@ func profileJSON(t *testing.T, url, method string, body any) json.RawMessage {
- 	return b
+ go 1.26
+ 
+-require github.com/gorilla/websocket v1.5.3
++require (
++	github.com/ctessum/polyclip-go v1.1.0
++	github.com/gorilla/websocket v1.5.3
++)
++
++require (
++	github.com/gonum/floats v0.0.0-20181209220543-c233463c7e82 // indirect
++	github.com/gonum/internal v0.0.0-20181124074243-f884aa714029 // indirect
++)
+diff --git a/go.sum b/go.sum
+index 25a9fc4..6f1faee 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,2 +1,8 @@
++github.com/ctessum/polyclip-go v1.1.0 h1:TGMfwMynNykXwCZCxI+CHdjo/ZE9JThup/gmrgigGEE=
++github.com/ctessum/polyclip-go v1.1.0/go.mod h1:e/Lh1JOGyynZwLr0M4tZGIyx07wXw9T+pu6hFut+kFQ=
++github.com/gonum/floats v0.0.0-20181209220543-c233463c7e82 h1:EvokxLQsaaQjcWVWSV38221VAK7qc2zhaO17bKys/18=
++github.com/gonum/floats v0.0.0-20181209220543-c233463c7e82/go.mod h1:PxC8OnwL11+aosOB5+iEPoV3picfs8tUpkVd0pDo+Kg=
++github.com/gonum/internal v0.0.0-20181124074243-f884aa714029 h1:8jtTdc+Nfj9AR+0soOeia9UZSvYBvETVHZrugUowJ7M=
++github.com/gonum/internal v0.0.0-20181124074243-f884aa714029/go.mod h1:Pu4dmpkhSyOzRwuXkOgAvijx4o+4YMUJJo9OvPYMkks=
+ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+ github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+diff --git a/scene_commands.go b/scene_commands.go
+index 553b9c6..93b2cdd 100644
+--- a/scene_commands.go
++++ b/scene_commands.go
+@@ -151,7 +151,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 				}
+ 				floor.OpacityWhenViewedFromBelow = *props.OpacityWhenViewedFromBelow
+ 			}
+-			if floor != old {
++			if floor.Name != old.Name || floor.Order != old.Order || floor.Opacity != old.Opacity || floor.OpacityWhenViewedFromBelow != old.OpacityWhenViewedFromBelow {
+ 				scene.Floors[floor.ID] = floor
+ 				changed, structural = true, true
+ 				restore = func() { scene.Floors[old.ID] = old }
+diff --git a/scene_content.go b/scene_content.go
+index 53e9f12..cdf5d03 100644
+--- a/scene_content.go
++++ b/scene_content.go
+@@ -27,6 +27,11 @@ const (
+ 	assetReclaimable = "reclaimable"
+ )
+ 
++const (
++	walkableModeUnrestricted = "unrestricted"
++	walkableModeRestricted   = "restricted"
++)
++
+ // Transform is the shared world-space representation used by visual elements
+ // and by token helpers. It deliberately contains no renderer-specific state.
+ type Transform struct {
+@@ -50,11 +55,15 @@ type WalkableBounds struct {
  }
  
-+type browserMemoryLifecycle struct {
-+	Camera struct {
-+		X, Y, Scale float64
-+	} `json:"camera"`
-+	SceneState struct {
-+		SceneID, FloorID, SelectedToken, SelectedElement, SelectedTransition, TransitionDraftPhase string
-+		SceneRevision, Tokens, Elements                                                            int64
-+	} `json:"sceneState"`
-+	Canvas struct {
-+		Width, Height                 int
-+		ViewportWidth, ViewportHeight float64
-+		DPR, DevicePixelRatio         float64
-+	} `json:"canvas"`
-+	Images struct {
-+		Entries, Pending, ActiveLoads, LiveBitmaps    int
-+		TrackedBytes, BitmapBytes, FallbackBytes      int64
-+		ArtworkBytes, CanvasBytes                     int64
-+		BitmapCreated, BitmapClosed, BitmapCloseCalls int64
-+		BitmapCreatedBytes, BitmapClosedBytes         int64
-+		DecodeCount, DiskReads                        int64
-+	} `json:"images"`
-+	ResetFrames struct {
-+		Count                    int
-+		Mean, P50, P95, P99, Max float64
-+	} `json:"resetFrames"`
-+}
+ type Floor struct {
+-	ID                         string  `json:"id"`
+-	Name                       string  `json:"name"`
+-	Order                      int     `json:"order"`
+-	Opacity                    float64 `json:"opacity"`
+-	OpacityWhenViewedFromBelow float64 `json:"opacityWhenViewedFromBelow"`
++	ID                         string              `json:"id"`
++	Name                       string              `json:"name"`
++	Order                      int                 `json:"order"`
++	Opacity                    float64             `json:"opacity"`
++	OpacityWhenViewedFromBelow float64             `json:"opacityWhenViewedFromBelow"`
++	WalkableMode               string              `json:"walkableMode"`
++	WalkableComponents         []WalkableComponent `json:"walkableComponents"`
++	RenderBounds               *Polygon            `json:"renderBounds"`
++	GeometryRevision           uint64              `json:"geometryRevision"`
+ }
+ 
+ type Layer struct {
+diff --git a/scene_content_test.go b/scene_content_test.go
+index f17f770..7d9c7a8 100644
+--- a/scene_content_test.go
++++ b/scene_content_test.go
+@@ -1,6 +1,7 @@
+ package main
+ 
+ import (
++	"bytes"
+ 	"encoding/json"
+ 	"fmt"
+ 	"net/http"
+@@ -11,6 +12,37 @@ import (
+ 	"time"
+ )
+ 
++func TestFloorGeometryJSONRoundTrip(t *testing.T) {
++	restricted := Floor{
++		ID:                 "restricted",
++		Name:               "Restricted",
++		WalkableMode:       walkableModeRestricted,
++		WalkableComponents: []WalkableComponent{},
++		RenderBounds:       nil,
++		GeometryRevision:   4,
++	}
++	unrestricted := Floor{ID: "unrestricted", Name: "Unrestricted", WalkableMode: walkableModeUnrestricted}
 +
-+type browserMemoryTotals struct {
-+	WorkingSet, PrivateBytes, RendererPrivateBytes, GPUPrivateBytes uint64
-+}
-+
-+type browserMemoryOutcome struct {
-+	Name                                    string
-+	Baseline, BeforeAction, After10         browserMemoryTotals
-+	BeforeActionLifecycle, After10Lifecycle browserMemoryLifecycle
-+	HTTPRequests, HTTPBytes                 int64
-+	ResetFrameCount                         int
-+	ResetMaxFrameMS                         float64
-+	ResetFrameMetricAvailable               bool
-+	JSErrors                                int
-+}
-+
-+func runBrowserMemoryCausalProfile(t *testing.T, output, chrome, hostURL string, report map[string]any, rows *[]map[string]any, persist func()) {
-+	t.Helper()
-+	report["profile"] = "canvas-gpu-lifetime-causal"
-+	report["largeAsset"] = "one 10000x10000 tiled scene image"
-+	report["comparison"] = "each variant runs in a fresh Chromium process and fresh browser profile"
-+
-+	browserLog, err := os.OpenFile(filepath.Join(output, "browser.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
++	encoded, err := json.Marshal([]Floor{restricted, unrestricted})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	defer browserLog.Close()
-+
-+	var csv strings.Builder
-+	csv.WriteString("variant,stage,seconds_after_reset,private_mib,working_set_mib,renderer_private_mib,gpu_private_mib,js_heap_mib,atlas_bitmap_mib,atlas_fallback_mib,atlas_artwork_mib,live_bitmaps,bitmap_created,bitmap_closed,bitmap_close_calls,bitmap_created_mib,bitmap_closed_mib,http_requests,http_mib,idb_reads,decode_count,reset_frames,reset_max_frame_ms,camera_x,camera_y,camera_scale,canvas_width,canvas_height,dpr,js_errors\n")
-+
-+	type resetStats struct {
-+		ElapsedMS float64 `json:"elapsedMs"`
-+		Frame     struct {
-+			Count int     `json:"count"`
-+			Mean  float64 `json:"mean"`
-+			P50   float64 `json:"p50"`
-+			P95   float64 `json:"p95"`
-+			P99   float64 `json:"p99"`
-+			Max   float64 `json:"max"`
-+		} `json:"frame"`
-+	}
-+	type checkpointResult struct {
-+		Browser   browserMemoryTotals
-+		Lifecycle browserMemoryLifecycle
-+		JSHeap    float64
-+	}
-+	type variantSpec struct {
-+		Name   string
-+		Action string
-+	}
-+	variants := []variantSpec{{"A_control", "control"}, {"B_backing_store_reset", "backing"}, {"C_canvas_context_replacement", "replace"}, {"D_page_reload", "reload"}}
-+	outcomes := make([]browserMemoryOutcome, 0, len(variants))
-+	const mib = float64(1024 * 1024)
-+
-+	for variantIndex, variant := range variants {
-+		t.Logf("browser memory causal variant %s", variant.Name)
-+		profileJSON(t, hostURL+"/__bench/scene", "POST", map[string]any{"Count": 0, "MapWidth": 10000, "MapElements": 1, "DistinctMaps": true})
-+
-+		profileDir, err := os.MkdirTemp(output, ".chrome-"+variant.Name+"-")
-+		if err != nil {
-+			t.Fatal(err)
-+		}
-+		args := []string{"--no-sandbox", "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--remote-debugging-port=0", "--user-data-dir=" + profileDir, "about:blank"}
-+		browser := exec.Command(chrome, args...)
-+		browser.Stdout = browserLog
-+		browser.Stderr = browserLog
-+		if err := browser.Start(); err != nil {
-+			os.RemoveAll(profileDir)
-+			t.Fatal(err)
-+		}
-+		cleanupBrowser := func() {
-+			if browser.Process != nil {
-+				_ = browser.Process.Kill()
-+			}
-+			_ = browser.Wait()
-+			_ = os.RemoveAll(profileDir)
-+		}
-+
-+		func() {
-+			defer cleanupBrowser()
-+			var port, endpoint string
-+			for i := 0; i < 100; i++ {
-+				if b, err := os.ReadFile(filepath.Join(profileDir, "DevToolsActivePort")); err == nil {
-+					lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-+					if len(lines) >= 2 {
-+						port = strings.TrimSpace(lines[0])
-+						endpoint = strings.TrimSpace(lines[1])
-+						break
-+					}
-+				}
-+				time.Sleep(100 * time.Millisecond)
-+			}
-+			if port == "" {
-+				t.Fatal("browser startup")
-+			}
-+
-+			control := profileDial(t, "ws://127.0.0.1:"+port+endpoint)
-+			if variantIndex == 0 {
-+				report["browser"] = json.RawMessage(control.call("Browser.getVersion", map[string]any{}))
-+				report["gpu"] = json.RawMessage(control.call("SystemInfo.getInfo", map[string]any{}))
-+				report["viewport"] = "1440x1000 DPR1, headless, GPU not disabled"
-+				persist()
-+			}
-+
-+			var tabs []struct {
-+				Type string `json:"type"`
-+				URL  string `json:"webSocketDebuggerUrl"`
-+			}
-+			b := profileJSON(t, "http://127.0.0.1:"+port+"/json", "GET", nil)
-+			json.Unmarshal(b, &tabs)
-+			pageURL := ""
-+			for _, tab := range tabs {
-+				if tab.Type == "page" && tab.URL != "" {
-+					pageURL = tab.URL
-+					break
-+				}
-+			}
-+			if pageURL == "" {
-+				t.Fatal("browser page target not found")
-+			}
-+			page := profileDial(t, pageURL)
-+			page.call("Runtime.enable", map[string]any{})
-+			page.call("Network.enable", map[string]any{})
-+			page.call("Page.enable", map[string]any{})
-+			page.call("Performance.enable", map[string]any{})
-+			page.call("HeapProfiler.enable", map[string]any{})
-+			page.call("Emulation.setDeviceMetricsOverride", map[string]any{"width": 1440, "height": 1000, "deviceScaleFactor": 1, "mobile": false})
-+			page.call("Page.navigate", map[string]any{"url": hostURL})
-+			ready := page.eval(`(async()=>{for(let i=0;i<100&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));if(!window.__atlasProbe)return false;__atlasProbe.enter({session:'load',key:'load-key'});for(let i=0;i<100&&!__atlasProbe.connected();i++)await new Promise(r=>setTimeout(r,50));return __atlasProbe.connected()})()`)
-+			if string(ready) != "true" {
-+				t.Fatal("profile campaign did not connect")
-+			}
-+
-+			browserMem := func() (map[string]any, browserMemoryTotals) {
-+				var info struct {
-+					ProcessInfo []struct {
-+						ID   int     `json:"id"`
-+						Type string  `json:"type"`
-+						CPU  float64 `json:"cpuTime"`
-+					} `json:"processInfo"`
-+				}
-+				json.Unmarshal(control.call("SystemInfo.getProcessInfo", map[string]any{}), &info)
-+				var totals browserMemoryTotals
-+				var processes []any
-+				groups := map[string]map[string]uint64{}
-+				for _, p := range info.ProcessInfo {
-+					v := readProcessStats(p.ID)
-+					totals.WorkingSet += v.WorkingSet
-+					totals.PrivateBytes += v.PrivateBytes
-+					group := groups[p.Type]
-+					if group == nil {
-+						group = map[string]uint64{}
-+						groups[p.Type] = group
-+					}
-+					group["workingSet"] += v.WorkingSet
-+					group["privateBytes"] += v.PrivateBytes
-+					group["count"]++
-+					processes = append(processes, map[string]any{"id": p.ID, "type": p.Type, "cpuTime": p.CPU, "workingSet": v.WorkingSet, "privateBytes": v.PrivateBytes})
-+				}
-+				totals.RendererPrivateBytes = groups["renderer"]["privateBytes"]
-+				totals.GPUPrivateBytes = groups["GPU"]["privateBytes"]
-+				return map[string]any{"workingSetSum": totals.WorkingSet, "privateBytesSum": totals.PrivateBytes, "groups": groups, "processes": processes}, totals
-+			}
-+
-+			var reset resetStats
-+			checkpoint := func(stage string, secondsAfterReset float64, includeResetNetwork bool) checkpointResult {
-+				lifeRaw := page.eval(`__atlasProbe.lifecycle()`)
-+				var life browserMemoryLifecycle
-+				json.Unmarshal(lifeRaw, &life)
-+				heapRaw := page.call("Runtime.getHeapUsage", map[string]any{})
-+				var heap struct {
-+					UsedSize float64 `json:"usedSize"`
-+				}
-+				json.Unmarshal(heapRaw, &heap)
-+				dom := page.call("Memory.getDOMCounters", map[string]any{})
-+				performance := page.call("Performance.getMetrics", map[string]any{})
-+				browserRaw, browserTotals := browserMem()
-+				httpRequests, httpBytes := int64(0), int64(0)
-+				if includeResetNetwork {
-+					httpRequests, httpBytes = page.Requests, page.HTTPBytes
-+				}
-+				row := map[string]any{"name": variant.Name + "_" + stage, "variant": variant.Name, "stage": stage, "secondsAfterReset": secondsAfterReset, "lifecycle": json.RawMessage(lifeRaw), "heap": json.RawMessage(heapRaw), "dom": json.RawMessage(dom), "performance": json.RawMessage(performance), "browser": browserRaw, "httpRequestsAfterReset": httpRequests, "httpBytesAfterReset": httpBytes, "reset": reset, "errors": append([]string{}, page.Errors...)}
-+				*rows = append(*rows, row)
-+				persist()
-+				csv.WriteString(fmt.Sprintf("%s,%s,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%.2f,%.2f,%d,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.6f,%d,%d,%.3f,%d\n",
-+					variant.Name, stage, secondsAfterReset, float64(browserTotals.PrivateBytes)/mib, float64(browserTotals.WorkingSet)/mib, float64(browserTotals.RendererPrivateBytes)/mib, float64(browserTotals.GPUPrivateBytes)/mib, heap.UsedSize/mib, float64(life.Images.BitmapBytes)/mib, float64(life.Images.FallbackBytes)/mib, float64(life.Images.ArtworkBytes)/mib, life.Images.LiveBitmaps, life.Images.BitmapCreated, life.Images.BitmapClosed, life.Images.BitmapCloseCalls, float64(life.Images.BitmapCreatedBytes)/mib, float64(life.Images.BitmapClosedBytes)/mib, httpRequests, float64(httpBytes)/mib, life.Images.DiskReads, life.Images.DecodeCount, reset.Frame.Count, reset.Frame.Max, life.Camera.X, life.Camera.Y, life.Camera.Scale, life.Canvas.Width, life.Canvas.Height, life.Canvas.DPR, len(page.Errors)))
-+				if err := os.WriteFile(filepath.Join(output, "summary.csv"), []byte(csv.String()), 0600); err != nil {
-+					t.Fatal(err)
-+				}
-+				return checkpointResult{Browser: browserTotals, Lifecycle: life, JSHeap: heap.UsedSize}
-+			}
-+
-+			page.call("HeapProfiler.collectGarbage", map[string]any{})
-+			time.Sleep(1500 * time.Millisecond)
-+			baseline := checkpoint("campaign_home_baseline", -1, false)
-+
-+			opened := page.eval(`(async()=>{__atlasProbe.openScene('load-scene');for(let i=0;i<200&&!__atlasProbe.ready();i++)await new Promise(r=>setTimeout(r,50));if(!__atlasProbe.ready())return false;__atlasProbe.fit();for(let i=0;i<400;i++){if(__atlasProbe.layerSettled(1)){await new Promise(r=>setTimeout(r,750));if(__atlasProbe.layerSettled(1))return true}await new Promise(r=>setTimeout(r,100))}return false})()`)
-+			if string(opened) != "true" {
-+				t.Fatalf("memory fixture did not settle: %s", page.eval(`JSON.stringify(__atlasProbe.layerStatus())`))
-+			}
-+			checkpoint("scene_settled", -1, false)
-+
-+			page.eval(`__atlasProbe.memorySweep();true`)
-+			var peakPrivate uint64
-+			until := time.Now().Add(20 * time.Second)
-+			for time.Now().Before(until) {
-+				_, current := browserMem()
-+				if current.PrivateBytes > peakPrivate {
-+					peakPrivate = current.PrivateBytes
-+				}
-+				time.Sleep(250 * time.Millisecond)
-+			}
-+			settled := page.eval(`(async()=>{__atlasProbe.stop();for(let i=0;i<200;i++){if(__atlasProbe.layerSettled(1)){await new Promise(r=>setTimeout(r,500));if(__atlasProbe.layerSettled(1))return true}await new Promise(r=>setTimeout(r,100))}return false})()`)
-+			if string(settled) != "true" {
-+				t.Fatalf("memory fixture did not settle after sweep: %s", page.eval(`JSON.stringify(__atlasProbe.layerStatus())`))
-+			}
-+			beforeRelease := checkpoint("before_release", -1, false)
-+			(*rows)[len(*rows)-1]["peakPrivateBytes"] = peakPrivate
-+			persist()
-+
-+			page.eval(`__atlasProbe.beginReset();true`)
-+			resetWallStart := time.Now()
-+			if variant.Action == "backing" || variant.Action == "replace" {
-+				// Candidate lifecycle paths must retain the live scene and decoded
-+				// ImageBitmap cache. Only trim entries that the current cache policy
-+				// already considers disposable before touching the render surface.
-+				page.eval(`__atlasProbe.stop();__atlasProbe.trimImages();true`)
-+			} else {
-+				// Control and reload keep the existing strongest cleanup path.
-+				page.eval(`(async()=>{__atlasProbe.stop();__atlasProbe.home();await __atlasProbe.clearImages();return true})()`)
-+			}
-+			page.call("HeapProfiler.collectGarbage", map[string]any{})
-+			beforeAction := checkpoint("before_surface_action", 0, false)
-+
-+			// Drain events from the workload and common cleanup before measuring
-+			// network traffic caused by the actual surface release operation.
-+			page.eval(`true`)
-+			page.resetNet()
-+			beforeActionLifecycle := beforeAction.Lifecycle
-+			resetFrameMetricAvailable := true
-+			switch variant.Action {
-+			case "control":
-+				// Common cleanup is the control; do not touch the canvas.
-+			case "backing":
-+				page.eval(`__atlasProbe.backingReset()`)
-+			case "replace":
-+				page.eval(`__atlasProbe.replaceCanvas()`)
-+			case "reload":
-+				page.eval(`__atlasProbe.prepareReloadReset();true`)
-+				page.call("Page.reload", map[string]any{})
-+				reloaded := page.eval(`(async()=>{for(let i=0;i<200&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));return !!window.__atlasProbe})()`)
-+				if string(reloaded) != "true" {
-+					t.Fatal("profile probe did not return after reload")
-+				}
-+			}
-+			page.call("HeapProfiler.collectGarbage", map[string]any{})
-+			if resetFrameMetricAvailable {
-+				resetRaw := page.eval(`__atlasProbe.endReset()`)
-+				json.Unmarshal(resetRaw, &reset)
-+			} else {
-+				reset.ElapsedMS = float64(time.Since(resetWallStart).Microseconds()) / 1000
-+			}
-+			resetWallMS := float64(time.Since(resetWallStart).Microseconds()) / 1000
-+			if reset.ElapsedMS < resetWallMS {
-+				reset.ElapsedMS = resetWallMS
-+			}
-+
-+			releaseCompleted := time.Now()
-+			time.Sleep(1500 * time.Millisecond)
-+			after15 := checkpoint("after_1_5s", 1.5, true)
-+			_ = after15
-+			if wait := 10*time.Second - time.Since(releaseCompleted); wait > 0 {
-+				time.Sleep(wait)
-+			}
-+			after10 := checkpoint("after_10s", 10, true)
-+
-+			outcome := browserMemoryOutcome{Name: variant.Name, Baseline: baseline.Browser, BeforeAction: beforeAction.Browser, After10: after10.Browser, BeforeActionLifecycle: beforeActionLifecycle, After10Lifecycle: after10.Lifecycle, HTTPRequests: page.Requests, HTTPBytes: page.HTTPBytes, ResetFrameCount: reset.Frame.Count, ResetMaxFrameMS: reset.Frame.Max, ResetFrameMetricAvailable: resetFrameMetricAvailable, JSErrors: len(page.Errors)}
-+			outcomes = append(outcomes, outcome)
-+			if len(page.Errors) > 0 {
-+				t.Fatalf("browser JavaScript errors in %s: %v", variant.Name, page.Errors)
-+			}
-+			_ = beforeRelease
-+		}()
++	if !bytes.Contains(encoded, []byte(`"walkableComponents":[]`)) || !bytes.Contains(encoded, []byte(`"renderBounds":null`)) {
++		t.Fatalf("geometry zero values lost in JSON: %s", encoded)
 +	}
 +
-+	residualReduction := func(before, after, baseline uint64) float64 {
-+		if before <= baseline {
-+			if after <= before {
-+				return 1
-+			}
-+			return 0
-+		}
-+		beforeResidual := before - baseline
-+		afterResidual := uint64(0)
-+		if after > baseline {
-+			afterResidual = after - baseline
-+		}
-+		if afterResidual >= beforeResidual {
-+			return 0
-+		}
-+		return float64(beforeResidual-afterResidual) / float64(beforeResidual)
++	var decoded []Floor
++	if err := json.Unmarshal(encoded, &decoded); err != nil {
++		t.Fatal(err)
 +	}
-+	stateEqual := func(a, b browserMemoryLifecycle) bool {
-+		return a.Camera == b.Camera && a.SceneState == b.SceneState && a.Canvas.Width == b.Canvas.Width && a.Canvas.Height == b.Canvas.Height && a.Canvas.DPR == b.Canvas.DPR
++	if decoded[0].WalkableMode != walkableModeRestricted || decoded[0].WalkableComponents == nil || len(decoded[0].WalkableComponents) != 0 {
++		t.Fatalf("restricted empty geometry was not preserved: %#v", decoded[0])
 +	}
-+	decision := map[string]any{}
-+	anyEligible := false
-+	t.Log("canvas lifetime comparison (10s after release)")
-+	t.Log("variant                         private MiB   GPU MiB   residual private/GPU   HTTP   decodeΔ   cache   state   eligible")
-+	for _, outcome := range outcomes {
-+		privateReduction := residualReduction(outcome.BeforeAction.PrivateBytes, outcome.After10.PrivateBytes, outcome.Baseline.PrivateBytes)
-+		gpuReduction := residualReduction(outcome.BeforeAction.GPUPrivateBytes, outcome.After10.GPUPrivateBytes, outcome.Baseline.GPUPrivateBytes)
-+		withinBaseline := outcome.After10.PrivateBytes <= outcome.Baseline.PrivateBytes+150*1024*1024 && outcome.After10.GPUPrivateBytes <= outcome.Baseline.GPUPrivateBytes+150*1024*1024
-+		decodeDelta := outcome.After10Lifecycle.Images.DecodeCount - outcome.BeforeActionLifecycle.Images.DecodeCount
-+		createdDelta := outcome.After10Lifecycle.Images.BitmapCreated - outcome.BeforeActionLifecycle.Images.BitmapCreated
-+		idbReadDelta := outcome.After10Lifecycle.Images.DiskReads - outcome.BeforeActionLifecycle.Images.DiskReads
-+		counterReset := decodeDelta < 0 || createdDelta < 0 || idbReadDelta < 0
-+		if counterReset {
-+			decodeDelta = outcome.After10Lifecycle.Images.DecodeCount
-+			createdDelta = outcome.After10Lifecycle.Images.BitmapCreated
-+			idbReadDelta = outcome.After10Lifecycle.Images.DiskReads
-+		}
-+		cachePreserved := outcome.BeforeActionLifecycle.Images.TrackedBytes == outcome.After10Lifecycle.Images.TrackedBytes && outcome.BeforeActionLifecycle.Images.BitmapBytes == outcome.After10Lifecycle.Images.BitmapBytes && outcome.BeforeActionLifecycle.Images.FallbackBytes == outcome.After10Lifecycle.Images.FallbackBytes && outcome.BeforeActionLifecycle.Images.LiveBitmaps == outcome.After10Lifecycle.Images.LiveBitmaps
-+		unchanged := stateEqual(outcome.BeforeActionLifecycle, outcome.After10Lifecycle)
-+		candidate := outcome.Name == "B_backing_store_reset" || outcome.Name == "C_canvas_context_replacement"
-+		eligible := candidate && (privateReduction >= .5 || gpuReduction >= .5 || withinBaseline) && outcome.HTTPRequests == 0 && decodeDelta == 0 && createdDelta == 0 && cachePreserved && unchanged && outcome.JSErrors == 0
-+		if eligible {
-+			anyEligible = true
-+		}
-+		decision[outcome.Name] = map[string]any{"privateResidualReduction": privateReduction, "gpuResidualReduction": gpuReduction, "withinBaselinePlus150MiB": withinBaseline, "httpRequestsAfterReset": outcome.HTTPRequests, "httpBytesAfterReset": outcome.HTTPBytes, "decodeDeltaAfterReset": decodeDelta, "bitmapCreateDeltaAfterReset": createdDelta, "indexedDBReadDeltaAfterReset": idbReadDelta, "counterResetByReload": counterReset, "imageBitmapCachePreserved": cachePreserved, "cameraSceneCanvasUnchanged": unchanged, "resetFrameCount": outcome.ResetFrameCount, "resetMaxFrameMs": outcome.ResetMaxFrameMS, "resetFrameMetricAvailable": outcome.ResetFrameMetricAvailable, "eligibleForProductionLifecycle": eligible}
-+		t.Logf("%-31s %10.1f %9.1f %8.0f%%/%3.0f%% %7d %9d %7t %7t %10t", outcome.Name, float64(outcome.After10.PrivateBytes)/mib, float64(outcome.After10.GPUPrivateBytes)/mib, privateReduction*100, gpuReduction*100, outcome.HTTPRequests, decodeDelta, cachePreserved, unchanged, eligible)
++	if decoded[1].WalkableMode != walkableModeUnrestricted || decoded[0].RenderBounds != nil {
++		t.Fatalf("floor modes or null render bounds changed: %#v", decoded)
 +	}
-+	report["decision"] = decision
-+	report["productionLifecycleCandidateFound"] = anyEligible
-+	if !anyEligible {
-+		report["nextExperiment"] = "decode churn"
-+	}
-+	persist()
 +}
 +
- func TestProfileAtlas(t *testing.T) {
- 	runProfileAtlas(t, os.Getenv("ATLAS_PROFILE"), "full")
- }
-@@ -413,6 +790,9 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
- 	if os.Getenv("ATLAS_PROFILE_HOST") != "" {
- 		t.Skip("host")
- 	}
-+	if profileMode == "memory" && runtime.GOOS != "windows" {
-+		t.Skip("browser Private Bytes attribution currently requires Windows process counters")
+ func elementFrom(t *testing.T, message map[string]json.RawMessage) SceneElement {
+ 	t.Helper()
+ 	var element SceneElement
+diff --git a/geometry.go b/geometry.go
+new file mode 100644
+index 0000000..535a40b
+--- /dev/null
++++ b/geometry.go
+@@ -0,0 +1,340 @@
++package main
++
++import (
++	"errors"
++	"math"
++	"sort"
++)
++
++const (
++	// One millimetre in the existing world coordinate system is precise enough
++	// for editor geometry and keeps exact integer predicates safe at ±1e6.
++	geometryQuantum          = 0.001
++	maxGeometryRingVertices  = 10_000
++	maxGeometryTotalVertices = 50_000
++	maxWalkableComponents    = 2_048
++)
++
++var (
++	errInvalidGeometry       = errors.New("invalid geometry")
++	errGeometryLimitExceeded = errors.New("geometry limit exceeded")
++)
++
++// Polygon is stored in Floor world coordinates. Rings are implicitly closed;
++// the first point is not repeated at the end.
++type Polygon struct {
++	Outer []ScenePoint   `json:"outer"`
++	Holes [][]ScenePoint `json:"holes"`
++}
++
++// WalkableComponent is one connected piece of walkable geometry. Its stable
++// ID lets later editor operations move or delete the component independently.
++type WalkableComponent struct {
++	ID      string  `json:"id"`
++	Polygon Polygon `json:"polygon"`
++}
++
++type AABB struct {
++	MinX float64
++	MinY float64
++	MaxX float64
++	MaxY float64
++}
++
++type gridPoint struct {
++	X int64
++	Y int64
++}
++
++type pointLocation uint8
++
++const (
++	pointOutside pointLocation = iota
++	pointInside
++	pointBoundary
++)
++
++func quantizeCoordinate(value float64) (float64, error) {
++	if !validNumber(value) || math.Abs(value) > maxSceneDimension {
++		return 0, errInvalidGeometry
 +	}
- 	chrome := os.Getenv("ATLAS_CHROME")
- 	if chrome == "" {
- 		t.Fatal("ATLAS_CHROME required")
-@@ -456,7 +836,7 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
- 	if profileMode == "layer" {
- 		mapDimensions = nil
- 	} else if profileMode == "memory" {
--		mapDimensions = []mapSpec{{10000, 10000, 0}, {10000, 10000, 1}, {10000, 10000, 2}}
-+		mapDimensions = []mapSpec{{10000, 10000, 0}}
- 	}
- 	var memoryJPEG []byte
- 	for _, dim := range mapDimensions {
-@@ -544,6 +924,13 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
- 	memoryJPEG = nil
- 	runtime.GC()
- 	debug.FreeOSMemory()
-+	if profileMode == "memory" {
-+		runBrowserMemoryCausalProfile(t, output, chrome, host.URL, report, &rows, persist)
-+		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
-+		cmd.Wait()
-+		persist()
++	value = math.Round(value/geometryQuantum) * geometryQuantum
++	if value == 0 {
++		value = 0
++	}
++	return value, nil
++}
++
++func quantizePoint(point ScenePoint) (ScenePoint, error) {
++	x, err := quantizeCoordinate(point.X)
++	if err != nil {
++		return ScenePoint{}, err
++	}
++	y, err := quantizeCoordinate(point.Y)
++	if err != nil {
++		return ScenePoint{}, err
++	}
++	return ScenePoint{X: x, Y: y}, nil
++}
++
++func pointGrid(point ScenePoint) gridPoint {
++	return gridPoint{X: int64(math.Round(point.X / geometryQuantum)), Y: int64(math.Round(point.Y / geometryQuantum))}
++}
++
++func samePoint(a, b ScenePoint) bool { return pointGrid(a) == pointGrid(b) }
++
++func cross(a, b, c gridPoint) int64 {
++	return (b.X-a.X)*(c.Y-a.Y) - (b.Y-a.Y)*(c.X-a.X)
++}
++
++func between(a, b, c gridPoint) bool {
++	return b.X >= min(a.X, c.X) && b.X <= max(a.X, c.X) && b.Y >= min(a.Y, c.Y) && b.Y <= max(a.Y, c.Y)
++}
++
++func onSegment(a, b, point gridPoint) bool {
++	return cross(a, b, point) == 0 && between(a, point, b)
++}
++
++func segmentsIntersect(a, b, c, d ScenePoint) bool {
++	ga, gb, gc, gd := pointGrid(a), pointGrid(b), pointGrid(c), pointGrid(d)
++	o1, o2 := cross(ga, gb, gc), cross(ga, gb, gd)
++	o3, o4 := cross(gc, gd, ga), cross(gc, gd, gb)
++	if o1 == 0 && onSegment(ga, gb, gc) || o2 == 0 && onSegment(ga, gb, gd) ||
++		o3 == 0 && onSegment(gc, gd, ga) || o4 == 0 && onSegment(gc, gd, gb) {
++		return true
++	}
++	return (o1 < 0) != (o2 < 0) && (o3 < 0) != (o4 < 0)
++}
++
++func signedRingArea(ring []ScenePoint) float64 {
++	area := 0.0
++	for i, point := range ring {
++		next := ring[(i+1)%len(ring)]
++		area += point.X*next.Y - next.X*point.Y
++	}
++	return area / 2
++}
++
++func ringSimple(ring []ScenePoint) bool {
++	if len(ring) < 3 {
++		return false
++	}
++	for i := range ring {
++		a, b := ring[i], ring[(i+1)%len(ring)]
++		if samePoint(a, b) {
++			return false
++		}
++		for j := i + 1; j < len(ring); j++ {
++			if j == i+1 || i == 0 && j == len(ring)-1 {
++				continue
++			}
++			c, d := ring[j], ring[(j+1)%len(ring)]
++			if segmentsIntersect(a, b, c, d) {
++				return false
++			}
++		}
++	}
++	return signedRingArea(ring) != 0
++}
++
++func normalizeRing(input []ScenePoint, counterClockwise bool) ([]ScenePoint, error) {
++	if len(input) > maxGeometryRingVertices {
++		return nil, errGeometryLimitExceeded
++	}
++	ring := make([]ScenePoint, 0, len(input))
++	for _, raw := range input {
++		point, err := quantizePoint(raw)
++		if err != nil {
++			return nil, err
++		}
++		if len(ring) == 0 || !samePoint(ring[len(ring)-1], point) {
++			ring = append(ring, point)
++		}
++	}
++	if len(ring) > 1 && samePoint(ring[0], ring[len(ring)-1]) {
++		ring = ring[:len(ring)-1]
++	}
++
++	for changed := true; changed && len(ring) >= 3; {
++		changed = false
++		for i := 0; i < len(ring); i++ {
++			a := pointGrid(ring[(i+len(ring)-1)%len(ring)])
++			b := pointGrid(ring[i])
++			c := pointGrid(ring[(i+1)%len(ring)])
++			if cross(a, b, c) == 0 && between(a, b, c) {
++				ring = append(ring[:i], ring[i+1:]...)
++				changed = true
++				break
++			}
++		}
++	}
++	if !ringSimple(ring) {
++		return nil, errInvalidGeometry
++	}
++	if (signedRingArea(ring) > 0) != counterClockwise {
++		reverseRing(ring)
++	}
++	rotateRingToMinimum(ring)
++	return ring, nil
++}
++
++func reverseRing(ring []ScenePoint) {
++	for left, right := 0, len(ring)-1; left < right; left, right = left+1, right-1 {
++		ring[left], ring[right] = ring[right], ring[left]
++	}
++}
++
++func rotateRingToMinimum(ring []ScenePoint) {
++	minimum := 0
++	for i := 1; i < len(ring); i++ {
++		if pointLess(ring[i], ring[minimum]) {
++			minimum = i
++		}
++	}
++	if minimum == 0 {
 +		return
 +	}
- 	// Start Chrome only after costly fixture preparation. Keeping an idle headless
- 	// browser alive while three large pyramids are built made the CDP baseline
- 	// depend on unrelated CPU pressure and could trigger its startup watchdog.
-@@ -729,93 +1116,7 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
- 		rows = append(rows, map[string]any{"name": name, "seconds": duration, "clients": clients, "browser": browserMem(), "serverCPUSeconds": after.CPUSeconds - before.CPUSeconds, "serverCPUPercentOneCore": 100 * (after.CPUSeconds - before.CPUSeconds) / duration, "serverWorkingSet": after.WorkingSet, "serverPeakWorkingSet": peak, "serverPrivateBytes": after.PrivateBytes})
- 		persist()
- 	}
--	if profileMode == "memory" {
--		report["profile"] = "browser-memory-attribution"
--		report["largeAsset"] = "10000x10000 tiled scene image"
--		page := pages[0]
--		page.call("Performance.enable", map[string]any{})
--		page.call("HeapProfiler.enable", map[string]any{})
--		var csv strings.Builder
--		csv.WriteString("stage,private_mib,working_set_mib,renderer_private_mib,gpu_private_mib,js_heap_mib,atlas_bitmap_mib,atlas_fallback_mib,atlas_artwork_mib,canvas_mib,bitmap_entries,pending,peak_private_mib\n")
--		checkpoint := func(name string, collectGarbage bool, peakPrivate uint64) {
--			if collectGarbage {
--				page.call("HeapProfiler.collectGarbage", map[string]any{})
--				time.Sleep(1500 * time.Millisecond)
--			}
--			atlas := page.eval(`__atlasProbe.imageMemory()`)
--			heap := page.call("Runtime.getHeapUsage", map[string]any{})
--			dom := page.call("Memory.getDOMCounters", map[string]any{})
--			performance := page.call("Performance.getMetrics", map[string]any{})
--			browser := browserMem()
--			row := map[string]any{"name": name, "atlas": json.RawMessage(atlas), "heap": json.RawMessage(heap), "dom": json.RawMessage(dom), "performance": json.RawMessage(performance), "browser": browser, "peakPrivateBytes": peakPrivate, "errors": append([]string{}, page.Errors...)}
--			rows = append(rows, row)
--			persist()
--			var a struct {
--				Entries       int   `json:"entries"`
--				BitmapBytes   int64 `json:"bitmapBytes"`
--				FallbackBytes int64 `json:"fallbackBytes"`
--				ArtworkBytes  int64 `json:"artworkBytes"`
--				CanvasBytes   int64 `json:"canvasBytes"`
--				Pending       int   `json:"pending"`
--			}
--			var h struct {
--				UsedSize float64 `json:"usedSize"`
--			}
--			json.Unmarshal(atlas, &a)
--			json.Unmarshal(heap, &h)
--			private := browser["privateBytesSum"].(uint64)
--			working := browser["workingSetSum"].(uint64)
--			groups := browser["groups"].(map[string]map[string]uint64)
--			mib := func(v uint64) float64 { return float64(v) / (1024 * 1024) }
--			csv.WriteString(fmt.Sprintf("%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%.2f\n", name, mib(private), mib(working), mib(groups["renderer"]["privateBytes"]), mib(groups["GPU"]["privateBytes"]), h.UsedSize/(1024*1024), float64(a.BitmapBytes)/(1024*1024), float64(a.FallbackBytes)/(1024*1024), float64(a.ArtworkBytes)/(1024*1024), float64(a.CanvasBytes)/(1024*1024), a.Entries, a.Pending, mib(peakPrivate)))
--			os.WriteFile(filepath.Join(output, "summary.csv"), []byte(csv.String()), 0600)
--			t.Logf("memory %-30s private=%6.1f MiB renderer=%6.1f GPU=%6.1f JS=%5.1f bitmap=%6.1f MiB", name, mib(private), mib(groups["renderer"]["privateBytes"]), mib(groups["GPU"]["privateBytes"]), h.UsedSize/(1024*1024), float64(a.BitmapBytes)/(1024*1024))
--		}
--		page.eval(`(async()=>{__atlasProbe.home();await __atlasProbe.clearImages();return true})()`)
--		checkpoint("campaign_home_baseline_after_gc", true, 0)
--		type memoryScenario struct {
--			name     string
--			elements int
--			distinct bool
--		}
--		for _, scenario := range []memoryScenario{{"one_10k_asset", 1, true}, {"three_elements_shared_10k_asset", 3, false}, {"three_distinct_10k_assets", 3, true}} {
--			t.Logf("memory scenario %s", scenario.name)
--			profileJSON(t, host.URL+"/__bench/scene", "POST", map[string]any{"Count": 0, "MapWidth": 10000, "MapElements": scenario.elements, "DistinctMaps": scenario.distinct})
--			page.eval(`(async()=>{if(!__atlasProbe.ready())__atlasProbe.openScene('load-scene');for(let i=0;i<200&&!__atlasProbe.ready();i++)await new Promise(r=>setTimeout(r,50));__atlasProbe.fit();for(let i=0;i<400;i++){if(__atlasProbe.layerSettled(` + fmt.Sprint(scenario.elements) + `)){await new Promise(r=>setTimeout(r,750));if(__atlasProbe.layerSettled(` + fmt.Sprint(scenario.elements) + `))return true}await new Promise(r=>setTimeout(r,100))}throw Error('memory fixture did not settle: '+JSON.stringify(__atlasProbe.layerStatus()))})()`)
--			checkpoint(scenario.name+"_fit", false, 0)
--			page.eval(`__atlasProbe.memorySweep();true`)
--			var peakPrivate uint64
--			until := time.Now().Add(20 * time.Second)
--			for time.Now().Before(until) {
--				memory := browserMem()
--				if current := memory["privateBytesSum"].(uint64); current > peakPrivate {
--					peakPrivate = current
--				}
--				time.Sleep(250 * time.Millisecond)
--			}
--			page.eval(`__atlasProbe.stop();true`)
--			page.eval(`(async()=>{for(let i=0;i<200;i++){if(__atlasProbe.layerSettled(` + fmt.Sprint(scenario.elements) + `))return true;await new Promise(r=>setTimeout(r,100))}return false})()`)
--			checkpoint(scenario.name+"_after_pan_zoom", false, peakPrivate)
--			page.eval(`(async()=>{__atlasProbe.home();await __atlasProbe.clearImages();return true})()`)
--			checkpoint(scenario.name+"_after_home_clear_gc", true, 0)
--		}
--		page.eval(`(async()=>{__atlasProbe.home();await __atlasProbe.clearImages();return true})()`)
--		checkpoint("campaign_home_final_after_gc", true, 0)
--		time.Sleep(10 * time.Second)
--		checkpoint("campaign_home_after_10s_idle", false, 0)
--		page.call("Memory.simulatePressureNotification", map[string]any{"level": "critical"})
--		checkpoint("campaign_home_after_memory_pressure", true, 0)
--		page.call("Page.reload", map[string]any{})
--		page.eval(`(async()=>{for(let i=0;i<200&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));return !!window.__atlasProbe})()`)
--		checkpoint("after_page_reload_gc", true, 0)
--		if len(page.Errors) > 0 {
--			t.Fatalf("browser JavaScript errors: %v", page.Errors)
--		}
--		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
--		cmd.Wait()
--		persist()
--		return
--	}
++	rotated := append(append(make([]ScenePoint, 0, len(ring)), ring[minimum:]...), ring[:minimum]...)
++	copy(ring, rotated)
++}
 +
- 	if profileMode == "layer" {
- 		report["profile"] = "visual-layer-bake-baseline"
- 		scenarios := []struct {
++func pointLess(a, b ScenePoint) bool {
++	ga, gb := pointGrid(a), pointGrid(b)
++	return ga.X < gb.X || ga.X == gb.X && ga.Y < gb.Y
++}
++
++func ringLocation(ring []ScenePoint, point ScenePoint) pointLocation {
++	gp := pointGrid(point)
++	inside := false
++	for i, a := range ring {
++		b := ring[(i+1)%len(ring)]
++		ga, gb := pointGrid(a), pointGrid(b)
++		if onSegment(ga, gb, gp) {
++			return pointBoundary
++		}
++		if (ga.Y > gp.Y) != (gb.Y > gp.Y) {
++			x := float64(gb.X-ga.X)*float64(gp.Y-ga.Y)/float64(gb.Y-ga.Y) + float64(ga.X)
++			if float64(gp.X) < x {
++				inside = !inside
++			}
++		}
++	}
++	if inside {
++		return pointInside
++	}
++	return pointOutside
++}
++
++func pointInPolygon(polygon Polygon, point ScenePoint) bool {
++	outer := ringLocation(polygon.Outer, point)
++	if outer == pointOutside {
++		return false
++	}
++	if outer == pointBoundary {
++		return true
++	}
++	for _, hole := range polygon.Holes {
++		switch ringLocation(hole, point) {
++		case pointInside:
++			return false
++		case pointBoundary:
++			return true
++		}
++	}
++	return true
++}
++
++func ringsIntersect(a, b []ScenePoint) bool {
++	for i, p := range a {
++		p2 := a[(i+1)%len(a)]
++		for j, q := range b {
++			if segmentsIntersect(p, p2, q, b[(j+1)%len(b)]) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++func normalizePolygon(input Polygon) (Polygon, error) {
++	if len(input.Outer)+ringVertexCount(input.Holes) > maxGeometryTotalVertices {
++		return Polygon{}, errGeometryLimitExceeded
++	}
++	outer, err := normalizeRing(input.Outer, true)
++	if err != nil {
++		return Polygon{}, err
++	}
++	holes := make([][]ScenePoint, len(input.Holes))
++	for i, inputHole := range input.Holes {
++		hole, err := normalizeRing(inputHole, false)
++		if err != nil {
++			return Polygon{}, err
++		}
++		if ringLocation(outer, hole[0]) != pointInside || ringsIntersect(outer, hole) {
++			return Polygon{}, errInvalidGeometry
++		}
++		holes[i] = hole
++	}
++	for i := range holes {
++		for j := i + 1; j < len(holes); j++ {
++			if ringsIntersect(holes[i], holes[j]) || ringLocation(holes[i], holes[j][0]) != pointOutside || ringLocation(holes[j], holes[i][0]) != pointOutside {
++				return Polygon{}, errInvalidGeometry
++			}
++		}
++	}
++	sort.Slice(holes, func(i, j int) bool { return ringLess(holes[i], holes[j]) })
++	return Polygon{Outer: outer, Holes: holes}, nil
++}
++
++func ringVertexCount(rings [][]ScenePoint) int {
++	total := 0
++	for _, ring := range rings {
++		total += len(ring)
++	}
++	return total
++}
++
++func ringLess(a, b []ScenePoint) bool {
++	for i := 0; i < min(len(a), len(b)); i++ {
++		if samePoint(a[i], b[i]) {
++			continue
++		}
++		return pointLess(a[i], b[i])
++	}
++	return len(a) < len(b)
++}
++
++func polygonBounds(polygon Polygon) AABB {
++	bounds := AABB{MinX: polygon.Outer[0].X, MinY: polygon.Outer[0].Y, MaxX: polygon.Outer[0].X, MaxY: polygon.Outer[0].Y}
++	for _, point := range polygon.Outer[1:] {
++		bounds.MinX = math.Min(bounds.MinX, point.X)
++		bounds.MinY = math.Min(bounds.MinY, point.Y)
++		bounds.MaxX = math.Max(bounds.MaxX, point.X)
++		bounds.MaxY = math.Max(bounds.MaxY, point.Y)
++	}
++	return bounds
++}
++
++func (bounds AABB) valid() bool {
++	_, x1 := quantizeCoordinate(bounds.MinX)
++	_, y1 := quantizeCoordinate(bounds.MinY)
++	_, x2 := quantizeCoordinate(bounds.MaxX)
++	_, y2 := quantizeCoordinate(bounds.MaxY)
++	return x1 == nil && y1 == nil && x2 == nil && y2 == nil && bounds.MaxX > bounds.MinX && bounds.MaxY > bounds.MinY
++}
++
++func (bounds AABB) intersects(other AABB) bool {
++	return bounds.MinX <= other.MaxX && bounds.MaxX >= other.MinX && bounds.MinY <= other.MaxY && bounds.MaxY >= other.MinY
++}
++
++func rectanglePolygon(bounds AABB) (Polygon, error) {
++	if !bounds.valid() {
++		return Polygon{}, errInvalidGeometry
++	}
++	return normalizePolygon(Polygon{Outer: []ScenePoint{
++		{X: bounds.MinX, Y: bounds.MinY},
++		{X: bounds.MaxX, Y: bounds.MinY},
++		{X: bounds.MaxX, Y: bounds.MaxY},
++		{X: bounds.MinX, Y: bounds.MaxY},
++	}})
++}
+diff --git a/geometry_test.go b/geometry_test.go
+new file mode 100644
+index 0000000..79a79fb
+--- /dev/null
++++ b/geometry_test.go
+@@ -0,0 +1,50 @@
++package main
++
++import (
++	"errors"
++	"testing"
++)
++
++func TestNormalizePolygonAndPredicates(t *testing.T) {
++	polygon, err := normalizePolygon(Polygon{
++		Outer: []ScenePoint{{0, 0}, {5, 0}, {10, 0}, {10, 10}, {5, 5}, {0, 10}, {0, 0}},
++		Holes: [][]ScenePoint{{{2, 2}, {2, 4}, {4, 4}, {4, 2}}},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(polygon.Outer) != 5 || signedRingArea(polygon.Outer) <= 0 || signedRingArea(polygon.Holes[0]) >= 0 {
++		t.Fatalf("polygon was not normalized: %#v", polygon)
++	}
++	for _, test := range []struct {
++		point ScenePoint
++		want  bool
++	}{{ScenePoint{1, 1}, true}, {ScenePoint{3, 3}, false}, {ScenePoint{2, 3}, true}, {ScenePoint{7, 7}, true}, {ScenePoint{5, 8}, false}} {
++		if got := pointInPolygon(polygon, test.point); got != test.want {
++			t.Errorf("point %#v: got %v, want %v", test.point, got, test.want)
++		}
++	}
++}
++
++func TestNormalizePolygonRejectsInvalidGeometry(t *testing.T) {
++	for name, polygon := range map[string]Polygon{
++		"self intersection": {Outer: []ScenePoint{{0, 0}, {10, 10}, {0, 10}, {10, 0}}},
++		"hole outside":      {Outer: []ScenePoint{{0, 0}, {10, 0}, {10, 10}, {0, 10}}, Holes: [][]ScenePoint{{{20, 20}, {21, 20}, {21, 21}, {20, 21}}}},
++		"repeated vertex":   {Outer: []ScenePoint{{0, 0}, {10, 0}, {10, 10}, {0, 0}, {0, 10}}},
++	} {
++		t.Run(name, func(t *testing.T) {
++			if _, err := normalizePolygon(polygon); !errors.Is(err, errInvalidGeometry) {
++				t.Fatalf("got %v", err)
++			}
++		})
++	}
++}
++
++func TestSegmentsIntersectAtBoundary(t *testing.T) {
++	if !segmentsIntersect(ScenePoint{0, 0}, ScenePoint{10, 0}, ScenePoint{10, 0}, ScenePoint{20, 0}) {
++		t.Fatal("shared endpoint must intersect")
++	}
++	if segmentsIntersect(ScenePoint{0, 0}, ScenePoint{10, 0}, ScenePoint{11, 0}, ScenePoint{20, 0}) {
++		t.Fatal("separated collinear segments intersect")
++	}
++}
+diff --git a/polygon_clip.go b/polygon_clip.go
+new file mode 100644
+index 0000000..7b9e64e
+--- /dev/null
++++ b/polygon_clip.go
+@@ -0,0 +1,165 @@
++package main
++
++import (
++	"sort"
++
++	polyclip "github.com/ctessum/polyclip-go"
++)
++
++// unionPolygons and differencePolygons are the only places where Atlas knows
++// the clipping library API. Inputs and outputs are normalized on Atlas' fixed
++// coordinate grid so the rest of the server never depends on library details.
++func unionPolygons(polygons []Polygon) ([]Polygon, error) {
++	return clipPolygons(polygons, nil, polyclip.UNION)
++}
++
++func differencePolygons(subject, clipping []Polygon) ([]Polygon, error) {
++	return clipPolygons(subject, clipping, polyclip.DIFFERENCE)
++}
++
++func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon, error) {
++	if len(subject)+len(clipping) > maxWalkableComponents {
++		return nil, errGeometryLimitExceeded
++	}
++	subjectClip, err := atlasPolygonsToClip(subject)
++	if err != nil {
++		return nil, err
++	}
++	if operation == polyclip.UNION {
++		return clipPolygonToAtlas(subjectClip)
++	}
++	clippingClip, err := atlasPolygonsToClip(clipping)
++	if err != nil {
++		return nil, err
++	}
++	if len(subjectClip) == 0 || len(clippingClip) == 0 {
++		return clipPolygonToAtlas(subjectClip)
++	}
++	return clipPolygonToAtlas(subjectClip.Construct(operation, clippingClip))
++}
++
++func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
++	var result polyclip.Polygon
++	total := 0
++	for _, polygon := range polygons {
++		normalized, err := normalizePolygon(polygon)
++		if err != nil {
++			return nil, err
++		}
++		total += len(normalized.Outer) + ringVertexCount(normalized.Holes)
++		if total > maxGeometryTotalVertices {
++			return nil, errGeometryLimitExceeded
++		}
++		current := polyclip.Polygon{ringToClip(normalized.Outer)}
++		for _, hole := range normalized.Holes {
++			current = append(current, ringToClip(hole))
++		}
++		if len(result) == 0 {
++			result = current
++		} else {
++			result = result.Construct(polyclip.UNION, current)
++		}
++	}
++	return result, nil
++}
++
++func ringToClip(ring []ScenePoint) polyclip.Contour {
++	contour := make(polyclip.Contour, len(ring))
++	for i, point := range ring {
++		contour[i] = polyclip.Point{X: point.X, Y: point.Y}
++	}
++	return contour
++}
++
++type clipContour struct {
++	ring   []ScenePoint
++	area   float64
++	parent int
++	depth  int
++}
++
++func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
++	if len(clipped) > maxWalkableComponents*2 {
++		return nil, errGeometryLimitExceeded
++	}
++	contours := make([]clipContour, 0, len(clipped))
++	total := 0
++	for _, contour := range clipped {
++		raw := make([]ScenePoint, len(contour))
++		for i, point := range contour {
++			raw[i] = ScenePoint{X: point.X, Y: point.Y}
++		}
++		ring, err := normalizeRing(raw, true)
++		if err != nil {
++			return nil, err
++		}
++		total += len(ring)
++		if total > maxGeometryTotalVertices {
++			return nil, errGeometryLimitExceeded
++		}
++		contours = append(contours, clipContour{ring: ring, area: signedRingArea(ring), parent: -1})
++	}
++
++	for i := range contours {
++		parentArea := mathMaxFloat
++		for j := range contours {
++			if i == j || contours[j].area <= contours[i].area || ringLocation(contours[j].ring, contours[i].ring[0]) != pointInside {
++				continue
++			}
++			if contours[j].area < parentArea {
++				contours[i].parent = j
++				parentArea = contours[j].area
++			}
++		}
++	}
++	for i := range contours {
++		depth := 0
++		for parent := contours[i].parent; parent >= 0; parent = contours[parent].parent {
++			depth++
++			if depth > len(contours) {
++				return nil, errInvalidGeometry
++			}
++		}
++		contours[i].depth = depth
++	}
++
++	owners := make(map[int]int)
++	result := make([]Polygon, 0, len(contours))
++	for i, contour := range contours {
++		if contour.depth%2 == 0 {
++			owners[i] = len(result)
++			result = append(result, Polygon{Outer: contour.ring, Holes: [][]ScenePoint{}})
++		}
++	}
++	for _, contour := range contours {
++		if contour.depth%2 == 0 {
++			continue
++		}
++		parent := contour.parent
++		for parent >= 0 && contours[parent].depth%2 != 0 {
++			parent = contours[parent].parent
++		}
++		owner, ok := owners[parent]
++		if !ok {
++			return nil, errInvalidGeometry
++		}
++		hole := append([]ScenePoint(nil), contour.ring...)
++		reverseRing(hole)
++		rotateRingToMinimum(hole)
++		result[owner].Holes = append(result[owner].Holes, hole)
++	}
++	for i := range result {
++		normalized, err := normalizePolygon(result[i])
++		if err != nil {
++			return nil, err
++		}
++		result[i] = normalized
++	}
++	if len(result) > maxWalkableComponents {
++		return nil, errGeometryLimitExceeded
++	}
++	sort.Slice(result, func(i, j int) bool { return ringLess(result[i].Outer, result[j].Outer) })
++	return result, nil
++}
++
++const mathMaxFloat = 1.7976931348623157e+308
+diff --git a/polygon_clip_test.go b/polygon_clip_test.go
+new file mode 100644
+index 0000000..f7772e2
+--- /dev/null
++++ b/polygon_clip_test.go
+@@ -0,0 +1,50 @@
++package main
++
++import "testing"
++
++func mustRectangle(t *testing.T, minX, minY, maxX, maxY float64) Polygon {
++	t.Helper()
++	polygon, err := rectanglePolygon(AABB{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return polygon
++}
++
++func TestPolygonClipUnionTopology(t *testing.T) {
++	for name, second := range map[string]Polygon{
++		"overlap":     mustRectangle(t, 5, 5, 15, 15),
++		"shared edge": mustRectangle(t, 10, 0, 20, 10),
++	} {
++		t.Run(name, func(t *testing.T) {
++			result, err := unionPolygons([]Polygon{mustRectangle(t, 0, 0, 10, 10), second})
++			if err != nil || len(result) != 1 {
++				t.Fatalf("got %d polygons, err %v", len(result), err)
++			}
++		})
++	}
++	result, err := unionPolygons([]Polygon{mustRectangle(t, 0, 0, 10, 10), mustRectangle(t, 10, 10, 20, 20)})
++	if err != nil || len(result) != 2 {
++		t.Fatalf("corner touch must stay disconnected: %d, %v", len(result), err)
++	}
++}
++
++func TestPolygonClipDifferenceHoleAndSplit(t *testing.T) {
++	hole, err := differencePolygons([]Polygon{mustRectangle(t, 0, 0, 20, 20)}, []Polygon{mustRectangle(t, 5, 5, 15, 15)})
++	if err != nil || len(hole) != 1 || len(hole[0].Holes) != 1 {
++		t.Fatalf("hole result: %#v, %v", hole, err)
++	}
++	split, err := differencePolygons([]Polygon{mustRectangle(t, 0, 0, 20, 20)}, []Polygon{mustRectangle(t, 9, -1, 11, 21)})
++	if err != nil || len(split) != 2 {
++		t.Fatalf("split result: %#v, %v", split, err)
++	}
++}
++
++func TestPolygonClipPreservesExistingHole(t *testing.T) {
++	polygon := mustRectangle(t, 0, 0, 20, 20)
++	polygon.Holes = [][]ScenePoint{mustRectangle(t, 5, 5, 15, 15).Outer}
++	result, err := unionPolygons([]Polygon{polygon})
++	if err != nil || len(result) != 1 || len(result[0].Holes) != 1 {
++		t.Fatalf("existing hole was not preserved: %#v, %v", result, err)
++	}
++}
+diff --git a/walkable.go b/walkable.go
+new file mode 100644
+index 0000000..465a111
+--- /dev/null
++++ b/walkable.go
+@@ -0,0 +1,150 @@
++package main
++
++import (
++	"sort"
++)
++
++type componentIDGenerator func() string
++
++// addWalkableRect returns an atomic replacement for the component slice. It
++// assumes stored components were normalized when accepted; only AABB-selected
++// candidates enter the comparatively expensive clipping operation.
++func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
++	if len(components) > maxWalkableComponents {
++		return nil, false, errGeometryLimitExceeded
++	}
++	added, err := rectanglePolygon(rectangle)
++	if err != nil {
++		return nil, false, err
++	}
++	addedBounds := polygonBounds(added)
++
++	existingIDs := make(map[string]bool, len(components)+1)
++	unaffected := make([]WalkableComponent, 0, len(components))
++	affected := make([]WalkableComponent, 0, 4)
++	for _, component := range components {
++		if component.ID == "" || existingIDs[component.ID] || len(component.Polygon.Outer) < 3 {
++			return nil, false, errInvalidGeometry
++		}
++		existingIDs[component.ID] = true
++		if polygonBounds(component.Polygon).intersects(addedBounds) {
++			normalized, err := normalizePolygon(component.Polygon)
++			if err != nil {
++				return nil, false, err
++			}
++			affected = append(affected, WalkableComponent{ID: component.ID, Polygon: normalized})
++		} else {
++			unaffected = append(unaffected, component)
++		}
++	}
++
++	inputs := make([]Polygon, 0, len(affected)+1)
++	for _, component := range affected {
++		inputs = append(inputs, component.Polygon)
++	}
++	inputs = append(inputs, added)
++	union, err := unionPolygons(inputs)
++	if err != nil {
++		return nil, false, err
++	}
++	if len(unaffected)+len(union) > maxWalkableComponents {
++		return nil, false, errGeometryLimitExceeded
++	}
++
++	result := append([]WalkableComponent(nil), unaffected...)
++	usedIDs := make(map[string]bool, len(existingIDs)+1)
++	for _, component := range unaffected {
++		usedIDs[component.ID] = true
++	}
++	for _, polygon := range union {
++		componentID := matchingComponentID(polygon, affected, usedIDs)
++		if componentID == "" {
++			componentID, err = freshComponentID(generateID, existingIDs)
++			if err != nil {
++				return nil, false, err
++			}
++			existingIDs[componentID] = true
++		}
++		usedIDs[componentID] = true
++		result = append(result, WalkableComponent{ID: componentID, Polygon: polygon})
++	}
++	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
++
++	if walkableComponentSetsEqual(components, result) {
++		return append([]WalkableComponent(nil), components...), false, nil
++	}
++	return result, true, nil
++}
++
++func matchingComponentID(polygon Polygon, affected []WalkableComponent, used map[string]bool) string {
++	for _, component := range affected {
++		if !used[component.ID] && polygonsEqual(component.Polygon, polygon) {
++			return component.ID
++		}
++	}
++	candidates := make([]string, 0, len(affected))
++	for _, component := range affected {
++		if !used[component.ID] && pointInPolygon(polygon, component.Polygon.Outer[0]) {
++			candidates = append(candidates, component.ID)
++		}
++	}
++	if len(candidates) == 0 {
++		return ""
++	}
++	sort.Strings(candidates)
++	return candidates[0]
++}
++
++func freshComponentID(generateID componentIDGenerator, existing map[string]bool) (string, error) {
++	if generateID == nil {
++		return "", errInvalidGeometry
++	}
++	for range 16 {
++		candidate := generateID()
++		if candidate != "" && !existing[candidate] {
++			return candidate, nil
++		}
++	}
++	return "", errInvalidGeometry
++}
++
++func walkableComponentSetsEqual(a, b []WalkableComponent) bool {
++	if len(a) != len(b) {
++		return false
++	}
++	byID := make(map[string]Polygon, len(a))
++	for _, component := range a {
++		byID[component.ID] = component.Polygon
++	}
++	for _, component := range b {
++		polygon, ok := byID[component.ID]
++		if !ok || !polygonsEqual(polygon, component.Polygon) {
++			return false
++		}
++	}
++	return true
++}
++
++func polygonsEqual(a, b Polygon) bool {
++	if !ringsEqual(a.Outer, b.Outer) || len(a.Holes) != len(b.Holes) {
++		return false
++	}
++	for i := range a.Holes {
++		if !ringsEqual(a.Holes[i], b.Holes[i]) {
++			return false
++		}
++	}
++	return true
++}
++
++func ringsEqual(a, b []ScenePoint) bool {
++	if len(a) != len(b) {
++		return false
++	}
++	for i := range a {
++		if !samePoint(a[i], b[i]) {
++			return false
++		}
++	}
++	return true
++}
+diff --git a/walkable_test.go b/walkable_test.go
+new file mode 100644
+index 0000000..91f2d5d
+--- /dev/null
++++ b/walkable_test.go
+@@ -0,0 +1,94 @@
++package main
++
++import "testing"
++
++func rectComponent(t *testing.T, componentID string, minX, minY, maxX, maxY float64) WalkableComponent {
++	t.Helper()
++	return WalkableComponent{ID: componentID, Polygon: mustRectangle(t, minX, minY, maxX, maxY)}
++}
++
++func sequenceIDs(values ...string) componentIDGenerator {
++	index := 0
++	return func() string {
++		value := values[index]
++		index++
++		return value
++	}
++}
++
++func TestAddWalkableRectMergesLShapeAndSharedEdge(t *testing.T) {
++	result, changed, err := addWalkableRect(
++		[]WalkableComponent{rectComponent(t, "existing", 0, 0, 10, 5)},
++		AABB{MinX: 0, MinY: 0, MaxX: 5, MaxY: 10}, sequenceIDs("unused"),
++	)
++	if err != nil || !changed || len(result) != 1 || result[0].ID != "existing" || len(result[0].Polygon.Outer) != 6 {
++		t.Fatalf("L union: %#v, changed=%v, err=%v", result, changed, err)
++	}
++
++	result, changed, err = addWalkableRect(result, AABB{MinX: 10, MinY: 0, MaxX: 15, MaxY: 5}, sequenceIDs("unused"))
++	if err != nil || !changed || len(result) != 1 || result[0].ID != "existing" {
++		t.Fatalf("shared-edge union: %#v, changed=%v, err=%v", result, changed, err)
++	}
++}
++
++func TestAddWalkableRectCornerAndDistantStaySeparate(t *testing.T) {
++	for name, bounds := range map[string]AABB{
++		"corner":  {MinX: 10, MinY: 10, MaxX: 20, MaxY: 20},
++		"distant": {MinX: 30, MinY: 30, MaxX: 40, MaxY: 40},
++	} {
++		t.Run(name, func(t *testing.T) {
++			result, changed, err := addWalkableRect([]WalkableComponent{rectComponent(t, "old", 0, 0, 10, 10)}, bounds, sequenceIDs("new"))
++			if err != nil || !changed || len(result) != 2 || result[0].ID != "new" || result[1].ID != "old" {
++				t.Fatalf("result: %#v, changed=%v, err=%v", result, changed, err)
++			}
++		})
++	}
++}
++
++func TestAddWalkableRectContainedIsNoOp(t *testing.T) {
++	called := false
++	components := []WalkableComponent{rectComponent(t, "old", 0, 0, 20, 20)}
++	result, changed, err := addWalkableRect(components, AABB{MinX: 5, MinY: 5, MaxX: 10, MaxY: 10}, func() string {
++		called = true
++		return "new"
++	})
++	if err != nil || changed || called || !walkableComponentSetsEqual(result, components) {
++		t.Fatalf("contained add changed state: %#v, changed=%v, called=%v, err=%v", result, changed, called, err)
++	}
++}
++
++func TestAddWalkableRectInsideHoleCreatesIsland(t *testing.T) {
++	outer := mustRectangle(t, 0, 0, 30, 30)
++	outer.Holes = [][]ScenePoint{mustRectangle(t, 5, 5, 25, 25).Outer}
++	components := []WalkableComponent{{ID: "outer", Polygon: outer}}
++	result, changed, err := addWalkableRect(components, AABB{MinX: 10, MinY: 10, MaxX: 15, MaxY: 15}, sequenceIDs("island"))
++	if err != nil || !changed || len(result) != 2 {
++		t.Fatalf("hole add: %#v, changed=%v, err=%v", result, changed, err)
++	}
++	ids := map[string]bool{result[0].ID: true, result[1].ID: true}
++	if !ids["outer"] || !ids["island"] {
++		t.Fatalf("component IDs changed: %#v", result)
++	}
++}
++
++func TestAddWalkableRectMergeKeepsDeterministicID(t *testing.T) {
++	components := []WalkableComponent{
++		rectComponent(t, "z-component", 0, 0, 5, 5),
++		rectComponent(t, "a-component", 10, 0, 15, 5),
++	}
++	result, changed, err := addWalkableRect(components, AABB{MinX: 5, MinY: 0, MaxX: 10, MaxY: 5}, sequenceIDs("unused"))
++	if err != nil || !changed || len(result) != 1 || result[0].ID != "a-component" {
++		t.Fatalf("merge ID: %#v, changed=%v, err=%v", result, changed, err)
++	}
++}
++
++func TestAddWalkableRectRejectsAtomically(t *testing.T) {
++	components := []WalkableComponent{rectComponent(t, "old", 0, 0, 10, 10)}
++	before := append([]ScenePoint(nil), components[0].Polygon.Outer...)
++	if _, _, err := addWalkableRect(components, AABB{MinX: 5, MinY: 5, MaxX: 5, MaxY: 10}, sequenceIDs("new")); err == nil {
++		t.Fatal("zero-width rectangle accepted")
++	}
++	if !ringsEqual(before, components[0].Polygon.Outer) {
++		t.Fatal("failed operation mutated input")
++	}
++}
