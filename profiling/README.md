@@ -9,6 +9,26 @@ go test -run '^TestProfileAtlas$' -count=1 -timeout 30m -v
 go test -run '^TestProfileTransfer$' -count=1 -timeout 5m -v
 ```
 
+Порог полезности будущего Bake Layer измеряется отдельным коротким прогоном. Он создаёт visual layers на 200/500 статичных `SceneElement`, меняет число уникальных исходных изображений и плотность композиции, затем измеряет холодную загрузку, постоянный render и pan/zoom:
+
+```powershell
+$env:ATLAS_CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe'
+$env:ATLAS_LAYER_BAKE_PROFILE='C:\projects\my-game\test-results\layer-bake'
+go test -run '^TestProfileLayerBake$' -count=1 -timeout 10m -v
+```
+
+Результат сохраняется в `results.json`; для каждого сценария дополнительно создаются Chrome `*.cpuprofile.json`. Поля `snapshotBytes` и `elementJSONBytes` показывают размер регионального состояния до bake, `drawImagesPerFrame` — число фактических вызовов `drawImage`, `frame` — распределение CPU-времени кадра, `bitmaps`/`bitmapBytes` — decoded resources, а `decodes`, HTTP и fallback характеризуют стоимость холодной загрузки и pan/zoom. Стенд не реализует bake и измеряет только текущий поэлементный baseline.
+
+Память браузера для одного и трёх SceneElement размером 10000×10000 измеряется отдельным автономным прогоном. Он сравнивает три элемента с общим asset и три независимых asset, выполняет pan/zoom, очищает кэш, вызывает GC и возвращается на Campaign Home:
+
+```powershell
+$env:ATLAS_CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe'
+$env:ATLAS_BROWSER_MEMORY_PROFILE='C:\projects\my-game\test-results\browser-memory'
+go test -run '^TestProfileBrowserMemory$' -count=1 -timeout 15m -v
+```
+
+`results.json` содержит метрики каждого процесса Chrome, группировку renderer/GPU/browser, JS heap, DOM и внутренний учёт ImageBitmap Atlas. `summary.csv` содержит основные значения в MiB по контрольным точкам. `host.log` и `browser.log` сохраняют журналы изолированного тестового сервера и Chromium. Тест уходит на Campaign Home до очистки, чтобы сцена не загрузила тайлы снова, затем сравнивает GC, 10 секунд покоя, critical memory pressure и reload страницы. Разница между общей памятью процессов и известными bitmap/JS показывает native/GPU overhead, но не является точной побайтовой атрибуцией Chromium. Chrome запускается с `--no-sandbox` только для этого localhost-теста с одноразовым профилем: в управляемой Windows-среде sandbox GPU-процесса завершается до открытия страницы.
+
 Для повторения без долгой подготовки трёх крупнейших карт задайте `ATLAS_PROFILE_SKIP_MAPS=1`. Карта 4096×4096 всё равно подготавливается. Для полного прогона удалите эту переменную.
 
 ## Артефакты и ограничения метода

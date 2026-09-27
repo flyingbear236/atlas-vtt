@@ -7,7 +7,9 @@ import {SceneTreeRuntime} from './scene-tree.js';
 const $ = id => document.getElementById(id);
 const CONTENT_COMMANDS=new Set(['move','final','properties','create','delete','boundsUpdate','floorCreate','floorUpdate','floorDelete','layerCreate','layerUpdate','layerDelete','elementCreate','elementUpdate','elementDelete','elementPreview','elementTransform','transitionCreate','transitionUpdate','transitionDelete','assetRetention']);
 const UPLOAD_LIMIT_BYTES=256*1024*1024;
-const canvas = $('board'), ctx = canvas.getContext('2d');
+// Mutable only so the isolated profiler can compare Canvas lifecycles. Normal
+// application code never replaces the surface in this iteration.
+let canvas = $('board'), ctx = canvas.getContext('2d');
 const saveStatus=document.createElement('span');saveStatus.id='saveStatus';saveStatus.className='status';$('connection').after(saveStatus);
 let storageDegraded='';
 function commitStatus(message){saveStatus.textContent=message;saveStatus.classList.toggle('danger',!!storageDegraded);saveStatus.style.display=storageDegraded?'inline':'';}
