@@ -1204,6 +1204,10 @@ func TestProfileBrowserMemoryLongSession(t *testing.T) {
 	runProfileAtlas(t, os.Getenv("ATLAS_BROWSER_MEMORY_LONG_PROFILE"), "memory-long")
 }
 
+func TestProfileWarmCacheNavigation(t *testing.T) {
+	runProfileAtlas(t, os.Getenv("ATLAS_WARM_CACHE_PROFILE"), "cache-return")
+}
+
 func runProfileAtlas(t *testing.T, output, profileMode string) {
 	if output == "" {
 		if profileMode == "layer" {
@@ -1217,6 +1221,9 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 		}
 		if profileMode == "memory-long" {
 			t.Skip("set ATLAS_BROWSER_MEMORY_LONG_PROFILE to output directory")
+		}
+		if profileMode == "cache-return" {
+			t.Skip("set ATLAS_WARM_CACHE_PROFILE to output directory")
 		}
 		t.Skip("set ATLAS_PROFILE to output directory")
 	}
@@ -1241,20 +1248,41 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	if e := cmd.Start(); e != nil {
 		t.Fatal(e)
 	}
-	defer func() { cmd.Process.Kill(); cmd.Wait(); logfile.Close() }()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	hostExited := false
+	defer func() {
+		if !hostExited {
+			_ = cmd.Process.Kill()
+			<-waitDone
+		}
+		logfile.Close()
+	}()
+	readHostLog := func() string {
+		b, _ := os.ReadFile(filepath.Join(output, "host.log"))
+		return strings.TrimSpace(string(b))
+	}
 	var host struct {
 		URL string `json:"url"`
 		PID int    `json:"pid"`
 	}
-	for i := 0; i < 200; i++ {
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
 		if b, e := os.ReadFile(filepath.Join(root, "host.json")); e == nil {
-			json.Unmarshal(b, &host)
-			break
+			if e := json.Unmarshal(b, &host); e == nil && host.URL != "" {
+				break
+			}
+		}
+		select {
+		case e := <-waitDone:
+			hostExited = true
+			t.Fatalf("profile host exited during startup: %v\nhost.log:\n%s", e, readHostLog())
+		default:
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if host.URL == "" {
-		t.Fatal("host startup failed")
+		t.Fatalf("profile host did not become ready within 60s\nhost.log:\n%s", readHostLog())
 	}
 	report := map[string]any{"go": runtime.Version(), "os": runtime.GOOS, "cores": runtime.NumCPU(), "origin": host.URL}
 	var rows []map[string]any
@@ -1268,7 +1296,7 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	mapDimensions := []mapSpec{{4096, 4096, 0}, {8192, 8192, 0}, {10000, 10000, 0}, {32768, 3000, 0}}
 	if profileMode == "layer" || profileMode == "layer-bake" {
 		mapDimensions = nil
-	} else if profileMode == "memory" || profileMode == "memory-long" {
+	} else if profileMode == "memory" || profileMode == "memory-long" || profileMode == "cache-return" {
 		mapDimensions = []mapSpec{{10000, 10000, 0}}
 	}
 	var memoryJPEG []byte
@@ -1380,7 +1408,7 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	}
 	defer os.RemoveAll(profile)
 	chromeArgs := []string{"--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"}
-	if profileMode == "memory" {
+	if profileMode == "memory" || profileMode == "cache-return" {
 		// The browser has a disposable local-only profile and loads only the
 		// isolated localhost fixture. Some managed Windows environments deny the
 		// GPU child process before page startup unless its sandbox is disabled.
@@ -1393,42 +1421,68 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	if e := browser.Start(); e != nil {
 		t.Fatal(e)
 	}
-	defer func() { browser.Process.Kill(); browser.Wait(); browserLog.Close() }()
-	var port, endpoint string
-	for i := 0; i < 100; i++ {
-		if b, e := os.ReadFile(filepath.Join(profile, "DevToolsActivePort")); e == nil {
-			lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-			if len(lines) >= 2 {
-				port = strings.TrimSpace(lines[0])
-				endpoint = strings.TrimSpace(lines[1])
-				break
-			}
+	browserExit := make(chan error, 1)
+	go func() { browserExit <- browser.Wait() }()
+	browserExited := false
+	defer func() {
+		if !browserExited && browser.Process != nil {
+			_ = browser.Process.Kill()
+			<-browserExit
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if port == "" {
-		_ = browserLog.Sync()
-		if data, e := os.ReadFile(filepath.Join(output, "browser.log")); e == nil {
-			const marker = "DevTools listening on ws://127.0.0.1:"
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSpace(line)
-				if !strings.HasPrefix(line, marker) {
-					continue
-				}
-				rest := strings.TrimPrefix(line, marker)
-				slash := strings.IndexByte(rest, '/')
-				if slash > 0 {
-					port = rest[:slash]
-					endpoint = rest[slash:]
-					break
-				}
-			}
-		}
-	}
-	if port == "" {
+		browserLog.Close()
+	}()
+	readBrowserLog := func() string {
 		_ = browserLog.Sync()
 		data, _ := os.ReadFile(filepath.Join(output, "browser.log"))
-		t.Fatalf("browser startup: no DevTools endpoint\n%s", strings.TrimSpace(string(data)))
+		return strings.TrimSpace(string(data))
+	}
+	var port, endpoint string
+	devToolsFromLog := func() bool {
+		const marker = "DevTools listening on ws://127.0.0.1:"
+		for _, line := range strings.Split(readBrowserLog(), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, marker) {
+				continue
+			}
+			rest := strings.TrimPrefix(line, marker)
+			slash := strings.IndexByte(rest, '/')
+			if slash <= 0 {
+				continue
+			}
+			port = rest[:slash]
+			endpoint = rest[slash:]
+			return true
+		}
+		return false
+	}
+	startupDeadline := time.NewTimer(30 * time.Second)
+	defer startupDeadline.Stop()
+	startupTicker := time.NewTicker(100 * time.Millisecond)
+	defer startupTicker.Stop()
+startupWait:
+	for {
+		select {
+		case e := <-browserExit:
+			browserExited = true
+			t.Fatalf("browser exited before DevTools startup: %v\n%s", e, readBrowserLog())
+		case <-startupTicker.C:
+			if b, e := os.ReadFile(filepath.Join(profile, "DevToolsActivePort")); e == nil {
+				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+				if len(lines) >= 2 {
+					port = strings.TrimSpace(lines[0])
+					endpoint = strings.TrimSpace(lines[1])
+					break startupWait
+				}
+			}
+			if devToolsFromLog() {
+				break startupWait
+			}
+		case <-startupDeadline.C:
+			if devToolsFromLog() {
+				break startupWait
+			}
+			t.Fatalf("browser did not expose a DevTools endpoint within 30s\n%s", readBrowserLog())
+		}
 	}
 	control := profileDial(t, "ws://127.0.0.1:"+port+endpoint)
 	report["browser"] = json.RawMessage(control.call("Browser.getVersion", map[string]any{}))
@@ -1441,7 +1495,12 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	if profileMode != "full" {
 		initialTokens = 0
 	}
-	profileJSON(t, host.URL+"/__bench/scene", "POST", map[string]int{"Count": initialTokens, "Images": 0})
+	sceneSetup := map[string]int{"Count": initialTokens, "Images": 0}
+	if profileMode == "cache-return" {
+		sceneSetup["MapWidth"] = 10000
+		sceneSetup["MapElements"] = 1
+	}
+	profileJSON(t, host.URL+"/__bench/scene", "POST", sceneSetup)
 	var pages []*profileCDP
 	controls := []*profileCDP{control}
 	pageCount := 0
@@ -1533,6 +1592,266 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 		}
 		return map[string]any{"workingSetSum": ws, "privateBytesSum": private, "groups": groups, "processes": processes}
 	}
+	if profileMode == "cache-return" {
+		report["profile"] = "warm-cache-navigation"
+		report["scenario"] = "one 10000x10000 tiled SceneElement; warm revisit plus causal decoded-RAM-only clears before IndexedDB and disk-pressure returns"
+		report["decisionMetric"] = "on an exact revisit, asset HTTP bytes identify a cache miss; zero decode means RAM reuse; decode plus IndexedDB hits with zero asset HTTP means persistent-cache reuse"
+		report["limitations"] = "each leg waits for image loads and pending IndexedDB writes to settle; RAM-only clears are test-only causal probes, so this measures cache correctness rather than flick-pan latency"
+
+		type cacheProfileState struct {
+			MemoryEntries  int    `json:"memoryEntries"`
+			MemoryBytes    uint64 `json:"memoryBytes"`
+			DiskBytes      uint64 `json:"diskBytes"`
+			DiskReads      int64  `json:"diskReads"`
+			DiskWrites     int64  `json:"diskWrites"`
+			DiskEvictions  int64  `json:"diskEvictions"`
+			DiskDrops      int64  `json:"diskDrops"`
+			CacheHits      int64  `json:"cacheHits"`
+			TileBytes      int64  `json:"tileBytes"`
+			DecodeCount    int64  `json:"decodeCount"`
+			BitmapCreated  int64  `json:"bitmapCreated"`
+			BitmapClosed   int64  `json:"bitmapClosed"`
+			LiveBitmaps    int64  `json:"liveBitmaps"`
+			ActiveLoads    int    `json:"activeLoads"`
+			Pending        int    `json:"pending"`
+			RegionInFlight bool   `json:"regionInFlight"`
+		}
+		type cacheLeg struct {
+			Sequence          string
+			Name              string
+			Index             int
+			X, Y, Scale       float64
+			Revisit           bool
+			Source            string
+			Before, After     cacheProfileState
+			DiskReadDelta     int64
+			DiskHitDelta      int64
+			DiskMissDelta     int64
+			DiskWriteDelta    int64
+			DiskEvictionDelta int64
+			DiskDropDelta     int64
+			DecodeDelta       int64
+			BitmapCreateDelta int64
+			BitmapCloseDelta  int64
+			AssetHTTPBytes    int64
+			HTTPBytes         int64
+			HTTPRequests      int64
+			Elapsed           float64
+		}
+
+		page := pages[0]
+		captureCache := func() cacheProfileState {
+			raw := page.eval(`__atlasProbe.cacheState()`)
+			var state cacheProfileState
+			if err := json.Unmarshal(raw, &state); err != nil {
+				t.Fatalf("decode cache profile state: %v: %s", err, raw)
+			}
+			return state
+		}
+		clearCaches := func() {
+			// Move outside the scene before clearing. clearImages() marks the canvas
+			// dirty, so clearing while a real viewport is active would immediately
+			// repopulate the cache and make the next supposedly-cold visit warm.
+			ok := page.eval(`(async()=>{__atlasProbe.stop();__atlasProbe.setView(-100000,-100000,1);for(let i=0;i<200;i++){const s=__atlasProbe.layerStatus();if(s.activeLoads===0&&!s.regionInFlight)break;await new Promise(r=>setTimeout(r,50))}await __atlasProbe.clearImages();await __atlasProbe.waitCacheWrites();await new Promise(r=>setTimeout(r,100));return true})()`)
+			if string(ok) != "true" {
+				t.Fatal("cache profile failed to clear isolated browser cache")
+			}
+			page.resetNet()
+		}
+		clearDecodedRAM := func() cacheProfileState {
+			// Preserve IndexedDB and clear only decoded ImageBitmaps. Keeping the
+			// camera outside the scene prevents the dirty redraw from repopulating
+			// RAM before the causal return visit starts.
+			raw := page.eval(`(async()=>{__atlasProbe.stop();__atlasProbe.setView(-100000,-100000,1);for(let i=0;i<200;i++){const s=__atlasProbe.layerStatus();if(s.activeLoads===0&&!s.regionInFlight)break;await new Promise(r=>setTimeout(r,50))}await __atlasProbe.waitCacheWrites();__atlasProbe.clearDecodedImages();await new Promise(r=>setTimeout(r,100));return __atlasProbe.cacheState()})()`)
+			var state cacheProfileState
+			if err := json.Unmarshal(raw, &state); err != nil {
+				t.Fatalf("decode cache state after RAM clear: %v: %s", err, raw)
+			}
+			if state.MemoryEntries != 0 || state.MemoryBytes != 0 || state.LiveBitmaps != 0 {
+				t.Fatalf("decoded RAM cache did not clear: %+v", state)
+			}
+			page.resetNet()
+			return state
+		}
+		classifySource := func(assetHTTPBytes, decodeDelta, diskHitDelta int64) string {
+			if assetHTTPBytes > 0 {
+				return "http"
+			}
+			if decodeDelta > 0 || diskHitDelta > 0 {
+				return "indexeddb"
+			}
+			return "ram"
+		}
+		var cacheRows []cacheLeg
+		var summary strings.Builder
+		summary.WriteString("sequence,index,name,revisit,x,y,scale,source,elapsed_s,http_requests,http_mib,asset_http_mib,idb_reads,idb_hits,idb_misses,idb_writes,idb_evictions,idb_drops,decodes,bitmap_creates,bitmap_closes,memory_mib,disk_mib,live_bitmaps\n")
+		visit := func(sequence, name string, index int, x, y, scale float64, revisit bool) cacheLeg {
+			before := captureCache()
+			page.resetNet()
+			hostBefore := readProcessStats(host.PID)
+			started := time.Now()
+			waitJS := fmt.Sprintf(`(async()=>{__atlasProbe.setView(%.6f,%.6f,%.6f);await new Promise(r=>setTimeout(r,100));let stable=0;for(let i=0;i<600;i++){const s=__atlasProbe.layerStatus();if(s.elements>=1&&s.activeLoads===0&&!s.regionInFlight){stable++;if(stable>=5){await __atlasProbe.waitCacheWrites();return true}}else stable=0;await new Promise(r=>setTimeout(r,100))}return false})()`, x, y, scale)
+			settled := page.eval(waitJS)
+			if string(settled) != "true" {
+				t.Fatalf("cache navigation %s/%s did not settle: %s", sequence, name, page.eval(`JSON.stringify({layer:__atlasProbe.layerStatus(),cache:__atlasProbe.cacheState()})`))
+			}
+			elapsed := time.Since(started).Seconds()
+			hostAfter := readProcessStats(host.PID)
+			after := captureCache()
+			diskReads := after.DiskReads - before.DiskReads
+			diskHits := after.CacheHits - before.CacheHits
+			diskMisses := diskReads - diskHits
+			if diskMisses < 0 {
+				diskMisses = 0
+			}
+			leg := cacheLeg{
+				Sequence: sequence, Name: name, Index: index, X: x, Y: y, Scale: scale, Revisit: revisit,
+				Before: before, After: after,
+				DiskReadDelta: diskReads, DiskHitDelta: diskHits, DiskMissDelta: diskMisses,
+				DiskWriteDelta: after.DiskWrites - before.DiskWrites, DiskEvictionDelta: after.DiskEvictions - before.DiskEvictions, DiskDropDelta: after.DiskDrops - before.DiskDrops,
+				DecodeDelta: after.DecodeCount - before.DecodeCount, BitmapCreateDelta: after.BitmapCreated - before.BitmapCreated, BitmapCloseDelta: after.BitmapClosed - before.BitmapClosed,
+				AssetHTTPBytes: after.TileBytes - before.TileBytes, HTTPBytes: page.HTTPBytes, HTTPRequests: page.Requests, Elapsed: elapsed,
+			}
+			leg.Source = classifySource(leg.AssetHTTPBytes, leg.DecodeDelta, leg.DiskHitDelta)
+			cacheRows = append(cacheRows, leg)
+			rows = append(rows, map[string]any{
+				"name": name, "sequence": sequence, "index": index, "revisit": revisit, "camera": map[string]any{"x": x, "y": y, "scale": scale}, "source": leg.Source,
+				"before": before, "after": after,
+				"deltas":    map[string]any{"diskReads": leg.DiskReadDelta, "diskHits": leg.DiskHitDelta, "diskMisses": leg.DiskMissDelta, "diskWrites": leg.DiskWriteDelta, "diskEvictions": leg.DiskEvictionDelta, "diskDrops": leg.DiskDropDelta, "decodes": leg.DecodeDelta, "bitmapCreates": leg.BitmapCreateDelta, "bitmapCloses": leg.BitmapCloseDelta, "assetHTTPBytes": leg.AssetHTTPBytes},
+				"httpBytes": page.HTTPBytes, "httpRequests": page.Requests, "elapsedSeconds": elapsed,
+				"serverCPUSeconds": hostAfter.CPUSeconds - hostBefore.CPUSeconds, "serverWorkingSet": hostAfter.WorkingSet, "serverPrivateBytes": hostAfter.PrivateBytes,
+				"browser": browserMem(), "errors": append([]string{}, page.Errors...),
+			})
+			summary.WriteString(fmt.Sprintf("%s,%d,%s,%t,%.0f,%.0f,%.3f,%s,%.3f,%d,%.3f,%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%d\n",
+				sequence, index, name, revisit, x, y, scale, leg.Source, elapsed, leg.HTTPRequests, float64(leg.HTTPBytes)/(1024*1024), float64(leg.AssetHTTPBytes)/(1024*1024), leg.DiskReadDelta, leg.DiskHitDelta, leg.DiskMissDelta, leg.DiskWriteDelta, leg.DiskEvictionDelta, leg.DiskDropDelta, leg.DecodeDelta, leg.BitmapCreateDelta, leg.BitmapCloseDelta, float64(after.MemoryBytes)/(1024*1024), float64(after.DiskBytes)/(1024*1024), after.LiveBitmaps))
+			if err := os.WriteFile(filepath.Join(output, "summary.csv"), []byte(summary.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+			persist()
+			t.Logf("cache %-8s %-18s source=%-9s HTTP=%6.1f MiB decode=%3d idb hit/miss=%3d/%3d evict=%3d RAM=%6.1f MiB disk=%6.1f MiB",
+				sequence, name, leg.Source, float64(leg.AssetHTTPBytes)/(1024*1024), leg.DecodeDelta, leg.DiskHitDelta, leg.DiskMissDelta, leg.DiskEvictionDelta, float64(after.MemoryBytes)/(1024*1024), float64(after.DiskBytes)/(1024*1024))
+			return leg
+		}
+
+		const viewScale = 0.75
+		clearCaches()
+		visit("short", "A_cold", 1, 0, 0, viewScale, false)
+		visit("short", "B_cold", 2, 3600, 2600, viewScale, false)
+		visit("short", "C_cold", 3, 7200, 6500, viewScale, false)
+		shortBReturn := visit("short", "B_return", 4, 3600, 2600, viewScale, true)
+		shortAReturn := visit("short", "A_return", 5, 0, 0, viewScale, true)
+
+		// Causal level-2 cache check: make A warm, discard only decoded RAM, then
+		// revisit A. A healthy persistent cache must decode from IndexedDB with
+		// zero asset HTTP bytes.
+		clearCaches()
+		visit("idb-only", "A_cold", 1, 0, 0, viewScale, false)
+		idbBeforeReturn := clearDecodedRAM()
+		idbAReturn := visit("idb-only", "A_return_after_ram_clear", 2, 0, 0, viewScale, true)
+
+		// Causal budget-pressure check: sweep the full map under the persistent
+		// cache budget, then remove decoded RAM before returning to the oldest
+		// viewport. The working set must remain in IndexedDB without eviction.
+		clearCaches()
+		pressureStart := captureCache()
+		visit("pressure", "A_baseline", 1, 0, 0, viewScale, false)
+		pressureIndex := 2
+		for yi, y := range []float64{0, 2500, 5000, 7500} {
+			xs := []float64{0, 2000, 4000, 6000, 8000}
+			if yi%2 == 1 {
+				xs = []float64{8000, 6000, 4000, 2000, 0}
+			}
+			for _, x := range xs {
+				if x == 0 && y == 0 {
+					continue
+				}
+				visit("pressure", fmt.Sprintf("sweep_%02d", pressureIndex-1), pressureIndex, x, y, viewScale, false)
+				pressureIndex++
+			}
+		}
+		pressureBeforeReturn := clearDecodedRAM()
+		pressureAReturn := visit("pressure", "A_return_after_ram_clear", pressureIndex, 0, 0, viewScale, true)
+
+		shortAssetHTTP := shortBReturn.AssetHTTPBytes + shortAReturn.AssetHTTPBytes
+		shortHTTPRequests := shortBReturn.HTTPRequests + shortAReturn.HTTPRequests
+		shortDecodes := shortBReturn.DecodeDelta + shortAReturn.DecodeDelta
+		shortDiskHits := shortBReturn.DiskHitDelta + shortAReturn.DiskHitDelta
+		shortResult := "warm-return-cache-effective"
+		if shortAssetHTTP > 0 {
+			shortResult = "unexpected-short-loop-http-refetch"
+		} else if shortDecodes == 0 {
+			shortResult = "revisit-served-from-decoded-ram"
+		} else if shortDiskHits > 0 {
+			shortResult = "revisit-served-from-indexeddb-after-ram-eviction"
+		}
+		idbResult := "persistent-cache-reused-after-ram-clear"
+		if idbAReturn.AssetHTTPBytes > 0 {
+			idbResult = "unexpected-http-after-ram-only-clear"
+		} else if idbAReturn.Source != "indexeddb" || idbAReturn.DecodeDelta == 0 {
+			idbResult = "ram-clear-did-not-produce-indexeddb-decode"
+		}
+		pressureEvictions := pressureBeforeReturn.DiskEvictions - pressureStart.DiskEvictions
+		pressureDrops := pressureBeforeReturn.DiskDrops - pressureStart.DiskDrops
+		pressureResult := "persistent-cache-reused-after-pressure"
+		if pressureAReturn.AssetHTTPBytes > 0 && (pressureEvictions > 0 || pressureDrops > 0) {
+			pressureResult = "persistent-cache-thrash-after-pressure"
+		} else if pressureEvictions > 0 || pressureDrops > 0 {
+			pressureResult = "unexpected-persistent-cache-eviction-under-pressure"
+		} else if pressureAReturn.AssetHTTPBytes > 0 {
+			pressureResult = "http-refetch-after-pressure-without-observed-disk-eviction"
+		} else if pressureAReturn.Source == "ram" {
+			pressureResult = "working-set-still-resident-in-ram"
+		}
+		report["cacheReturnSummary"] = map[string]any{
+			"shortLoop": map[string]any{
+				"route": "A -> B -> C -> B -> A", "returnAssetHTTPBytes": shortAssetHTTP, "returnHTTPRequests": shortHTTPRequests, "returnDecodes": shortDecodes, "returnIndexedDBHits": shortDiskHits, "result": shortResult,
+			},
+			"indexedDBAfterRAMClear": map[string]any{
+				"route": "A cold -> clear decoded RAM only -> A", "diskBytesBeforeReturn": idbBeforeReturn.DiskBytes, "returnSource": idbAReturn.Source, "returnAssetHTTPBytes": idbAReturn.AssetHTTPBytes, "returnHTTPRequests": idbAReturn.HTTPRequests, "returnDecodes": idbAReturn.DecodeDelta, "returnIndexedDBHits": idbAReturn.DiskHitDelta, "result": idbResult,
+			},
+			"pressure": map[string]any{
+				"route": "A -> serpentine sweep across 10000x10000 map -> clear decoded RAM only -> A", "viewsBeforeReturn": pressureIndex - 1, "diskEvictionsBeforeReturn": pressureEvictions, "diskDropsBeforeReturn": pressureDrops, "diskBytesBeforeReturn": pressureBeforeReturn.DiskBytes, "returnSource": pressureAReturn.Source, "returnAssetHTTPBytes": pressureAReturn.AssetHTTPBytes, "returnHTTPRequests": pressureAReturn.HTTPRequests, "returnDecodes": pressureAReturn.DecodeDelta, "returnIndexedDBHits": pressureAReturn.DiskHitDelta, "result": pressureResult,
+			},
+			"interpretation": map[string]any{
+				"shortLoopHTTPRefetchIsBugSignal":                           shortAssetHTTP > 0,
+				"indexedDBServesAfterRAMClear":                              idbAReturn.AssetHTTPBytes == 0 && idbAReturn.Source == "indexeddb" && idbAReturn.DecodeDelta > 0,
+				"indexedDBHTTPAfterRAMOnlyClearIsBugSignal":                 idbAReturn.AssetHTTPBytes > 0,
+				"pressureHTTPRefetchWithCachePressureIndicatesBudgetThrash": pressureAReturn.AssetHTTPBytes > 0 && (pressureEvictions > 0 || pressureDrops > 0),
+				"pressureWorkingSetFitsPersistentCache":                     pressureEvictions == 0 && pressureDrops == 0,
+				"pressureReturnServedFromIndexedDB":                         pressureAReturn.Source == "indexeddb" && pressureAReturn.AssetHTTPBytes == 0 && pressureAReturn.DiskHitDelta > 0 && pressureAReturn.DecodeDelta > 0,
+			},
+		}
+		report["cacheLegs"] = cacheRows
+		persist()
+		if len(page.Errors) > 0 {
+			t.Fatalf("browser JavaScript errors during warm-cache profile: %v", page.Errors)
+		}
+		t.Logf("short return: %s; asset HTTP %.1f MiB, decodes %d, IndexedDB hits %d", shortResult, float64(shortAssetHTTP)/(1024*1024), shortDecodes, shortDiskHits)
+		t.Logf("RAM-clear return: %s; source %s, asset HTTP %.1f MiB, decodes %d, IndexedDB hits %d", idbResult, idbAReturn.Source, float64(idbAReturn.AssetHTTPBytes)/(1024*1024), idbAReturn.DecodeDelta, idbAReturn.DiskHitDelta)
+		t.Logf("pressure + RAM-clear return: %s; source %s, asset HTTP %.1f MiB, decodes %d, IndexedDB hits %d, prior disk evictions %d, write drops %d", pressureResult, pressureAReturn.Source, float64(pressureAReturn.AssetHTTPBytes)/(1024*1024), pressureAReturn.DecodeDelta, pressureAReturn.DiskHitDelta, pressureEvictions, pressureDrops)
+		for _, leg := range []cacheLeg{shortBReturn, shortAReturn} {
+			if leg.Source != "ram" || leg.HTTPRequests != 0 || leg.AssetHTTPBytes != 0 || leg.DecodeDelta != 0 {
+				t.Errorf("short-loop revisit %s was not served entirely from decoded RAM: source=%s HTTP requests=%d asset bytes=%d decodes=%d", leg.Name, leg.Source, leg.HTTPRequests, leg.AssetHTTPBytes, leg.DecodeDelta)
+			}
+		}
+		if idbAReturn.Source != "indexeddb" || idbAReturn.HTTPRequests != 0 || idbAReturn.AssetHTTPBytes != 0 || idbAReturn.DiskHitDelta <= 0 || idbAReturn.DecodeDelta <= 0 {
+			t.Errorf("RAM-only clear did not return from IndexedDB: source=%s HTTP requests=%d asset bytes=%d IndexedDB hits=%d decodes=%d", idbAReturn.Source, idbAReturn.HTTPRequests, idbAReturn.AssetHTTPBytes, idbAReturn.DiskHitDelta, idbAReturn.DecodeDelta)
+		}
+		if pressureEvictions != 0 || pressureDrops != 0 {
+			t.Errorf("10000x10000 pressure sweep exceeded the persistent cache working set: evictions=%d drops=%d diskBytes=%d", pressureEvictions, pressureDrops, pressureBeforeReturn.DiskBytes)
+		}
+		if pressureAReturn.Source != "indexeddb" || pressureAReturn.HTTPRequests != 0 || pressureAReturn.AssetHTTPBytes != 0 || pressureAReturn.DiskHitDelta <= 0 || pressureAReturn.DecodeDelta <= 0 {
+			t.Errorf("post-pressure RAM-only clear did not return from IndexedDB: source=%s HTTP requests=%d asset bytes=%d IndexedDB hits=%d decodes=%d", pressureAReturn.Source, pressureAReturn.HTTPRequests, pressureAReturn.AssetHTTPBytes, pressureAReturn.DiskHitDelta, pressureAReturn.DecodeDelta)
+		}
+		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
+		if err := <-waitDone; err != nil {
+			t.Errorf("profile host shutdown: %v\nhost.log:\n%s", err, readHostLog())
+		}
+		hostExited = true
+		persist()
+		return
+	}
+
 	measure := func(name, mode string, seconds int) {
 		t.Logf("scenario %s (%ds)", name, seconds)
 		for _, p := range pages {

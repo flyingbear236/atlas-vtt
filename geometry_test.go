@@ -48,3 +48,41 @@ func TestSegmentsIntersectAtBoundary(t *testing.T) {
 		t.Fatal("separated collinear segments intersect")
 	}
 }
+
+func TestSetRenderBoundsValidation(t *testing.T) {
+	floor := Floor{ID: "floor"}
+	rectangle := rectangleInput(0, 0, 100, 80)
+	updated, changed, err := setRenderBounds(floor, &rectangle)
+	if err != nil || !changed || updated.RenderBounds == nil {
+		t.Fatalf("rectangle rejected: changed=%v err=%v", changed, err)
+	}
+	if _, changed, err = setRenderBounds(updated, &rectangle); err != nil || changed {
+		t.Fatalf("same bounds must be a no-op: changed=%v err=%v", changed, err)
+	}
+
+	concave := Polygon{Outer: []ScenePoint{{0, 0}, {100, 0}, {100, 40}, {40, 40}, {40, 100}, {0, 100}}}
+	if _, changed, err = setRenderBounds(floor, &concave); err != nil || !changed {
+		t.Fatalf("concave polygon rejected: changed=%v err=%v", changed, err)
+	}
+
+	invalid := map[string]Polygon{
+		"self intersection": {Outer: []ScenePoint{{0, 0}, {100, 100}, {0, 100}, {100, 0}}},
+		"zero area":         {Outer: []ScenePoint{{0, 0}, {50, 0}, {100, 0}}},
+		"hole":              {Outer: rectangle.Outer, Holes: [][]ScenePoint{rectangleInput(20, 20, 40, 40).Outer}},
+	}
+	for name, polygon := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := setRenderBounds(floor, &polygon); !errors.Is(err, errInvalidGeometry) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+
+	cleared, changed, err := clearRenderBounds(updated)
+	if err != nil || !changed || cleared.RenderBounds != nil {
+		t.Fatalf("clear failed: changed=%v err=%v", changed, err)
+	}
+	if _, changed, err = clearRenderBounds(cleared); err != nil || changed {
+		t.Fatalf("repeated clear must be a no-op: changed=%v err=%v", changed, err)
+	}
+}

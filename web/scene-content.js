@@ -129,6 +129,20 @@ function drawSelection(ctx,element,camera,showRotation){
 
 export function walkableBounds(state,floorId){return orderedLayers(state,floorId).find(layer=>layer.kind==='walkable')?.walkableBounds||(state?.currentFloorId===floorId?state.movementBounds:null)||null;}
 
+function pointOnSegment(a,b,x,y){const cross=(b.x-a.x)*(y-a.y)-(b.y-a.y)*(x-a.x);if(Math.abs(cross)>1e-7)return false;return x>=Math.min(a.x,b.x)-1e-7&&x<=Math.max(a.x,b.x)+1e-7&&y>=Math.min(a.y,b.y)-1e-7&&y<=Math.max(a.y,b.y)+1e-7;}
+function ringContains(ring,x,y){let inside=false;for(let i=0,j=ring.length-1;i<ring.length;j=i++){const a=ring[j],b=ring[i];if(pointOnSegment(a,b,x,y))return 2;if((a.y>y)!==(b.y>y)&&x<(b.x-a.x)*(y-a.y)/(b.y-a.y)+a.x)inside=!inside;}return inside?1:0;}
+export function pointInWalkablePolygon(polygon,x,y){const outer=ringContains(polygon?.outer||[],x,y);if(!outer)return false;if(outer===2)return true;for(const hole of polygon.holes||[]){const hit=ringContains(hole,x,y);if(hit===1)return false;if(hit===2)return true;}return true;}
+export function walkableComponentAt(state,floorId,x,y){const components=[...(state?.floors?.[floorId]?.walkableComponents||[])].sort((a,b)=>a.id.localeCompare(b.id));for(let i=components.length-1;i>=0;i--)if(pointInWalkablePolygon(components[i].polygon,x,y))return components[i];return null;}
+
+function traceWalkablePolygon(ctx,polygon,dx=0,dy=0){for(const ring of [polygon.outer,...(polygon.holes||[])]){if(!ring.length)continue;ctx.moveTo(ring[0].x+dx,ring[0].y+dy);for(let i=1;i<ring.length;i++)ctx.lineTo(ring[i].x+dx,ring[i].y+dy);ctx.closePath();}}
+function drawWalkablePolygon(ctx,polygon,camera,{dx=0,dy=0,selected=false,preview=false,subtract=false}={}){ctx.save();ctx.beginPath();traceWalkablePolygon(ctx,polygon,dx,dy);ctx.fillStyle=subtract?'#e68f7d24':preview?'#c8e89b24':'#65d6a414';ctx.strokeStyle=subtract?'#f0a08d':selected?'#edf8d5':'#65d6a4cc';ctx.lineWidth=(selected?3:2)/camera.scale;ctx.setLineDash(preview?[8/camera.scale,5/camera.scale]:[]);ctx.fill('evenodd');ctx.stroke();ctx.restore();}
+export function drawWalkableEditor(ctx,state,floorId,camera,{drag=null,selectedId=''}={}){
+  const floor=state?.floors?.[floorId];if(!floor)return;const components=floor.walkableComponents||[],moving=drag?.type==='walkableComponent'&&drag.floorId===floorId?drag:null;
+  for(const component of components){if(moving?.componentId===component.id)continue;drawWalkablePolygon(ctx,component.polygon,camera,{selected:component.id===selectedId});}
+  if(moving){const component=components.find(item=>item.id===moving.componentId);if(component)drawWalkablePolygon(ctx,component.polygon,camera,{dx:moving.dx,dy:moving.dy,selected:true,preview:true});}
+  if(drag?.type==='walkableRect'&&drag.floorId===floorId){const left=Math.min(drag.start.x,drag.current.x),top=Math.min(drag.start.y,drag.current.y),right=Math.max(drag.start.x,drag.current.x),bottom=Math.max(drag.start.y,drag.current.y);if(right>left&&bottom>top)drawWalkablePolygon(ctx,{outer:[{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}],holes:[]},camera,{preview:true,subtract:drag.operation==='subtractWalkableRect'});}
+}
+
 export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,showRotationHandle=true}){
   for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
     if(alpha<=0)continue;
@@ -138,10 +152,6 @@ export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,request
     }
   }
   ctx.globalAlpha=1;if(editor){const selected=state.elements?.[selectedElement];if(selected?.floorId===currentFloorId)drawSelection(ctx,selected,camera,showRotationHandle);}
-}
-
-export function drawWalkableOverlay(ctx,state,currentFloorId,camera){
-  const bounds=walkableBounds(state,currentFloorId);if(!bounds)return;ctx.save();ctx.globalAlpha=1;ctx.fillStyle='#65d6a414';ctx.strokeStyle='#65d6a4cc';ctx.lineWidth=2/camera.scale;ctx.setLineDash([10/camera.scale,7/camera.scale]);ctx.fillRect(bounds.x,bounds.y,bounds.width,bounds.height);ctx.strokeRect(bounds.x,bounds.y,bounds.width,bounds.height);ctx.restore();
 }
 
 export function transitionContains(endpoint,x,y){return !!endpoint&&Math.hypot(x-endpoint.position.x,y-endpoint.position.y)<=endpoint.radius;}

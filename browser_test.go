@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -197,6 +198,108 @@ func TestBrowser(t *testing.T) {
  return {tokens:document.querySelectorAll('.token-row').length,mapLoaded:document.getElementById('emptyMap').hidden,bitmapMode:bitmapAsset.renderMode,tiledMode:tiledAsset.renderMode,representationRequests:representationEntries.length,diagnostics:document.getElementById('diagnostics').textContent};
 })()`)
 	t.Log(result)
+	type walkableGesture struct {
+		X1, Y1, X2, Y2 float64
+		Before         int
+	}
+	gestureJSON := eval(`(async()=>{
+ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),wait=async test=>{for(let i=0;i<100;i++){if(test())return;await sleep(50)}throw Error('walkable UI timeout')};
+ document.getElementById('mapTab').click();await wait(()=>!document.getElementById('sidebarMap').hidden);
+ const mode=()=>document.querySelector('.tree-layer-walkable [title="Переключить ограничение движения"]');if(mode().textContent==='Своб.'){mode().click();await wait(()=>mode().textContent==='Огр.'&&document.getElementById('saveStatus').textContent==='Изменения приняты')}
+ document.querySelector('.tree-layer-walkable [title="Добавить проходимую область"]').click();const rect=document.getElementById('board').getBoundingClientRect();return {X1:rect.left+100,Y1:rect.top+150,X2:rect.left+280,Y2:rect.top+290,Before:sentCommands.filter(command=>command.type==='addWalkableRect').length};
+})()`)
+	var walkable walkableGesture
+	if err := json.Unmarshal([]byte(gestureJSON), &walkable); err != nil {
+		t.Fatal(err)
+	}
+	dragMouse := func(x1, y1, x2, y2 float64) {
+		call("Input.dispatchMouseEvent", map[string]any{"type": "mousePressed", "x": x1, "y": y1, "button": "left", "buttons": 1, "clickCount": 1})
+		call("Input.dispatchMouseEvent", map[string]any{"type": "mouseMoved", "x": x2, "y": y2, "button": "left", "buttons": 1})
+	}
+	releaseMouse := func(x, y float64) {
+		call("Input.dispatchMouseEvent", map[string]any{"type": "mouseReleased", "x": x, "y": y, "button": "left", "buttons": 0, "clickCount": 1})
+	}
+	dragMouse(walkable.X1, walkable.Y1, walkable.X2, walkable.Y2)
+	if eval(`sentCommands.filter(command=>command.type==='addWalkableRect').length`) != fmt.Sprint(walkable.Before) {
+		t.Fatal("walkable rectangle streamed a command during drag")
+	}
+	releaseMouse(walkable.X2, walkable.Y2)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%d&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, walkable.Before+1)) != "true" {
+		t.Fatal("walkable rectangle was not committed once")
+	}
+
+	// A second island gives the component tool both a plain move and a merge.
+	secondBefore := walkable.Before + 1
+	dragMouse(walkable.X1+270, walkable.Y1, walkable.X2+270, walkable.Y2)
+	if eval(`sentCommands.filter(command=>command.type==='addWalkableRect').length`) != fmt.Sprint(secondBefore) {
+		t.Fatal("second walkable rectangle streamed during drag")
+	}
+	releaseMouse(walkable.X2+270, walkable.Y2)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%d&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='2')return true;await sleep(50)}return false})()`, secondBefore+1)) != "true" {
+		t.Fatal("second walkable component was not created")
+	}
+
+	if eval(`(()=>{document.querySelector('.tree-layer-walkable [title="Вычесть проходимую область"]').click();return true})()`) != "true" {
+		t.Fatal("subtract tool unavailable")
+	}
+	subtractBefore := eval(`sentCommands.filter(command=>command.type==='subtractWalkableRect').length`)
+	dragMouse(walkable.X1+55, walkable.Y1+45, walkable.X1+125, walkable.Y1+95)
+	if eval(`sentCommands.filter(command=>command.type==='subtractWalkableRect').length`) != subtractBefore {
+		t.Fatal("walkable subtraction streamed during drag")
+	}
+	releaseMouse(walkable.X1+125, walkable.Y1+95)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='subtractWalkableRect').length===1&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("walkable subtraction was not committed once")
+	}
+
+	// Escape removes the local preview and pointerup must not resurrect it.
+	eval(`document.querySelector('.tree-layer-walkable [title="Добавить проходимую область"]').click();true`)
+	cancelBefore := eval(`sentCommands.filter(command=>command.type==='addWalkableRect').length`)
+	dragMouse(walkable.X1, walkable.Y1+330, walkable.X2, walkable.Y2+330)
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));true`)
+	releaseMouse(walkable.X2, walkable.Y2+330)
+	if eval(`sentCommands.filter(command=>command.type==='addWalkableRect').length`) != cancelBefore {
+		t.Fatal("Escape committed a cancelled walkable rectangle")
+	}
+
+	// Move without merge. The hole must not itself select the component.
+	eval(`document.querySelector('.tree-layer-walkable [title="Перемещать проходимые компоненты"]').click();true`)
+	moveBefore := eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`)
+	dragMouse(walkable.X1+25, walkable.Y1+25, walkable.X1+40, walkable.Y1+35)
+	if eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`) != moveBefore {
+		t.Fatal("walkable component streamed during drag")
+	}
+	releaseMouse(walkable.X1+40, walkable.Y1+35)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===1&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='2')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("plain walkable component move failed")
+	}
+	holeMoveBefore := eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`)
+	dragMouse(walkable.X1+90+15, walkable.Y1+70+10, walkable.X1+115+15, walkable.Y1+85+10)
+	releaseMouse(walkable.X1+115+15, walkable.Y1+85+10)
+	if eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`) != holeMoveBefore {
+		t.Fatal("click inside a walkable hole selected the component")
+	}
+
+	// Moving the first island onto the second merges topology on the server.
+	dragMouse(walkable.X1+300, walkable.Y1+25, walkable.X1+45, walkable.Y1+25)
+	if eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`) != holeMoveBefore {
+		t.Fatal("merge move streamed during drag")
+	}
+	releaseMouse(walkable.X1+45, walkable.Y1+25)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===2&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatalf("walkable merge result did not replace client topology: %s", eval(`JSON.stringify({moves:sentCommands.filter(command=>command.type==='moveWalkableComponent'),components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
+	}
+
+	// An invalid oversized preview is sent once, rejected by the server and
+	// replaced by the unchanged authoritative snapshot.
+	invalidBefore := eval(`(()=>{document.querySelector('.tree-layer-walkable [title="Добавить проходимую область"]').click();return sentCommands.filter(command=>command.type==='addWalkableRect').length})()`)
+	dragMouse(walkable.X1, walkable.Y1, walkable.X1+10, walkable.Y1+10)
+	eval(`(()=>{const board=document.getElementById('board');board.onpointermove({clientX:2000000,clientY:2000000});board.onpointerup();return true})()`)
+	releaseMouse(walkable.X1+10, walkable.Y1+10)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%s+1&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, invalidBefore)) != "true" {
+		t.Fatalf("rejected walkable preview did not return to authoritative state: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect').slice(-3),components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
+	}
+	eval(`(async()=>{const board=document.getElementById('board'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));board.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));const mode=()=>document.querySelector('.tree-layer-walkable [title="Переключить ограничение движения"]');if(mode().textContent==='Огр.'){mode().click();for(let i=0;i<100;i++){if(mode().textContent==='Своб.'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}throw Error('walkable mode cleanup timeout')}return true})()`)
 	if eval(`sentCommands.filter(c=>c.type==='properties').every(c=>!('x' in c.token)&&!('y' in c.token))`) != "true" {
 		t.Fatal("property command contains coordinates")
 	}

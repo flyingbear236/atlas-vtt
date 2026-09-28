@@ -4,15 +4,16 @@ const isGM=member=>!!(member?.gm||member?.role==='gm');
 const button=(text,title,action)=>{const node=document.createElement('button');node.type='button';node.className='tree-action';node.textContent=text;node.title=title;node.onclick=event=>{event.stopPropagation();action();};return node;};
 
 export class SceneTreeRuntime{
-  constructor(elements,{queue,selectElement,selectTransition,beginTransition,setFloor,getFloor,focusElement}){
-    this.elements=elements;this.queue=queue;this.selectElement=selectElement;this.selectTransition=selectTransition;this.beginTransition=beginTransition;this.setFloor=setFloor;this.getFloor=getFloor;this.focusElement=focusElement;this.state=null;this.structureKey='';this.rebuilds=0;this.elementRows=new Map();this.transitionRows=new Map();this.floorSections=new Map();this.selectedElement='';this.selectedTransition='';this.currentFloor='';
+  constructor(elements,{queue,selectElement,selectTransition,beginTransition,setFloor,getFloor,focusElement,setWalkableTool,getWalkableTool}){
+    this.elements=elements;this.queue=queue;this.selectElement=selectElement;this.selectTransition=selectTransition;this.beginTransition=beginTransition;this.setFloor=setFloor;this.getFloor=getFloor;this.focusElement=focusElement;this.setWalkableTool=setWalkableTool||(()=>{});this.getWalkableTool=getWalkableTool||(()=> '');this.state=null;this.structureKey='';this.rebuilds=0;this.elementRows=new Map();this.transitionRows=new Map();this.floorSections=new Map();this.selectedElement='';this.selectedTransition='';this.currentFloor='';
     elements.addFloor.onclick=()=>this.createFloor();elements.addLayer.onclick=()=>this.createLayer();elements.boundsSave.onclick=()=>this.saveBounds();elements.addTransition.onclick=()=>this.beginTransition();
   }
 
   update(state,selectedElement,selectedTransition=''){
     const gm=isGM(state.you),catalog=gm?(state.elementCatalog||{}):state.elements||{};this.state={...state,elements:catalog};const floors=orderedFloors(this.state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
     this.elements.boundsWidth.value=Math.round(state.scene.bounds.width);this.elements.boundsHeight.value=Math.round(state.scene.bounds.height);for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
-    const structureKey=JSON.stringify([state.scene.id,state.scene.bounds,state._catalogVersion||0,state.floors,state.layers,state.transitions,gm]);
+    const floorStructure=floors.map(floor=>[floor.id,floor.name,floor.order,floor.opacity,floor.opacityWhenViewedFromBelow,floor.walkableMode,floor.geometryRevision,floor.walkableComponents?.length||0]);
+    const structureKey=JSON.stringify([state.scene.id,state.scene.bounds,state._catalogVersion||0,floorStructure,state.layers,state.transitions,gm,this.getWalkableTool()]);
     if(structureKey!==this.structureKey){this.structureKey=structureKey;this.rebuilds++;this.elementRows.clear();this.transitionRows.clear();this.floorSections.clear();this.elements.tree.replaceChildren();if(gm)for(const floor of [...floors].reverse())this.elements.tree.append(this.floorNode(floor,current,selectedElement));if(gm&&Object.keys(state.transitions||{}).length)this.elements.tree.append(this.transitionSection(selectedTransition));this.selectedElement=selectedElement||'';this.selectedTransition=selectedTransition||'';this.currentFloor=current;return;}
     if(this.selectedElement!==(selectedElement||'')){this.elementRows.get(this.selectedElement)?.classList.remove('selected');this.elementRows.get(selectedElement)?.classList.add('selected');this.selectedElement=selectedElement||'';}
     if(this.selectedTransition!==(selectedTransition||'')){this.transitionRows.get(this.selectedTransition)?.classList.remove('selected');this.transitionRows.get(selectedTransition)?.classList.add('selected');this.selectedTransition=selectedTransition||'';}
@@ -47,13 +48,15 @@ export class SceneTreeRuntime{
     }else if(layer.kind==='tokens'){
       label.textContent=`◆ ${layer.name}`;head.append(button('✎','Переименовать',()=>this.renameLayer(layer)),button('↑','Поднять',()=>this.shiftLayer(layer,1)),button('↓','Опустить',()=>this.shiftLayer(layer,-1)));
     }else{
-      label.textContent=`▧ ${layer.name}`;head.append(button('Рамка','Изменить игровую область',()=>this.editWalkable(layer)));
+      const floor=this.state.floors[layer.floorId],tool=this.getWalkableTool();section.dataset.componentCount=String(floor.walkableComponents?.length||0);label.textContent=`▧ ${layer.name} · ${section.dataset.componentCount}`;
+      const mode=button(floor.walkableMode==='restricted'?'Огр.':'Своб.','Переключить ограничение движения',()=>this.editWalkable(floor)),add=button('＋','Добавить проходимую область',()=>this.setWalkableTool(tool==='add'?'':'add')),subtract=button('−','Вычесть проходимую область',()=>this.setWalkableTool(tool==='subtract'?'':'subtract')),move=button('↔','Перемещать проходимые компоненты',()=>this.setWalkableTool(tool==='move'?'':'move'));
+      add.classList.toggle('active',tool==='add');subtract.classList.toggle('active',tool==='subtract');move.classList.toggle('active',tool==='move');head.append(mode,add,subtract,move);
     }
     section.append(head);if(layer.kind==='visual'){const elements=Object.values(this.state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>b.zOrder-a.zOrder||a.id.localeCompare(b.id));for(const element of elements)section.append(this.elementNode(element,selectedElement));}return section;
   }
 
   renameLayer(layer){const name=prompt('Название слоя',layer.name)?.trim();if(name)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{name}});}
-  editWalkable(layer){const current=layer.walkableBounds||{x:0,y:0,width:this.state.scene.bounds.width,height:this.state.scene.bounds.height},x=Number(prompt('X игровой области',String(current.x))),y=Number(prompt('Y игровой области',String(current.y))),width=Number(prompt('Ширина игровой области',String(current.width))),height=Number(prompt('Высота игровой области',String(current.height)));if([x,y,width,height].every(Number.isFinite)&&width>0&&height>0)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{walkableBounds:{x,y,width,height}}});}
+  editWalkable(floor){this.queue('setWalkableMode',{floorId:floor.id,expectedGeometryRevision:floor.geometryRevision,walkableMode:floor.walkableMode==='restricted'?'unrestricted':'restricted'});}
 
   elementNode(element,selectedElement){
     const row=document.createElement('div');row.className='tree-row tree-element-row'+(element.id===selectedElement?' selected':'');row.draggable=true;row.dataset.elementId=element.id;this.elementRows.set(element.id,row);row.onclick=()=>{this.setFloor(element.floorId,true);this.selectElement(element.id);};row.ondragstart=event=>{event.stopPropagation();event.dataTransfer.setData('text/atlas-element',element.id);};row.ondragover=event=>event.preventDefault();row.ondrop=event=>{event.preventDefault();event.stopPropagation();const id=event.dataTransfer.getData('text/atlas-element');if(id&&id!==element.id)this.dropElement(id,element);};

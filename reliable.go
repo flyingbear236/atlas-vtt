@@ -116,31 +116,39 @@ type FloorProperties struct {
 	OpacityWhenViewedFromBelow *float64 `json:"opacityWhenViewedFromBelow,omitempty"`
 }
 type Command struct {
-	Type              string            `json:"type"`
-	Token             Token             `json:"token"`
-	Properties        Properties        `json:"properties"`
-	Client            string            `json:"client"`
-	Seq               uint64            `json:"seq"`
-	After             uint64            `json:"after"`
-	SceneID           string            `json:"sceneId,omitempty"`
-	SceneName         string            `json:"sceneName,omitempty"`
-	Published         *bool             `json:"published,omitempty"`
-	Region            *SceneRegion      `json:"region,omitempty"`
-	ViewFloorID       string            `json:"viewFloorId,omitempty"`
-	ActiveTokenID     string            `json:"activeTokenId,omitempty"`
-	Focus             bool              `json:"focus,omitempty"`
-	Bounds            *SceneBounds      `json:"bounds,omitempty"`
-	Floor             Floor             `json:"floor,omitempty"`
-	FloorProperties   FloorProperties   `json:"floorProperties,omitempty"`
-	Layer             Layer             `json:"layer,omitempty"`
-	LayerProperties   LayerProperties   `json:"layerProperties,omitempty"`
-	Element           SceneElement      `json:"element,omitempty"`
-	ElementProperties ElementProperties `json:"elementProperties,omitempty"`
-	Transition        Transition        `json:"transition,omitempty"`
-	AssetID           string            `json:"assetId,omitempty"`
-	RetentionPolicy   string            `json:"retentionPolicy,omitempty"`
-	MemberID          string            `json:"memberId,omitempty"`
-	GM                *bool             `json:"gm,omitempty"`
+	Type                     string            `json:"type"`
+	Token                    Token             `json:"token"`
+	Properties               Properties        `json:"properties"`
+	Client                   string            `json:"client"`
+	Seq                      uint64            `json:"seq"`
+	After                    uint64            `json:"after"`
+	SceneID                  string            `json:"sceneId,omitempty"`
+	SceneName                string            `json:"sceneName,omitempty"`
+	Published                *bool             `json:"published,omitempty"`
+	Region                   *SceneRegion      `json:"region,omitempty"`
+	ViewFloorID              string            `json:"viewFloorId,omitempty"`
+	ActiveTokenID            string            `json:"activeTokenId,omitempty"`
+	Focus                    bool              `json:"focus,omitempty"`
+	Bounds                   *SceneBounds      `json:"bounds,omitempty"`
+	Floor                    Floor             `json:"floor,omitempty"`
+	FloorProperties          FloorProperties   `json:"floorProperties,omitempty"`
+	Layer                    Layer             `json:"layer,omitempty"`
+	LayerProperties          LayerProperties   `json:"layerProperties,omitempty"`
+	Element                  SceneElement      `json:"element,omitempty"`
+	ElementProperties        ElementProperties `json:"elementProperties,omitempty"`
+	Transition               Transition        `json:"transition,omitempty"`
+	AssetID                  string            `json:"assetId,omitempty"`
+	RetentionPolicy          string            `json:"retentionPolicy,omitempty"`
+	MemberID                 string            `json:"memberId,omitempty"`
+	GM                       *bool             `json:"gm,omitempty"`
+	FloorID                  string            `json:"floorId,omitempty"`
+	ComponentID              string            `json:"componentId,omitempty"`
+	WalkableBounds           *WalkableBounds   `json:"walkableBounds,omitempty"`
+	RenderBounds             *Polygon          `json:"renderBounds,omitempty"`
+	WalkableMode             string            `json:"walkableMode,omitempty"`
+	DeltaX                   float64           `json:"deltaX,omitempty"`
+	DeltaY                   float64           `json:"deltaY,omitempty"`
+	ExpectedGeometryRevision *uint64           `json:"expectedGeometryRevision,omitempty"`
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {
@@ -256,7 +264,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			// it must neither move the teleported token nor surface a spurious error.
 			break
 		}
-		if !gm && !positionInWalkable(scene, old.FloorID, c.Token.X, c.Token.Y) {
+		if !gm && !CanMoveTokenSegment(scene, old.FloorID, ScenePoint{X: old.X, Y: old.Y}, ScenePoint{X: c.Token.X, Y: c.Token.Y}) {
 			issue = "Токен нельзя переместить за границы игровой области"
 			break
 		}

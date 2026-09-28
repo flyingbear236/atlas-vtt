@@ -214,11 +214,17 @@ func newServer(root string) (*Server, error) {
 			if scene == nil || scene.ID != sceneID || scene.Name == "" {
 				return nil, fmt.Errorf("invalid scene in session %s", sessionID)
 			}
-			if ensureSceneStructure(scene) {
-				migrated = true
+			if scene.ModelVersion != sceneModelVersion {
+				return nil, fmt.Errorf("unsupported scene model version %d in scene %s (expected %d); remove or recreate the development data", scene.ModelVersion, sceneID, sceneModelVersion)
 			}
 			if !validateSceneStructure(scene, ss.Assets, ss.Members) {
 				return nil, fmt.Errorf("invalid scene %s in session %s", sceneID, sessionID)
+			}
+			if ensureSceneStructure(scene) {
+				migrated = true
+				if !validateSceneStructure(scene, ss.Assets, ss.Members) {
+					return nil, fmt.Errorf("invalid scene %s in session %s after structure repair", sceneID, sessionID)
+				}
 			}
 			scene.rebuildRuntime()
 		}

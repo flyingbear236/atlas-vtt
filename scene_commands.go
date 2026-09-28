@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -16,7 +17,8 @@ func sceneContentCommand(commandType string) bool {
 		"layerCreate", "layerUpdate", "layerDelete",
 		"elementCreate", "elementUpdate", "elementDelete", "elementPreview", "elementTransform", "elementFixRotation",
 		"transitionCreate", "transitionUpdate", "transitionDelete",
-		"assetRetention":
+		"assetRetention",
+		"addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
 		return true
 	}
 	return false
@@ -71,6 +73,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 	changed := false
 	structural := false
 	assetRefsChanged := false
+	resyncOnIssue := false
 	var restore func()
 	var oldElement, nextElement SceneElement
 	var elementExisted, elementExists bool
@@ -96,6 +99,65 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				changed, structural = true, true
 				restore = func() { scene.Bounds = old }
 			}
+		case "addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
+			if command.Seq == 0 || command.Client == "" {
+				issue = "Изменение геометрии требует надёжной команды"
+				resyncOnIssue = true
+				break
+			}
+			floor, ok := scene.Floors[command.FloorID]
+			if !ok {
+				issue = "Этаж не найден"
+				resyncOnIssue = true
+				break
+			}
+			if command.ExpectedGeometryRevision == nil {
+				issue = "Не указана версия геометрии"
+				resyncOnIssue = true
+				break
+			}
+			if *command.ExpectedGeometryRevision != floor.GeometryRevision {
+				issue = "Геометрия этажа уже изменена"
+				resyncOnIssue = true
+				break
+			}
+			old := floor
+			operationChanged := false
+			var operationErr error
+			switch command.Type {
+			case "addWalkableRect", "subtractWalkableRect":
+				bounds, err := commandWalkableAABB(command.WalkableBounds)
+				if err != nil {
+					operationErr = err
+					break
+				}
+				if command.Type == "addWalkableRect" {
+					floor.WalkableComponents, operationChanged, operationErr = addWalkableRect(floor.WalkableComponents, bounds, id)
+				} else {
+					floor.WalkableComponents, operationChanged, operationErr = subtractWalkableRect(floor.WalkableComponents, bounds, id)
+				}
+			case "moveWalkableComponent":
+				floor.WalkableComponents, operationChanged, operationErr = moveWalkableComponent(floor.WalkableComponents, command.ComponentID, command.DeltaX, command.DeltaY)
+			case "deleteWalkableComponent":
+				floor.WalkableComponents, operationChanged, operationErr = deleteWalkableComponent(floor.WalkableComponents, command.ComponentID)
+			case "setWalkableMode":
+				floor, operationChanged, operationErr = setWalkableMode(floor, command.WalkableMode)
+			case "setRenderBounds":
+				floor, operationChanged, operationErr = setRenderBounds(floor, command.RenderBounds)
+			case "clearRenderBounds":
+				floor, operationChanged, operationErr = clearRenderBounds(floor)
+			}
+			if operationErr != nil {
+				issue = walkableCommandIssue(operationErr)
+				resyncOnIssue = true
+				break
+			}
+			if operationChanged {
+				floor.GeometryRevision++
+				scene.Floors[floor.ID] = floor
+				changed = true
+				restore = func() { scene.Floors[old.ID] = old }
+			}
 		case "floorCreate":
 			if len(scene.Floors) >= maxSceneFloors {
 				issue = "Сейчас сцена поддерживает не больше двух этажей"
@@ -106,7 +168,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				issue = "Некорректное имя этажа"
 				break
 			}
-			floor := Floor{ID: id(), Name: name, Order: command.Floor.Order, Opacity: 1}
+			floor := Floor{ID: id(), Name: name, Order: command.Floor.Order, Opacity: 1, WalkableMode: walkableModeUnrestricted, WalkableComponents: []WalkableComponent{}}
 			scene.Floors[floor.ID] = floor
 			addFloorLayers(scene, floor.ID)
 			changed, structural = true, true
@@ -525,15 +587,24 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 		default:
 			s.publishSceneSnapshot(session, sceneID)
 		}
-	} else if issue != "" && command.Seq == 0 {
-		s.send(peer, map[string]string{"type": "error", "message": issue})
-		if scene != nil {
+	} else if issue != "" {
+		if command.Seq == 0 {
+			s.send(peer, map[string]string{"type": "error", "message": issue})
+		}
+		if scene != nil && (command.Seq == 0 || resyncOnIssue) {
 			s.send(peer, s.snapshotSceneForPeer(session, peer))
 		}
 	}
 	if command.Seq > 0 {
 		s.send(peer, map[string]any{"type": "ack", "client": command.Client, "seq": command.Seq, "error": issue, "revision": sceneRevision(session, sceneID), "sceneId": sceneID})
 	}
+}
+
+func walkableCommandIssue(err error) string {
+	if errors.Is(err, errGeometryLimitExceeded) {
+		return "Превышен лимит геометрии"
+	}
+	return "Некорректная геометрия"
 }
 
 func sceneRevision(session *Session, sceneID string) uint64 {

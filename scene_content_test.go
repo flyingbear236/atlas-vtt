@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,7 +84,7 @@ func TestSceneStructureSeparatesRasterAndTokenAssetRoles(t *testing.T) {
 	}
 }
 
-func TestCurrentFloorModelMigratesSpecialLayersAndTokenBinding(t *testing.T) {
+func TestPreviousSceneModelIsRejectedExplicitly(t *testing.T) {
 	root := t.TempDir()
 	mapID := "existing-map"
 	member := &Member{ID: "gm", Name: "GM", Role: "gm"}
@@ -98,29 +99,8 @@ func TestCurrentFloorModelMigratesSpecialLayersAndTokenBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := testServer(t, root)
-	migrated := server.sessions[session.ID].Scenes[scene.ID]
-	if migrated.Bounds != (SceneBounds{Width: 12000, Height: 8000}) || len(migrated.Floors) != 1 || len(migrated.Layers) < 3 || len(migrated.Elements) != 1 {
-		t.Fatalf("scene migration incomplete: %#v", migrated)
-	}
-	for _, element := range migrated.Elements {
-		if element.AssetID != mapID || element.Transform.Width != 12000 || element.Transform.Height != 8000 || !element.Visible {
-			t.Fatalf("existing map element changed: %#v", element)
-		}
-	}
-	if migrated.Tokens["hero"].FloorID == "" || migrated.Revision != 7 {
-		t.Fatalf("token/revision not preserved: %#v", migrated.Tokens["hero"])
-	}
-	for _, floor := range migrated.Floors {
-		if floor.Opacity != 1 || layerIDByKind(migrated, floor.ID, layerKindTokens) == "" || layerIDByKind(migrated, floor.ID, layerKindWalkable) == "" {
-			t.Fatalf("floor special layers were not migrated: %#v", migrated)
-		}
-	}
-	if token := migrated.Tokens["hero"]; migrated.Layers[token.LayerID].Kind != layerKindTokens {
-		t.Fatalf("token was not attached to its token layer: %#v", token)
-	}
-	if _, err = testServerNoFatal(root); err != nil {
-		t.Fatalf("migrated save cannot restart: %v", err)
+	if _, err = testServerNoFatal(root); err == nil || !strings.Contains(err.Error(), "unsupported scene model version") {
+		t.Fatalf("old scene model was not rejected explicitly: %v", err)
 	}
 }
 
@@ -136,8 +116,17 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	scene := firstScene(session)
 	lowerID := firstFloorID(scene)
 	upperID := "upper"
-	scene.Floors[upperID] = Floor{ID: upperID, Name: "Этаж 2", Order: 1, Opacity: 1}
+	scene.Floors[upperID] = Floor{ID: upperID, Name: "Этаж 2", Order: 1, Opacity: 1, WalkableMode: walkableModeUnrestricted, WalkableComponents: []WalkableComponent{}}
 	addFloorLayers(scene, upperID)
+	lower := scene.Floors[lowerID]
+	lower.WalkableMode = walkableModeRestricted
+	walkablePolygon, err := rectanglePolygon(AABB{MinX: 0, MinY: 0, MaxX: scene.Bounds.Width, MaxY: scene.Bounds.Height})
+	if err != nil {
+		server.mu.Unlock()
+		t.Fatal(err)
+	}
+	lower.WalkableComponents = []WalkableComponent{{ID: "main", Polygon: walkablePolygon}}
+	scene.Floors[lowerID] = lower
 	var playerMember *Member
 	for _, member := range session.Members {
 		if member.Role == "player" {
@@ -183,7 +172,7 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	if elements["upper"].ID == "" || !assetVisibleTo(session, playerMember, scene.ID, "upper-asset") {
 		t.Fatal("visible upper floor was not delivered and authorized")
 	}
-	lower := scene.Floors[lowerID]
+	lower = scene.Floors[lowerID]
 	lower.Opacity = 0
 	scene.Floors[lowerID] = lower
 	hero := scene.Tokens["hero"]
@@ -266,6 +255,12 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	json.Unmarshal(ack["error"], &issue)
 	if issue != "" {
 		t.Fatalf("GM administrative movement was rejected: %s", issue)
+	}
+	playerWS.WriteJSON(Command{Type: "final", Client: "walkable-player", Seq: 2, SceneID: scene.ID, Token: Token{ID: "hero", X: 50, Y: 50}})
+	ack = read(t, playerWS, "ack")
+	json.Unmarshal(ack["error"], &issue)
+	if issue == "" {
+		t.Fatal("player moved a token that already started outside walkable geometry")
 	}
 }
 
@@ -559,7 +554,7 @@ func TestPlayerActiveTokenControlsFloorAndNavigation(t *testing.T) {
 	scene := firstScene(session)
 	lowerFloor := firstFloorID(scene)
 	upperFloor := id()
-	scene.Floors[upperFloor] = Floor{ID: upperFloor, Name: "Upper", Order: 1, Opacity: 1}
+	scene.Floors[upperFloor] = Floor{ID: upperFloor, Name: "Upper", Order: 1, Opacity: 1, WalkableMode: walkableModeUnrestricted, WalkableComponents: []WalkableComponent{}}
 	addFloorLayers(scene, upperFloor)
 	lower := Token{ID: "owned-lower", Name: "Lower", Owner: member.ID, FloorID: lowerFloor, LayerID: layerIDByKind(scene, lowerFloor, layerKindTokens), X: 100, Y: 120, Size: 80, Asset: "lower-secret"}
 	upper := Token{ID: "owned-upper", Name: "Upper", Owner: member.ID, FloorID: upperFloor, LayerID: layerIDByKind(scene, upperFloor, layerKindTokens), X: 2400, Y: 1800, Size: 80, Asset: "upper-secret"}

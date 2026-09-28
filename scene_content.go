@@ -13,7 +13,7 @@ const (
 	maxSceneDimension  = 1_000_000.0
 	maxSceneElements   = 100_000
 	maxSceneFloors     = 2
-	sceneModelVersion  = 2
+	sceneModelVersion  = 3
 )
 
 const (
@@ -340,11 +340,14 @@ func newScene(sceneID, name string) *Scene {
 		Name:         name,
 		ModelVersion: sceneModelVersion,
 		Bounds:       SceneBounds{Width: defaultSceneWidth, Height: defaultSceneHeight},
-		Floors:       map[string]Floor{floorID: {ID: floorID, Name: "Этаж 1", Order: 0, Opacity: 1}},
-		Layers:       map[string]Layer{},
-		Elements:     map[string]SceneElement{},
-		Tokens:       map[string]Token{},
-		Transitions:  map[string]Transition{},
+		Floors: map[string]Floor{floorID: {
+			ID: floorID, Name: "Этаж 1", Order: 0, Opacity: 1,
+			WalkableMode: walkableModeUnrestricted, WalkableComponents: []WalkableComponent{},
+		}},
+		Layers:      map[string]Layer{},
+		Elements:    map[string]SceneElement{},
+		Tokens:      map[string]Token{},
+		Transitions: map[string]Transition{},
 	}
 	scene.Layers[baseID] = Layer{ID: baseID, FloorID: floorID, Name: "Основа", Kind: layerKindVisual, Order: 0, Visible: true, Opacity: 1}
 	scene.Layers[objectsID] = Layer{ID: objectsID, FloorID: floorID, Name: "Объекты", Kind: layerKindVisual, Order: 1, Visible: true, Opacity: 1}
@@ -352,11 +355,14 @@ func newScene(sceneID, name string) *Scene {
 	return scene
 }
 
-// ensureSceneStructure upgrades the immediately preceding Floor/Layer model.
-// Maps already remain ordinary SceneElements; no singleton map path exists.
+// ensureSceneStructure repairs optional structure only within the current model.
+// Older model versions are rejected by newServer instead of being guessed into
+// the new authoritative walkable representation.
 func ensureSceneStructure(scene *Scene) bool {
+	if scene == nil || scene.ModelVersion != sceneModelVersion {
+		return false
+	}
 	changed := false
-	legacyModel := scene.ModelVersion < sceneModelVersion
 	if scene.Tokens == nil {
 		scene.Tokens = map[string]Token{}
 		changed = true
@@ -375,7 +381,7 @@ func ensureSceneStructure(scene *Scene) bool {
 	}
 	if len(scene.Floors) == 0 {
 		floorID := id()
-		scene.Floors[floorID] = Floor{ID: floorID, Name: "Этаж 1", Order: 0, Opacity: 1}
+		scene.Floors[floorID] = Floor{ID: floorID, Name: "Этаж 1", Order: 0, Opacity: 1, WalkableMode: walkableModeUnrestricted, WalkableComponents: []WalkableComponent{}}
 		changed = true
 	}
 	floorID := firstFloorID(scene)
@@ -384,14 +390,6 @@ func ensureSceneStructure(scene *Scene) bool {
 		scene.Layers[baseID] = Layer{ID: baseID, FloorID: floorID, Name: "Основа", Kind: layerKindVisual, Order: 0, Visible: true, Opacity: 1}
 		scene.Layers[objectsID] = Layer{ID: objectsID, FloorID: floorID, Name: "Объекты", Kind: layerKindVisual, Order: 1, Visible: true, Opacity: 1}
 		changed = true
-	}
-	for floorKey, floor := range scene.Floors {
-		if legacyModel {
-			floor.Opacity = 1
-			floor.OpacityWhenViewedFromBelow = 0
-			scene.Floors[floorKey] = floor
-			changed = true
-		}
 	}
 	for layerID, layer := range scene.Layers {
 		if layer.Kind == "" {
@@ -435,10 +433,6 @@ func ensureSceneStructure(scene *Scene) bool {
 			changed = true
 		}
 	}
-	if legacyModel {
-		scene.ModelVersion = sceneModelVersion
-		changed = true
-	}
 	return changed
 }
 
@@ -447,7 +441,7 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 		return false
 	}
 	for floorID, floor := range scene.Floors {
-		if floor.ID != floorID || strings.TrimSpace(floor.Name) == "" || !validNumber(floor.Opacity) || floor.Opacity < 0 || floor.Opacity > 1 || !validNumber(floor.OpacityWhenViewedFromBelow) || floor.OpacityWhenViewedFromBelow < 0 || floor.OpacityWhenViewedFromBelow > 1 {
+		if floor.ID != floorID || strings.TrimSpace(floor.Name) == "" || !validNumber(floor.Opacity) || floor.Opacity < 0 || floor.Opacity > 1 || !validNumber(floor.OpacityWhenViewedFromBelow) || floor.OpacityWhenViewedFromBelow < 0 || floor.OpacityWhenViewedFromBelow > 1 || !validFloorGeometry(floor) {
 			return false
 		}
 		if layerIDByKind(scene, floorID, layerKindTokens) == "" || layerIDByKind(scene, floorID, layerKindWalkable) == "" {
@@ -491,6 +485,35 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 	}
 	for transitionID, transition := range scene.Transitions {
 		if transition.ID != transitionID || !validTransition(scene, transition) {
+			return false
+		}
+	}
+	return true
+}
+
+func validFloorGeometry(floor Floor) bool {
+	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || len(floor.WalkableComponents) > maxWalkableComponents || walkableVertexCount(floor.WalkableComponents) > maxGeometryTotalVertices {
+		return false
+	}
+	ids := make(map[string]bool, len(floor.WalkableComponents))
+	previousID := ""
+	for _, component := range floor.WalkableComponents {
+		if component.ID == "" || ids[component.ID] || previousID > component.ID {
+			return false
+		}
+		normalized, err := normalizePolygon(component.Polygon)
+		if err != nil || !polygonsEqual(normalized, component.Polygon) {
+			return false
+		}
+		ids[component.ID] = true
+		previousID = component.ID
+	}
+	if floor.RenderBounds != nil {
+		if len(floor.RenderBounds.Holes) != 0 {
+			return false
+		}
+		normalized, err := normalizePolygon(*floor.RenderBounds)
+		if err != nil || !polygonsEqual(normalized, *floor.RenderBounds) {
 			return false
 		}
 	}
