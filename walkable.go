@@ -21,7 +21,7 @@ func commandWalkableAABB(bounds *WalkableBounds) (AABB, error) {
 // assumes stored components were normalized when accepted; only AABB-selected
 // candidates enter the comparatively expensive clipping operation.
 func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
-	if len(components) > maxWalkableComponents {
+	if !walkableGeometryWithinLimits(components) {
 		return nil, false, errGeometryLimitExceeded
 	}
 	added, err := rectanglePolygon(rectangle)
@@ -79,6 +79,9 @@ func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID 
 		usedIDs[componentID] = true
 		result = append(result, WalkableComponent{ID: componentID, Polygon: polygon})
 	}
+	if !walkableGeometryWithinLimits(result) {
+		return nil, false, errGeometryLimitExceeded
+	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 
 	if walkableComponentSetsEqual(components, result) {
@@ -91,7 +94,7 @@ func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID 
 // keeps the old ID on the lexicographically first normalized piece; subsequent
 // pieces receive fresh IDs. The input slice is never mutated.
 func subtractWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
-	if len(components) > maxWalkableComponents {
+	if !walkableGeometryWithinLimits(components) {
 		return nil, false, errGeometryLimitExceeded
 	}
 	cut, err := rectanglePolygon(rectangle)
@@ -133,7 +136,7 @@ func subtractWalkableRect(components []WalkableComponent, rectangle AABB, genera
 			result = append(result, WalkableComponent{ID: componentID, Polygon: piece})
 		}
 	}
-	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
+	if !walkableGeometryWithinLimits(result) {
 		return nil, false, errGeometryLimitExceeded
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
@@ -147,7 +150,7 @@ func subtractWalkableRect(components []WalkableComponent, rectangle AABB, genera
 // then unions it only with components near the destination. Tokens, assets and
 // transitions are deliberately outside this pure geometry operation.
 func moveWalkableComponent(components []WalkableComponent, componentID string, deltaX, deltaY float64) ([]WalkableComponent, bool, error) {
-	if len(components) > maxWalkableComponents || componentID == "" {
+	if !walkableGeometryWithinLimits(components) || componentID == "" {
 		return nil, false, errInvalidGeometry
 	}
 	ids, err := componentIDs(components)
@@ -221,7 +224,7 @@ func moveWalkableComponent(components []WalkableComponent, componentID string, d
 		usedIDs[resultID] = true
 		result = append(result, WalkableComponent{ID: resultID, Polygon: polygon})
 	}
-	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
+	if !walkableGeometryWithinLimits(result) {
 		return nil, false, errGeometryLimitExceeded
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
@@ -246,7 +249,7 @@ func translatePolygon(polygon Polygon, deltaX, deltaY float64) (Polygon, error) 
 }
 
 func deleteWalkableComponent(components []WalkableComponent, componentID string) ([]WalkableComponent, bool, error) {
-	if len(components) > maxWalkableComponents || componentID == "" {
+	if !walkableGeometryWithinLimits(components) || componentID == "" {
 		return nil, false, errInvalidGeometry
 	}
 	if _, err := componentIDs(components); err != nil {
@@ -342,6 +345,21 @@ func walkableVertexCount(components []WalkableComponent) int {
 		total += len(component.Polygon.Outer) + ringVertexCount(component.Polygon.Holes)
 	}
 	return total
+}
+
+func walkableGeometryWithinLimits(components []WalkableComponent) bool {
+	if len(components) > maxWalkableComponents {
+		return false
+	}
+	total := 0
+	for _, component := range components {
+		count, ok := polygonVertexCountWithin(component.Polygon, maxGeometryResultVertices-total)
+		if !ok {
+			return false
+		}
+		total += count
+	}
+	return true
 }
 
 func matchingComponentID(polygon Polygon, affected []WalkableComponent, used map[string]bool) string {

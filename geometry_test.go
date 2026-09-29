@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -84,5 +85,27 @@ func TestSetRenderBoundsValidation(t *testing.T) {
 	}
 	if _, changed, err = clearRenderBounds(cleared); err != nil || changed {
 		t.Fatalf("repeated clear must be a no-op: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestGeometryCoordinateAndInputVertexLimits(t *testing.T) {
+	if value, err := quantizeCoordinate(maxSceneDimension); err != nil || value != maxSceneDimension {
+		t.Fatalf("maximum coordinate rejected: value=%v err=%v", value, err)
+	}
+	for _, value := range []float64{maxSceneDimension + geometryQuantum, -maxSceneDimension - geometryQuantum, math.Inf(1), math.NaN()} {
+		if _, err := quantizeCoordinate(value); !errors.Is(err, errInvalidGeometry) {
+			t.Fatalf("coordinate %v was accepted: %v", value, err)
+		}
+	}
+
+	floor := Floor{ID: "floor"}
+	tooMany := Polygon{Outer: make([]ScenePoint, maxGeometryInputVertices+1)}
+	for index := range tooMany.Outer {
+		angle := 2 * math.Pi * float64(index) / float64(len(tooMany.Outer))
+		tooMany.Outer[index] = ScenePoint{X: 1000 * math.Cos(angle), Y: 1000 * math.Sin(angle)}
+	}
+	result, changed, err := setRenderBounds(floor, &tooMany)
+	if !errors.Is(err, errGeometryLimitExceeded) || changed || result.RenderBounds != nil {
+		t.Fatalf("input vertex limit was not atomic: changed=%v err=%v floor=%#v", changed, err, result)
 	}
 }

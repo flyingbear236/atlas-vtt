@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	polyclip "github.com/ctessum/polyclip-go"
+)
 
 func mustRectangle(t *testing.T, minX, minY, maxX, maxY float64) Polygon {
 	t.Helper()
@@ -46,5 +51,24 @@ func TestPolygonClipPreservesExistingHole(t *testing.T) {
 	result, err := unionPolygons([]Polygon{polygon})
 	if err != nil || len(result) != 1 || len(result[0].Holes) != 1 {
 		t.Fatalf("existing hole was not preserved: %#v, %v", result, err)
+	}
+}
+
+func TestPolygonClipRejectsResultLimitsBeforeConversion(t *testing.T) {
+	tests := map[string]polyclip.Polygon{
+		"ring vertices": {make(polyclip.Contour, maxGeometryRingVertices+1)},
+		"total vertices": {
+			make(polyclip.Contour, 3000),
+			make(polyclip.Contour, 3000),
+			make(polyclip.Contour, maxGeometryResultVertices-6000+1),
+		},
+		"components": make(polyclip.Polygon, maxWalkableComponents*2+1),
+	}
+	for name, clipped := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := clipPolygonToAtlas(clipped); !errors.Is(err, errGeometryLimitExceeded) {
+				t.Fatalf("limit+1 result accepted: %v", err)
+			}
+		})
 	}
 }

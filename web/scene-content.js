@@ -81,6 +81,42 @@ function rectIntersectsPolygon(left,top,right,bottom,points){
   for(const [ax,ay]of axes){let pmin=Infinity,pmax=-Infinity;for(const p of points){const value=p.x*ax+p.y*ay;pmin=Math.min(pmin,value);pmax=Math.max(pmax,value);}const values=[left*ax+top*ay,right*ax+top*ay,right*ax+bottom*ay,left*ax+bottom*ay],rmin=Math.min(...values),rmax=Math.max(...values);if(pmax<rmin||rmax<pmin)return false;}return true;
 }
 
+function rectIntersectsSimplePolygon(left,top,right,bottom,points,bounds=polygonBounds(points)){
+  if(right<bounds.left||left>bounds.right||bottom<bounds.top||top>bounds.bottom)return false;
+  for(const point of points)if(point.x>=left&&point.x<=right&&point.y>=top&&point.y<=bottom)return true;
+  const corners=[{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}];if(corners.some(point=>ringContains(points,point.x,point.y)))return true;
+  for(let i=0;i<points.length;i++)for(let j=0;j<corners.length;j++)if(renderBoundsSegmentsIntersect(points[i],points[(i+1)%points.length],corners[j],corners[(j+1)%corners.length]))return true;
+  return false;
+}
+
+export class FloorRenderBoundsResourceCache{
+  constructor(limit=8192,elementLimit=512){this.limit=limit;this.elementLimit=elementLimit;this.sceneId='';this.revisions=new Map();this.floors=new Map();this.elements=new Map();this.classifications=new Map();this.hits=0;this.misses=0;}
+  clear(){this.sceneId='';this.revisions.clear();this.floors.clear();this.elements.clear();this.classifications.clear();}
+  invalidateFloor(floorId){this.revisions.delete(floorId);this.floors.delete(floorId);for(const [key,value]of this.elements)if(value.floorId===floorId)this.elements.delete(key);for(const [key,value]of this.classifications)if(value.floorId===floorId)this.classifications.delete(key);}
+  syncState(state){
+    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}const floors=state?.floors||{},live=new Set(Object.keys(floors));
+    for(const floorId of this.revisions.keys())if(!live.has(floorId))this.invalidateFloor(floorId);for(const floor of Object.values(floors))this.sync(state,floor);
+  }
+  sync(state,floor){
+    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}
+    const previous=this.revisions.get(floor.id),revision=floor.geometryRevision;if(previous===revision)return;if(previous!==undefined)this.invalidateFloor(floor.id);this.revisions.set(floor.id,revision);
+  }
+  floorBounds(state,floor){
+    this.sync(state,floor);let cached=this.floors.get(floor.id);if(cached)return cached;const points=floor.renderBounds?.outer||[];cached={points,bounds:points.length?polygonBounds(points):null};this.floors.set(floor.id,cached);return cached;
+  }
+  localBounds(state,floor,element){
+    this.sync(state,floor);const t=element.transform,signature=`${floor.geometryRevision}:${t.x}:${t.y}:${t.width}:${t.height}:${t.rotation}`,key=`${floor.id}:${element.id}`,cached=this.elements.get(key);if(cached?.signature===signature){this.elements.delete(key);this.elements.set(key,cached);return cached;}
+    const points=(floor.renderBounds?.outer||[]).map(point=>inversePoint(t,point.x,point.y)),entry={floorId:floor.id,signature,points,bounds:points.length?polygonBounds(points):null};this.elements.delete(key);this.elements.set(key,entry);while(this.elements.size>this.elementLimit)this.elements.delete(this.elements.keys().next().value);return entry;
+  }
+  intersectsRect(state,floor,element,rectKey,left,top,right,bottom){
+    if(!floor?.renderBounds)return true;const local=this.localBounds(state,floor,element),key=`${floor.id}:${element.id}:${local.signature}:${rectKey}`,cached=this.classifications.get(key);if(cached){this.hits++;this.classifications.delete(key);this.classifications.set(key,cached);return cached.result;}
+    this.misses++;const result=!!local.bounds&&rectIntersectsSimplePolygon(left,top,right,bottom,local.points,local.bounds);this.classifications.set(key,{floorId:floor.id,result});while(this.classifications.size>this.limit)this.classifications.delete(this.classifications.keys().next().value);return result;
+  }
+  intersectsCircle(state,floor,x,y,radius){
+    if(!floor?.renderBounds)return true;const geometry=this.floorBounds(state,floor),bounds=geometry.bounds;if(!bounds||x+radius<bounds.left||x-radius>bounds.right||y+radius<bounds.top||y-radius>bounds.bottom)return false;if(ringContains(geometry.points,x,y))return true;for(let i=0;i<geometry.points.length;i++)if(renderBoundsEdgeDistance({x,y},geometry.points[i],geometry.points[(i+1)%geometry.points.length])<=radius)return true;return false;
+  }
+}
+
 export function elementIntersectsView(element,view){const t=element?.transform;if(!t||!view)return false;return rectIntersectsPolygon(0,0,t.width,t.height,viewportPolygon(t,view));}
 
 const tilePresenceCache=new WeakMap();
@@ -109,25 +145,25 @@ function drawTiledFallback(ctx,asset,z,x,y,left,top,width,height,peekImage){
   return false;
 }
 
-function drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage){
+function drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds){
   const t=element.transform,polygon=viewportPolygon(t,view),local=polygonBounds(polygon),sx=t.width/asset.width,sy=t.height/asset.height,screenScale=camera.scale*dpr*Math.max(sx,sy);
   const z=Math.max(0,Math.min(asset.levels-1,Math.floor(Math.log2(1/Math.max(screenScale,.000001))))),unit=512*2**z,nx=Math.ceil(asset.width/unit),ny=Math.ceil(asset.height/unit),tileW=unit*sx,tileH=unit*sy;
   const x0=Math.max(0,Math.floor(local.left/tileW)),y0=Math.max(0,Math.floor(local.top/tileH)),x1=Math.min(nx-1,Math.floor(local.right/tileW)),y1=Math.min(ny-1,Math.floor(local.bottom/tileH));
-  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(!rectIntersectsPolygon(left,top,right,bottom,polygon))continue;visible.add(`${x}:${y}`);if(!tileAvailable(asset,z,x,y,nx))continue;const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);else drawTiledFallback(ctx,asset,z,x,y,left,top,right-left,bottom-top,peekImage);}
+  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH),key=`${x}:${y}`;if(!rectIntersectsPolygon(left,top,right,bottom,polygon)||resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,`tile:${z}:${key}`,left,top,right,bottom))continue;visible.add(key);if(!tileAvailable(asset,z,x,y,nx))continue;const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);else drawTiledFallback(ctx,asset,z,x,y,left,top,right-left,bottom-top,peekImage);}
   const prefetch=new Set();for(const key of visible){const [x,y]=key.split(':').map(Number);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const px=x+dx,py=y+dy,next=`${px}:${py}`;if(px>=0&&py>=0&&px<nx&&py<ny&&!visible.has(next))prefetch.add(next);}}
-  for(const key of prefetch){const [x,y]=key.split(':').map(Number);if(tileAvailable(asset,z,x,y,nx))requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
+  for(const key of prefetch){const [x,y]=key.split(':').map(Number),left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,`tile:${z}:${key}`,left,top,right,bottom))continue;if(tileAvailable(asset,z,x,y,nx))requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
 }
 
-function drawElement(ctx,element,asset,view,camera,dpr,requestImage,peekImage){
-  if(!elementIntersectsView(element,view))return;const t=element.transform;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
-  if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage);
+function drawElement(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds){
+  if(!elementIntersectsView(element,view))return;const t=element.transform;if(resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,'element',0,0,t.width,t.height))return;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
+  if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds);
   else if(asset){const edge=Math.max(t.width,t.height)*camera.scale*dpr,bitmap=requestImage(`${asset.id}/image.png`,edge);if(bitmap)ctx.drawImage(bitmap,0,0,t.width,t.height);else{ctx.fillStyle='#33413d';ctx.fillRect(0,0,t.width,t.height);}}
   else{ctx.fillStyle='#422';ctx.fillRect(0,0,t.width,t.height);}ctx.restore();
 }
 
-function drawVisualLayer({ctx,state,layer,floorAlpha,view,camera,dpr,requestImage,peekImage,renderIndex}){
+function drawVisualLayer({ctx,state,layer,floor,floorAlpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds}){
   if(!layer.visible||layer.opacity<=0)return;const elements=renderIndex?renderIndex.forLayer(state,layer.id):Object.values(state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
-  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage,peekImage);}
+  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds);}
 }
 
 function drawSelection(ctx,element,camera,showRotation){
@@ -151,12 +187,15 @@ function renderBoundsSegmentsIntersect(a,b,c,d){
 export class FloorRenderBoundsPathCache{
   constructor(){this.sceneId='';this.entries=new Map();this.builds=0;}
   clear(){this.sceneId='';this.entries.clear();}
+  syncState(state){const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}const floors=state?.floors||{};for(const [floorId,entry]of this.entries){const floor=floors[floorId];if(!floor?.renderBounds||entry.revision!==floor.geometryRevision)this.entries.delete(floorId);}}
   path(state,floor){
     const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.sceneId=sceneId;this.entries.clear();}
     if(!floor?.renderBounds){this.entries.delete(floor?.id);return null;}const cached=this.entries.get(floor.id);if(cached?.revision===floor.geometryRevision)return cached.path;
     const path=new Path2D(),points=floor.renderBounds.outer||[];if(points.length){path.moveTo(points[0].x,points[0].y);for(let i=1;i<points.length;i++)path.lineTo(points[i].x,points[i].y);path.closePath();}this.entries.set(floor.id,{revision:floor.geometryRevision,path});this.builds++;return path;
   }
 }
+
+export function abortUnwantedImageLoads(pending,wanted){let aborted=0;for(const [key,controller]of pending)if(!wanted.has(key)&&!controller.signal.aborted){controller.abort();aborted++;}return aborted;}
 const defaultRenderBoundsPaths=new FloorRenderBoundsPathCache();
 export function clipFloorRenderBounds(ctx,state,floor,paths=defaultRenderBoundsPaths){const path=paths.path(state,floor);if(!path)return false;ctx.clip(path);return true;}
 function validRenderBoundsBasics(polygon){
@@ -198,11 +237,11 @@ export function drawRenderBoundsEditor(ctx,state,floorId,camera,{tool='',draft=n
   ctx.save();ctx.beginPath();traceRenderBounds(ctx,preview.outer,!incomplete);if(polygonDraft&&draft.cursor&&draft.points.length){ctx.moveTo(draft.points.at(-1).x,draft.points.at(-1).y);ctx.lineTo(draft.cursor.x,draft.cursor.y);if(draft.points.length>1)ctx.lineTo(draft.points[0].x,draft.points[0].y);}ctx.fillStyle=invalid?'#e66f6728':'#e2bf5b1f';ctx.strokeStyle=invalid?'#ff8178':'#e7c866';ctx.lineWidth=2/camera.scale;ctx.setLineDash((rectangle||edit||polygonDraft)?[8/camera.scale,5/camera.scale]:[]);if(!incomplete)ctx.fill('evenodd');ctx.stroke();ctx.setLineDash([]);if(tool&&preview.outer.length){const radius=4.5/camera.scale;for(let i=0;i<preview.outer.length;i++){const point=preview.outer[i];ctx.fillStyle=invalid?'#ff8178':i===selectedVertex?'#fff4c5':'#f3d77b';ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fill();}if(tool==='edit'){ctx.strokeStyle='#d7be71aa';ctx.lineWidth=1.5/camera.scale;const size=5/camera.scale;for(let i=0;i<preview.outer.length;i++){const a=preview.outer[i],b=preview.outer[(i+1)%preview.outer.length],x=(a.x+b.x)/2,y=(a.y+b.y)/2;ctx.strokeRect(x-size/2,y-size/2,size,size);}}}ctx.restore();
 }
 
-export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,clipRenderBounds=!editor,showRotationHandle=true}){
+export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,resourceBounds,clipRenderBounds=!editor,showRotationHandle=true}){
   for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
     if(alpha<=0)continue;const clipped=clipRenderBounds&&floor.renderBounds;if(clipped){ctx.save();clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);}
     for(const layer of orderedLayers(state,floor.id)){
-      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex});
+      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floor,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds:clipped?resourceBounds:null});
       else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
     }
     if(clipped)ctx.restore();

@@ -4,6 +4,9 @@ func setRenderBounds(floor Floor, input *Polygon) (Floor, bool, error) {
 	if input == nil || len(input.Holes) != 0 {
 		return floor, false, errInvalidGeometry
 	}
+	if err := validateGeometryInputPolygon(*input); err != nil {
+		return floor, false, err
+	}
 	polygon, err := normalizePolygon(*input)
 	if err != nil {
 		return floor, false, err

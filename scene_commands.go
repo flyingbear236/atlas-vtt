@@ -80,6 +80,10 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 	var tokenExisted, tokenExists bool
 	var assetsBeforeMutation map[string]Asset
 
+	if issue == "" && geometryCommand(command.Type) && command.wireBytes > maxGeometryCommandBytes {
+		issue = "Превышен лимит размера геометрической команды"
+		resyncOnIssue = true
+	}
 	if issue == "" && !memberIsGM(peer.member) {
 		issue = "Действие доступно ведущему"
 	}
@@ -586,6 +590,14 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 	if command.Seq > 0 {
 		s.send(peer, map[string]any{"type": "ack", "client": command.Client, "seq": command.Seq, "error": issue, "revision": sceneRevision(session, sceneID), "sceneId": sceneID})
 	}
+}
+
+func geometryCommand(commandType string) bool {
+	switch commandType {
+	case "addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
+		return true
+	}
+	return false
 }
 
 func walkableCommandIssue(err error) string {
