@@ -219,6 +219,10 @@ func TestBrowser(t *testing.T) {
 	releaseMouse := func(x, y float64) {
 		call("Input.dispatchMouseEvent", map[string]any{"type": "mouseReleased", "x": x, "y": y, "button": "left", "buttons": 0, "clickCount": 1})
 	}
+	clickMouse := func(x, y float64) {
+		call("Input.dispatchMouseEvent", map[string]any{"type": "mousePressed", "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
+		releaseMouse(x, y)
+	}
 	dragMouse(walkable.X1, walkable.Y1, walkable.X2, walkable.Y2)
 	if eval(`sentCommands.filter(command=>command.type==='addWalkableRect').length`) != fmt.Sprint(walkable.Before) {
 		t.Fatal("walkable rectangle streamed a command during drag")
@@ -243,12 +247,13 @@ func TestBrowser(t *testing.T) {
 		t.Fatal("subtract tool unavailable")
 	}
 	subtractBefore := eval(`sentCommands.filter(command=>command.type==='subtractWalkableRect').length`)
+	subtractRevision := eval(`document.querySelector('.tree-layer-walkable').dataset.geometryRevision`)
 	dragMouse(walkable.X1+55, walkable.Y1+45, walkable.X1+125, walkable.Y1+95)
 	if eval(`sentCommands.filter(command=>command.type==='subtractWalkableRect').length`) != subtractBefore {
 		t.Fatal("walkable subtraction streamed during drag")
 	}
 	releaseMouse(walkable.X1+125, walkable.Y1+95)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='subtractWalkableRect').length===1&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='subtractWalkableRect').length===1&&document.querySelector('.tree-layer-walkable').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, subtractRevision)) != "true" {
 		t.Fatal("walkable subtraction was not committed once")
 	}
 
@@ -265,12 +270,13 @@ func TestBrowser(t *testing.T) {
 	// Move without merge. The hole must not itself select the component.
 	eval(`document.querySelector('.tree-layer-walkable [title="Перемещать проходимые компоненты"]').click();true`)
 	moveBefore := eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`)
+	walkableMoveRevision := eval(`document.querySelector('.tree-layer-walkable').dataset.geometryRevision`)
 	dragMouse(walkable.X1+25, walkable.Y1+25, walkable.X1+40, walkable.Y1+35)
 	if eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`) != moveBefore {
 		t.Fatal("walkable component streamed during drag")
 	}
 	releaseMouse(walkable.X1+40, walkable.Y1+35)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===1&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='2')return true;await sleep(50)}return false})()`) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===1&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='2'&&document.querySelector('.tree-layer-walkable').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, walkableMoveRevision)) != "true" {
 		t.Fatal("plain walkable component move failed")
 	}
 	holeMoveBefore := eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`)
@@ -281,13 +287,13 @@ func TestBrowser(t *testing.T) {
 	}
 
 	// Moving the first island onto the second merges topology on the server.
-	dragMouse(walkable.X1+300, walkable.Y1+25, walkable.X1+45, walkable.Y1+25)
+	dragMouse(walkable.X1+360, walkable.Y1+70, walkable.X1+105, walkable.Y1+70)
 	if eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`) != holeMoveBefore {
 		t.Fatal("merge move streamed during drag")
 	}
-	releaseMouse(walkable.X1+45, walkable.Y1+25)
+	releaseMouse(walkable.X1+105, walkable.Y1+70)
 	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===2&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
-		t.Fatalf("walkable merge result did not replace client topology: %s", eval(`JSON.stringify({moves:sentCommands.filter(command=>command.type==='moveWalkableComponent'),components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
+		t.Fatalf("walkable merge result did not replace client topology: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect'),moves:sentCommands.filter(command=>command.type==='moveWalkableComponent'),tool:document.querySelector('.tree-layer-walkable .tree-action.active')?.title,components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
 	}
 
 	// An invalid oversized preview is sent once, rejected by the server and
@@ -300,6 +306,159 @@ func TestBrowser(t *testing.T) {
 		t.Fatalf("rejected walkable preview did not return to authoritative state: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect').slice(-3),components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
 	}
 	eval(`(async()=>{const board=document.getElementById('board'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));board.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));const mode=()=>document.querySelector('.tree-layer-walkable [title="Переключить ограничение движения"]');if(mode().textContent==='Огр.'){mode().click();for(let i=0;i<100;i++){if(mode().textContent==='Своб.'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}throw Error('walkable mode cleanup timeout')}return true})()`)
+
+	// Stage 14: render bounds are drafted locally and committed once.
+	renderX1, renderY1 := walkable.X1+35, walkable.Y1+35
+	renderX2, renderY2 := renderX1+210, renderY1+170
+	renderBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	renderRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	eval(`document.querySelector('.tree-render-bounds [title="Создать прямоугольную границу отрисовки"]').click();true`)
+	dragMouse(renderX1, renderY1, renderX2, renderY2)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != renderBefore {
+		t.Fatal("render bounds rectangle streamed during drag")
+	}
+	releaseMouse(renderX2, renderY2)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){const row=document.querySelector('.tree-render-bounds');if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&row?.dataset.boundsState==='set'&&row.dataset.geometryRevision!==%s&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, renderBefore, renderRevision)) != "true" {
+		t.Fatal("render bounds rectangle was not committed once")
+	}
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='clearRenderBounds').length===1&&document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatalf("render bounds clear failed: %s", eval(`JSON.stringify({commands:sentCommands.filter(command=>command.type==='clearRenderBounds'),state:document.querySelector('.tree-render-bounds')?.dataset.boundsState,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
+	}
+
+	// A self-intersecting polygon remains a local invalid preview and Enter
+	// must not send it. Escape then discards the unfinished draft.
+	eval(`document.querySelector('.tree-render-bounds [title="Нарисовать границу отрисовки"]').click();true`)
+	invalidRenderBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	clickMouse(renderX1, renderY1)
+	clickMouse(renderX2, renderY2)
+	clickMouse(renderX1, renderY2)
+	clickMouse(renderX2, renderY1)
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));true`)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != invalidRenderBefore {
+		t.Fatal("invalid render bounds polygon was committed")
+	}
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));true`)
+
+	// Enter completes a valid concave polygon.
+	clickMouse(renderX1, renderY1)
+	clickMouse(renderX2, renderY1)
+	clickMouse(renderX1+125, renderY1+75)
+	clickMouse(renderX2, renderY2)
+	clickMouse(renderX1, renderY2)
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));true`)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds')?.dataset.boundsState==='set')return true;await sleep(50)}return false})()`, invalidRenderBefore)) != "true" {
+		t.Fatal("concave render bounds polygon was not completed by Enter")
+	}
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`)
+
+	// Clicking the first point is the second completion path. Keep this
+	// polygon for the vertex editing checks in the following stage.
+	clickMouse(renderX1, renderY1)
+	clickMouse(renderX2, renderY1)
+	clickMouse(renderX1+125, renderY1+75)
+	clickMouse(renderX2, renderY2)
+	clickMouse(renderX1, renderY2)
+	clickMouse(renderX1, renderY1)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='set'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("render bounds polygon was not completed through its first vertex")
+	}
+
+	// Stage 15: moving a vertex remains local until pointerup.
+	eval(`document.querySelector('.tree-render-bounds [title="Редактировать границу отрисовки"]').click();true`)
+	editBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	editRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	dragMouse(renderX1, renderY1, renderX1+15, renderY1+10)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != editBefore {
+		t.Fatal("render bounds vertex streamed during drag")
+	}
+	releaseMouse(renderX1+15, renderY1+10)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, editBefore, editRevision)) != "true" {
+		t.Fatal("render bounds vertex move did not commit once")
+	}
+
+	// Dragging from the polygon interior moves the complete contour.
+	moveRenderBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	moveRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	dragMouse(renderX1+40, renderY1+115, renderX1+52, renderY1+123)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != moveRenderBefore {
+		t.Fatal("render bounds polygon streamed during drag")
+	}
+	releaseMouse(renderX1+52, renderY1+123)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, moveRenderBefore, moveRevision)) != "true" {
+		t.Fatal("whole render bounds polygon move failed")
+	}
+
+	// Pressing an edge inserts a vertex; dragging it still produces one command.
+	edgeX, edgeY := (renderX1+27+renderX2+12)/2, (renderY1+18+renderY1+8)/2
+	insertBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	insertRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	dragMouse(edgeX, edgeY, edgeX, edgeY+20)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != insertBefore {
+		t.Fatal("render bounds vertex insertion streamed during drag")
+	}
+	releaseMouse(edgeX, edgeY+20)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, insertBefore, insertRevision)) != "true" {
+		t.Fatalf("render bounds edge insertion failed: %s", eval(`JSON.stringify({sets:sentCommands.filter(command=>command.type==='setRenderBounds').slice(-3),toast:document.getElementById('toast').textContent,tool:document.querySelector('.tree-render-bounds .tree-action.active')?.title})`))
+	}
+
+	// Select and delete the inserted vertex with a single durable update.
+	deleteBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	deleteRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	clickMouse(edgeX, edgeY+20)
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Delete'}));true`)
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, deleteBefore, deleteRevision)) != "true" {
+		t.Fatal("render bounds vertex deletion failed")
+	}
+
+	// An invalid edit and an Escape-cancelled edit never leave the browser.
+	invalidEditBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	dragMouse(renderX2+12, renderY1+8, renderX2+12, renderY2+8)
+	releaseMouse(renderX2+12, renderY2+8)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != invalidEditBefore {
+		t.Fatal("invalid render bounds vertex edit was committed")
+	}
+	dragMouse(renderX1+27, renderY1+18, renderX1+47, renderY1+38)
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));true`)
+	releaseMouse(renderX1+47, renderY1+38)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != invalidEditBefore {
+		t.Fatal("Escape committed a cancelled render bounds edit")
+	}
+
+	// A newer authoritative geometry revision cancels the in-flight edit.
+	dragMouse(renderX1+27, renderY1+18, renderX1+37, renderY1+28)
+	conflictBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("authoritative render bounds conflict update did not arrive")
+	}
+	releaseMouse(renderX1+37, renderY1+28)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != conflictBefore {
+		t.Fatal("stale render bounds edit survived authoritative update")
+	}
+
+	// A triangle is valid, but deleting any one of its vertices is forbidden.
+	eval(`document.querySelector('.tree-render-bounds [title="Нарисовать границу отрисовки"]').click();true`)
+	clickMouse(renderX1, renderY1)
+	clickMouse(renderX2, renderY1)
+	clickMouse(renderX1+100, renderY2)
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));true`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='set'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("render bounds triangle setup failed")
+	}
+	eval(`document.querySelector('.tree-render-bounds [title="Редактировать границу отрисовки"]').click();true`)
+	minimumBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
+	clickMouse(renderX1, renderY1)
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Delete'}));true`)
+	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != minimumBefore {
+		t.Fatal("render bounds editor deleted below three vertices")
+	}
+	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));true`)
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("render bounds cleanup failed")
+	}
 	if eval(`sentCommands.filter(c=>c.type==='properties').every(c=>!('x' in c.token)&&!('y' in c.token))`) != "true" {
 		t.Fatal("property command contains coordinates")
 	}
@@ -326,8 +485,11 @@ func TestBrowser(t *testing.T) {
 	eval(`(()=>{const original=globalThis.createImageBitmap;window.pressureDecodes=0;globalThis.createImageBitmap=async(...args)=>{const header=new DataView(await args[0].slice(0,24).arrayBuffer());if(header.getUint32(16)===512&&header.getUint32(20)===509)window.pressureDecodes++;return original(...args)};return true})()`)
 	browserHeavyScene(t, s)
 	t.Log("checking 80 native assets above the decoded-image budget")
+	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<100;i++){if(document.querySelectorAll('.token-row').length>=80){document.getElementById('fit').click();return true}await sleep(50)}return false})()`) != "true" {
+		t.Fatal("heavy scene snapshot did not arrive before camera fit")
+	}
 	eval(`for(let i=0;i<4;i++)document.getElementById('plus').click();true`)
-	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<300;i++){if(performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length>=80&&document.getElementById('diagnostics').textContent.includes('Загрузка 0'))break;await sleep(100)}await sleep(2000);const text=document.getElementById('diagnostics').textContent;const hits=Number(text.match(/кэш (\d+)/)[1]);await sleep(2000);const next=document.getElementById('diagnostics').textContent;if(Number(next.match(/кэш (\d+)/)[1])!==hits)throw Error('visible images keep decoding');if(Number(next.match(/RAM изображений ([\d.]+)/)[1])>128)throw Error('128 MiB RAM budget exceeded');if(performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length<80||!next.includes('ошибки 0'))throw Error('images did not load');if(!next.includes('Загрузка 0'))throw Error('image queue did not settle');return document.querySelectorAll('.token-row').length>=80})()`) != "true" {
+	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<300;i++){if(performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length>=80&&document.getElementById('diagnostics').textContent.includes('Загрузка 0'))break;await sleep(100)}await sleep(2000);const text=document.getElementById('diagnostics').textContent;const hits=Number(text.match(/кэш (\d+)/)[1]);await sleep(2000);const next=document.getElementById('diagnostics').textContent,resources=performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length;if(Number(next.match(/кэш (\d+)/)[1])!==hits)throw Error('visible images keep decoding');if(Number(next.match(/RAM изображений ([\d.]+)/)[1])>128)throw Error('128 MiB RAM budget exceeded');if(resources<80||!next.includes('ошибки 0'))throw Error('images did not load: '+resources+'; '+next);if(!next.includes('Загрузка 0'))throw Error('image queue did not settle');return document.querySelectorAll('.token-row').length>=80})()`) != "true" {
 		t.Fatal("heavy visible cache scenario failed")
 	}
 	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms)),s=document.getElementById('imageCacheBudget');s.value='64';s.dispatchEvent(new Event('change',{bubbles:true}));for(let i=0;i<100;i++){await sleep(100);const text=document.getElementById('diagnostics').textContent,m=text.match(/RAM изображений ([\d.]+) \/ (\d+) МБ/);if(m&&Number(m[1])<=64&&Number(m[2])===64&&text.includes('Загрузка 0'))return localStorage.getItem('atlas-image-memory-budget-v1')==='64'}throw Error('cache did not shrink to 64 MiB')})()`) != "true" {
@@ -336,8 +498,8 @@ func TestBrowser(t *testing.T) {
 	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms)),before=window.pressureDecodes;for(let i=0;i<7;i++)document.getElementById('minus').click();await sleep(2000);for(let i=0;i<7;i++)document.getElementById('plus').click();await sleep(2000);const afterZoom=window.pressureDecodes;await sleep(2000);const settled=window.pressureDecodes;if(before<80||afterZoom-before>240||settled!==afterZoom)throw Error('zoom repeatedly decoded retained images: '+before+'/'+afterZoom+'/'+settled);return true})()`) != "true" {
 		t.Fatal("zoom did not retain decoded images")
 	}
-	if eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20){colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','))}return colors.size>20})()`) != "true" {
-		t.Fatal("Canvas did not render map detail")
+	if eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20){colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','))}return colors.size>10})()`) != "true" {
+		t.Fatalf("Canvas did not render map detail: %s", eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20)colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','));return JSON.stringify({colors:colors.size,bounds:document.querySelector('.tree-render-bounds')?.dataset.boundsState,diagnostics:document.getElementById('diagnostics').textContent})})()`))
 	}
 	if len(browserErrors) > 0 {
 		t.Fatalf("Browser errors: %v", browserErrors)

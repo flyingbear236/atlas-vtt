@@ -659,6 +659,10 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	for layerID, layer := range scene.Layers {
 		oldLayers[layerID] = layer
 	}
+	oldFloors := make(map[string]Floor, len(scene.Floors))
+	for floorID, floor := range scene.Floors {
+		oldFloors[floorID] = floor
+	}
 	if hadAsset {
 		a.RetentionPolicy = oldAsset.RetentionPolicy
 		a.CreatedAt = oldAsset.CreatedAt
@@ -679,13 +683,13 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = "Изображение"
 		}
+		initializeFloorRenderBounds(scene, floorID, float64(a.Width), float64(a.Height))
 		scene.Elements[elementID] = SceneElement{ID: elementID, FloorID: floorID, LayerID: layerID, AssetID: a.ID, Name: name, Transform: Transform{Width: float64(a.Width), Height: float64(a.Height)}, Visible: true, Opacity: 1}
 		if len(oldElements) == 0 && len(scene.Tokens) == 0 {
-			scene.Bounds = SceneBounds{Width: float64(a.Width), Height: float64(a.Height)}
 			walkableID := layerIDByKind(scene, floorID, layerKindWalkable)
 			walkable := scene.Layers[walkableID]
 			if walkable.WalkableBounds != nil && *walkable.WalkableBounds == (WalkableBounds{Width: oldBounds.Width, Height: oldBounds.Height}) {
-				walkable.WalkableBounds = defaultWalkableBounds(scene.Bounds)
+				walkable.WalkableBounds = defaultWalkableBounds(SceneBounds{Width: float64(a.Width), Height: float64(a.Height)})
 				scene.Layers[walkableID] = walkable
 			}
 		}
@@ -700,7 +704,8 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		} else {
 			delete(ss.Assets, a.ID)
 		}
-		scene.Elements, scene.Bounds, scene.Revision, s.dirty = oldElements, oldBounds, oldRevision, oldDirty
+		scene.Elements, scene.Revision, s.dirty = oldElements, oldRevision, oldDirty
+		scene.Floors = oldFloors
 		scene.Layers = oldLayers
 		scene.rebuildRuntime()
 		s.mu.Unlock()

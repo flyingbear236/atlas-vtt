@@ -68,6 +68,14 @@ export function transformedFromDrag(start,handle,dx,dy,freeAspect=false){
 
 function viewportPolygon(transform,view){return [[view.left,view.top],[view.right,view.top],[view.right,view.bottom],[view.left,view.bottom]].map(([x,y])=>inversePoint(transform,x,y));}
 function polygonBounds(points){return {left:Math.min(...points.map(p=>p.x)),top:Math.min(...points.map(p=>p.y)),right:Math.max(...points.map(p=>p.x)),bottom:Math.max(...points.map(p=>p.y))};}
+export function renderBoundsAABB(polygon){const points=polygon?.outer;if(!points?.length)return null;const bounds=polygonBounds(points);return {...bounds,width:bounds.right-bounds.left,height:bounds.bottom-bounds.top};}
+export function floorCameraBounds(state,floorId){
+  const renderBounds=renderBoundsAABB(state?.floors?.[floorId]?.renderBounds);if(renderBounds)return renderBounds;
+  const catalog=Object.values(state?.elementCatalog||{}),elements=catalog.length?catalog:Object.values(state?.elements||{}),points=[];
+  for(const element of elements){if(element.floorId!==floorId||!element.transform)continue;const t=element.transform;for(const [x,y]of [[0,0],[t.width,0],[t.width,t.height],[0,t.height]])points.push(worldPoint(t,x,y));}
+  for(const token of Object.values(state?.tokens||{})){if(token.floorId!==floorId)continue;const radius=(token.size||0)/2;points.push({x:token.x-radius,y:token.y-radius},{x:token.x+radius,y:token.y+radius});}
+  if(!points.length)return null;const bounds=polygonBounds(points);return {...bounds,width:Math.max(1,bounds.right-bounds.left),height:Math.max(1,bounds.bottom-bounds.top)};
+}
 function rectIntersectsPolygon(left,top,right,bottom,points){
   const axes=[[1,0],[0,1]];for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];axes.push([-(b.y-a.y),b.x-a.x]);}
   for(const [ax,ay]of axes){let pmin=Infinity,pmax=-Infinity;for(const p of points){const value=p.x*ax+p.y*ay;pmin=Math.min(pmin,value);pmax=Math.max(pmax,value);}const values=[left*ax+top*ay,right*ax+top*ay,right*ax+bottom*ay,left*ax+bottom*ay],rmin=Math.min(...values),rmax=Math.max(...values);if(pmax<rmin||rmax<pmin)return false;}return true;
@@ -131,8 +139,48 @@ export function walkableBounds(state,floorId){return orderedLayers(state,floorId
 
 function pointOnSegment(a,b,x,y){const cross=(b.x-a.x)*(y-a.y)-(b.y-a.y)*(x-a.x);if(Math.abs(cross)>1e-7)return false;return x>=Math.min(a.x,b.x)-1e-7&&x<=Math.max(a.x,b.x)+1e-7&&y>=Math.min(a.y,b.y)-1e-7&&y<=Math.max(a.y,b.y)+1e-7;}
 function ringContains(ring,x,y){let inside=false;for(let i=0,j=ring.length-1;i<ring.length;j=i++){const a=ring[j],b=ring[i];if(pointOnSegment(a,b,x,y))return 2;if((a.y>y)!==(b.y>y)&&x<(b.x-a.x)*(y-a.y)/(b.y-a.y)+a.x)inside=!inside;}return inside?1:0;}
+export function pointInRenderBounds(state,floorId,x,y){const polygon=state?.floors?.[floorId]?.renderBounds;return !polygon||!!ringContains(polygon.outer||[],x,y);}
 export function pointInWalkablePolygon(polygon,x,y){const outer=ringContains(polygon?.outer||[],x,y);if(!outer)return false;if(outer===2)return true;for(const hole of polygon.holes||[]){const hit=ringContains(hole,x,y);if(hit===1)return false;if(hit===2)return true;}return true;}
 export function walkableComponentAt(state,floorId,x,y){const components=[...(state?.floors?.[floorId]?.walkableComponents||[])].sort((a,b)=>a.id.localeCompare(b.id));for(let i=components.length-1;i>=0;i--)if(pointInWalkablePolygon(components[i].polygon,x,y))return components[i];return null;}
+
+function renderBoundsSegmentsIntersect(a,b,c,d){
+  const cross=(p,q,r)=>(q.x-p.x)*(r.y-p.y)-(q.y-p.y)*(r.x-p.x),on=(p,q,r)=>Math.abs(cross(p,q,r))<=1e-7&&q.x>=Math.min(p.x,r.x)-1e-7&&q.x<=Math.max(p.x,r.x)+1e-7&&q.y>=Math.min(p.y,r.y)-1e-7&&q.y<=Math.max(p.y,r.y)+1e-7,o1=cross(a,b,c),o2=cross(a,b,d),o3=cross(c,d,a),o4=cross(c,d,b);
+  return on(a,c,b)||on(a,d,b)||on(c,a,d)||on(c,b,d)||((o1<0)!==(o2<0))&&((o3<0)!==(o4<0));
+}
+
+export class FloorRenderBoundsPathCache{
+  constructor(){this.sceneId='';this.entries=new Map();this.builds=0;}
+  clear(){this.sceneId='';this.entries.clear();}
+  path(state,floor){
+    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.sceneId=sceneId;this.entries.clear();}
+    if(!floor?.renderBounds){this.entries.delete(floor?.id);return null;}const cached=this.entries.get(floor.id);if(cached?.revision===floor.geometryRevision)return cached.path;
+    const path=new Path2D(),points=floor.renderBounds.outer||[];if(points.length){path.moveTo(points[0].x,points[0].y);for(let i=1;i<points.length;i++)path.lineTo(points[i].x,points[i].y);path.closePath();}this.entries.set(floor.id,{revision:floor.geometryRevision,path});this.builds++;return path;
+  }
+}
+const defaultRenderBoundsPaths=new FloorRenderBoundsPathCache();
+export function clipFloorRenderBounds(ctx,state,floor,paths=defaultRenderBoundsPaths){const path=paths.path(state,floor);if(!path)return false;ctx.clip(path);return true;}
+function validRenderBoundsBasics(polygon){
+  const ring=polygon?.outer;if(!Array.isArray(ring)||ring.length<3||ring.length>10000||(polygon.holes?.length||0))return false;
+  for(const point of ring)if(!Number.isFinite(point?.x)||!Number.isFinite(point?.y)||Math.abs(point.x)>1000000||Math.abs(point.y)>1000000)return false;
+  let area=0;for(let i=0;i<ring.length;i++){const next=ring[(i+1)%ring.length];if(Math.hypot(ring[i].x-next.x,ring[i].y-next.y)<.0005)return false;area+=ring[i].x*next.y-next.x*ring[i].y;}
+  return Math.abs(area)>=.000001;
+}
+export function validRenderBounds(polygon){
+  if(!validRenderBoundsBasics(polygon))return false;const ring=polygon.outer;
+  for(let i=0;i<ring.length;i++)for(let j=i+1;j<ring.length;j++){if(j===i+1||i===0&&j===ring.length-1)continue;if(renderBoundsSegmentsIntersect(ring[i],ring[(i+1)%ring.length],ring[j],ring[(j+1)%ring.length]))return false;}
+  return true;
+}
+export function validRenderBoundsChange(polygon,changedEdges=[]){
+  if(!validRenderBoundsBasics(polygon))return false;const ring=polygon.outer,n=ring.length,edges=[...new Set(changedEdges.map(index=>(index%n+n)%n))];
+  for(const i of edges)for(let j=0;j<n;j++){if(j===i||j===(i+1)%n||(j+1)%n===i)continue;if(renderBoundsSegmentsIntersect(ring[i],ring[(i+1)%n],ring[j],ring[(j+1)%n]))return false;}
+  return true;
+}
+function renderBoundsEdgeDistance(point,a,b){const dx=b.x-a.x,dy=b.y-a.y,length=dx*dx+dy*dy;if(!length)return Math.hypot(point.x-a.x,point.y-a.y);const t=Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/length)),x=a.x+t*dx,y=a.y+t*dy;return Math.hypot(point.x-x,point.y-y);}
+export function renderBoundsHit(polygon,x,y,scale){
+  const ring=polygon?.outer||[],radius=14/scale;for(let i=0;i<ring.length;i++)if(Math.hypot(x-ring[i].x,y-ring[i].y)<=radius)return {part:'vertex',index:i};
+  for(let i=0;i<ring.length;i++)if(renderBoundsEdgeDistance({x,y},ring[i],ring[(i+1)%ring.length])<=radius)return {part:'edge',index:i};
+  return ringContains(ring,x,y)?{part:'polygon',index:-1}:null;
+}
 
 function traceWalkablePolygon(ctx,polygon,dx=0,dy=0){for(const ring of [polygon.outer,...(polygon.holes||[])]){if(!ring.length)continue;ctx.moveTo(ring[0].x+dx,ring[0].y+dy);for(let i=1;i<ring.length;i++)ctx.lineTo(ring[i].x+dx,ring[i].y+dy);ctx.closePath();}}
 function drawWalkablePolygon(ctx,polygon,camera,{dx=0,dy=0,selected=false,preview=false,subtract=false}={}){ctx.save();ctx.beginPath();traceWalkablePolygon(ctx,polygon,dx,dy);ctx.fillStyle=subtract?'#e68f7d24':preview?'#c8e89b24':'#65d6a414';ctx.strokeStyle=subtract?'#f0a08d':selected?'#edf8d5':'#65d6a4cc';ctx.lineWidth=(selected?3:2)/camera.scale;ctx.setLineDash(preview?[8/camera.scale,5/camera.scale]:[]);ctx.fill('evenodd');ctx.stroke();ctx.restore();}
@@ -143,13 +191,21 @@ export function drawWalkableEditor(ctx,state,floorId,camera,{drag=null,selectedI
   if(drag?.type==='walkableRect'&&drag.floorId===floorId){const left=Math.min(drag.start.x,drag.current.x),top=Math.min(drag.start.y,drag.current.y),right=Math.max(drag.start.x,drag.current.x),bottom=Math.max(drag.start.y,drag.current.y);if(right>left&&bottom>top)drawWalkablePolygon(ctx,{outer:[{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}],holes:[]},camera,{preview:true,subtract:drag.operation==='subtractWalkableRect'});}
 }
 
-export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,showRotationHandle=true}){
+function traceRenderBounds(ctx,points,close=true){if(!points?.length)return;ctx.moveTo(points[0].x,points[0].y);for(let i=1;i<points.length;i++)ctx.lineTo(points[i].x,points[i].y);if(close)ctx.closePath();}
+export function drawRenderBoundsEditor(ctx,state,floorId,camera,{tool='',draft=null,drag=null,selectedVertex=-1}={}){
+  const authoritative=state?.floors?.[floorId]?.renderBounds,rectangle=drag?.type==='renderBoundsRect'&&drag.floorId===floorId?{outer:[drag.start,{x:drag.current.x,y:drag.start.y},drag.current,{x:drag.start.x,y:drag.current.y}],holes:[]}:null,edit=drag?.type==='renderBoundsEdit'&&drag.floorId===floorId?drag.preview:null,polygonDraft=draft?.floorId===floorId?{outer:draft.points,holes:[]}:null,preview=rectangle||edit||polygonDraft||authoritative;
+  if(!preview)return;const incomplete=polygonDraft&&polygonDraft.outer.length<3,invalid=!incomplete&&(rectangle?!validRenderBounds(preview):edit?!!drag.invalid:polygonDraft?!!draft.invalid:false);
+  ctx.save();ctx.beginPath();traceRenderBounds(ctx,preview.outer,!incomplete);if(polygonDraft&&draft.cursor&&draft.points.length){ctx.moveTo(draft.points.at(-1).x,draft.points.at(-1).y);ctx.lineTo(draft.cursor.x,draft.cursor.y);if(draft.points.length>1)ctx.lineTo(draft.points[0].x,draft.points[0].y);}ctx.fillStyle=invalid?'#e66f6728':'#e2bf5b1f';ctx.strokeStyle=invalid?'#ff8178':'#e7c866';ctx.lineWidth=2/camera.scale;ctx.setLineDash((rectangle||edit||polygonDraft)?[8/camera.scale,5/camera.scale]:[]);if(!incomplete)ctx.fill('evenodd');ctx.stroke();ctx.setLineDash([]);if(tool&&preview.outer.length){const radius=4.5/camera.scale;for(let i=0;i<preview.outer.length;i++){const point=preview.outer[i];ctx.fillStyle=invalid?'#ff8178':i===selectedVertex?'#fff4c5':'#f3d77b';ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fill();}if(tool==='edit'){ctx.strokeStyle='#d7be71aa';ctx.lineWidth=1.5/camera.scale;const size=5/camera.scale;for(let i=0;i<preview.outer.length;i++){const a=preview.outer[i],b=preview.outer[(i+1)%preview.outer.length],x=(a.x+b.x)/2,y=(a.y+b.y)/2;ctx.strokeRect(x-size/2,y-size/2,size,size);}}}ctx.restore();
+}
+
+export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,clipRenderBounds=!editor,showRotationHandle=true}){
   for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
-    if(alpha<=0)continue;
+    if(alpha<=0)continue;const clipped=clipRenderBounds&&floor.renderBounds;if(clipped){ctx.save();clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);}
     for(const layer of orderedLayers(state,floor.id)){
       if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex});
       else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
     }
+    if(clipped)ctx.restore();
   }
   ctx.globalAlpha=1;if(editor){const selected=state.elements?.[selectedElement];if(selected?.floorId===currentFloorId)drawSelection(ctx,selected,camera,showRotationHandle);}
 }

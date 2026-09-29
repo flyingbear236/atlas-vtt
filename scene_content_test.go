@@ -44,6 +44,43 @@ func TestFloorGeometryJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRenderBoundsReplaceLegacySceneRectangleSemantics(t *testing.T) {
+	bounds, err := normalizePolygon(Polygon{Outer: []ScenePoint{{X: 0, Y: 0}, {X: 100, Y: 0}, {X: 100, Y: 30}, {X: 30, Y: 30}, {X: 30, Y: 100}, {X: 0, Y: 100}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside := SceneElement{Transform: Transform{X: 80, Y: 5, Width: 40, Height: 20}}
+	notch := SceneElement{Transform: Transform{X: 45, Y: 45, Width: 20, Height: 20}}
+	rotatedEdge := SceneElement{Transform: Transform{X: 20, Y: 20, Width: 30, Height: 30, Rotation: 45}}
+	if !elementIntersectsRenderBounds(inside, &bounds) || elementIntersectsRenderBounds(notch, &bounds) || !elementIntersectsRenderBounds(rotatedEdge, &bounds) || !elementIntersectsRenderBounds(notch, nil) {
+		t.Fatal("visual element filtering does not follow floor render bounds")
+	}
+	if sceneContentCommand("boundsUpdate") {
+		t.Fatal("legacy editable scene bounds command is still accepted")
+	}
+}
+
+func TestFirstMapInitializesOnlyItsFloorRenderBounds(t *testing.T) {
+	scene := newScene("scene", "Map defaults")
+	lowerID := firstFloorID(scene)
+	if !initializeFloorRenderBounds(scene, lowerID, 1200, 800) {
+		t.Fatal("first floor map did not initialize render bounds")
+	}
+	lower := scene.Floors[lowerID]
+	if lower.RenderBounds == nil || polygonBounds(*lower.RenderBounds) != (AABB{MaxX: 1200, MaxY: 800}) || lower.GeometryRevision != 1 {
+		t.Fatalf("unexpected first-map render bounds: %#v", lower)
+	}
+	if initializeFloorRenderBounds(scene, lowerID, 2000, 1600) || polygonBounds(*scene.Floors[lowerID].RenderBounds) != (AABB{MaxX: 1200, MaxY: 800}) {
+		t.Fatal("later map changed established render bounds")
+	}
+	upperID := "upper"
+	scene.Floors[upperID] = Floor{ID: upperID, Name: "Upper"}
+	addFloorLayers(scene, upperID)
+	if !initializeFloorRenderBounds(scene, upperID, 600, 400) || polygonBounds(*scene.Floors[upperID].RenderBounds) != (AABB{MaxX: 600, MaxY: 400}) {
+		t.Fatal("first map on a new floor did not get independent render bounds")
+	}
+}
+
 func elementFrom(t *testing.T, message map[string]json.RawMessage) SceneElement {
 	t.Helper()
 	var element SceneElement
@@ -126,6 +163,7 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	lower.WalkableComponents = []WalkableComponent{{ID: "main", Polygon: walkablePolygon}}
+	lower.RenderBounds = &walkablePolygon
 	scene.Floors[lowerID] = lower
 	var playerMember *Member
 	for _, member := range session.Members {
@@ -157,7 +195,7 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 		}
 	}
 	if assetVisibleTo(session, playerMember, scene.ID, "upper-asset") || assetVisibleTo(session, playerMember, scene.ID, "outside-asset") {
-		t.Fatal("asset authorization ignored compositing floor or scene bounds")
+		t.Fatal("asset authorization ignored compositing floor or render bounds")
 	}
 	if !assetVisibleToAtToken(session, playerMember, scene.ID, "upper-asset", "zz-upper") {
 		t.Fatal("asset authorization ignored the validated active token floor")
@@ -400,13 +438,18 @@ func TestSceneContentCRUDTransformReuseAndRetention(t *testing.T) {
 	}
 	server.mu.Unlock()
 
-	newBounds := SceneBounds{Width: 20000, Height: 20000}
-	ws.WriteJSON(Command{Type: "boundsUpdate", Client: "content", Seq: 5, SceneID: scene.ID, Bounds: &newBounds})
+	floorID := firstFloorID(scene)
+	expectedGeometryRevision := scene.Floors[floorID].GeometryRevision
+	renderBounds, err := rectanglePolygon(AABB{MinX: -100, MinY: -200, MaxX: 20000, MaxY: 18000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.WriteJSON(Command{Type: "setRenderBounds", Client: "content", Seq: 5, SceneID: scene.ID, FloorID: floorID, ExpectedGeometryRevision: &expectedGeometryRevision, RenderBounds: &renderBounds})
 	read(t, ws, "snapshot")
 	read(t, ws, "ack")
 	server.mu.Lock()
-	if scene.Bounds != newBounds || scene.Elements[first.ID].Transform != updated.Transform || server.writes <= writes {
-		t.Fatal("bounds update moved content or did not persist pending transform")
+	if scene.Floors[floorID].RenderBounds == nil || !polygonsEqual(*scene.Floors[floorID].RenderBounds, renderBounds) || scene.Elements[first.ID].Transform != updated.Transform || server.writes <= writes {
+		t.Fatal("render bounds update moved content or did not persist pending transform")
 	}
 	server.mu.Unlock()
 	restarted, err := newServer(root)
@@ -414,7 +457,7 @@ func TestSceneContentCRUDTransformReuseAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	persisted := restarted.sessions[gm["session"]].Scenes[scene.ID]
-	if persisted.Bounds != newBounds || persisted.Elements[first.ID].Transform != transform || persisted.Elements[first.ID].LayerID != otherLayer {
+	if persisted.Floors[floorID].RenderBounds == nil || !polygonsEqual(*persisted.Floors[floorID].RenderBounds, renderBounds) || persisted.Elements[first.ID].Transform != transform || persisted.Elements[first.ID].LayerID != otherLayer {
 		t.Fatal("scene hierarchy/transform did not survive restart")
 	}
 

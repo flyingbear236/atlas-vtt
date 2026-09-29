@@ -256,7 +256,8 @@ func elementCells(element SceneElement) ([]spatialCell, bool) {
 
 func (rt *sceneRuntime) elementPublic(element SceneElement) bool {
 	layer, ok := rt.scene.Layers[element.LayerID]
-	return ok && layer.Kind == layerKindVisual && element.Visible && layer.Visible && element.Opacity > 0 && layer.Opacity > 0 && elementIntersectsSceneBounds(element, rt.scene.Bounds)
+	floor := rt.scene.Floors[element.FloorID]
+	return ok && layer.Kind == layerKindVisual && element.Visible && layer.Visible && element.Opacity > 0 && layer.Opacity > 0 && elementIntersectsRenderBounds(element, floor.RenderBounds)
 }
 
 func incrementFloorAsset(index map[string]map[string]int, floorID, assetID string) {

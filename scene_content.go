@@ -305,8 +305,52 @@ func currentFloorForPeer(peer *peer, scene *Scene) string {
 	return currentFloorForMember(scene, peer.member, peer.floorID)
 }
 
-func elementIntersectsSceneBounds(element SceneElement, bounds SceneBounds) bool {
-	return elementIntersectsRegion(element, SceneRegion{Left: 0, Top: 0, Right: bounds.Width, Bottom: bounds.Height})
+func elementIntersectsRenderBounds(element SceneElement, bounds *Polygon) bool {
+	if bounds == nil {
+		return true
+	}
+	t := element.Transform
+	cx, cy := t.X+t.Width/2, t.Y+t.Height/2
+	angle := t.Rotation * math.Pi / 180
+	c, sine := math.Cos(angle), math.Sin(angle)
+	ring := make([]ScenePoint, 0, 4)
+	for _, corner := range [][2]float64{{-t.Width / 2, -t.Height / 2}, {t.Width / 2, -t.Height / 2}, {t.Width / 2, t.Height / 2}, {-t.Width / 2, t.Height / 2}} {
+		ring = append(ring, ScenePoint{X: cx + corner[0]*c - corner[1]*sine, Y: cy + corner[0]*sine + corner[1]*c})
+	}
+	elementBounds := AABB{MinX: ring[0].X, MinY: ring[0].Y, MaxX: ring[0].X, MaxY: ring[0].Y}
+	for _, point := range ring[1:] {
+		elementBounds.MinX = math.Min(elementBounds.MinX, point.X)
+		elementBounds.MinY = math.Min(elementBounds.MinY, point.Y)
+		elementBounds.MaxX = math.Max(elementBounds.MaxX, point.X)
+		elementBounds.MaxY = math.Max(elementBounds.MaxY, point.Y)
+	}
+	if !elementBounds.intersects(polygonBounds(*bounds)) {
+		return false
+	}
+	if ringsIntersect(ring, bounds.Outer) || pointInPolygon(*bounds, ring[0]) {
+		return true
+	}
+	return ringLocation(ring, bounds.Outer[0]) != pointOutside
+}
+
+func initializeFloorRenderBounds(scene *Scene, floorID string, width, height float64) bool {
+	floor, ok := scene.Floors[floorID]
+	if !ok || floor.RenderBounds != nil {
+		return false
+	}
+	for _, element := range scene.Elements {
+		if element.FloorID == floorID {
+			return false
+		}
+	}
+	bounds, err := rectanglePolygon(AABB{MaxX: width, MaxY: height})
+	if err != nil {
+		return false
+	}
+	floor.RenderBounds = &bounds
+	floor.GeometryRevision++
+	scene.Floors[floorID] = floor
+	return true
 }
 
 func addFloorLayers(scene *Scene, floorID string) {

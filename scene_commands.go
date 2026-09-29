@@ -12,8 +12,7 @@ import (
 
 func sceneContentCommand(commandType string) bool {
 	switch commandType {
-	case "boundsUpdate",
-		"floorCreate", "floorUpdate", "floorDelete",
+	case "floorCreate", "floorUpdate", "floorDelete",
 		"layerCreate", "layerUpdate", "layerDelete",
 		"elementCreate", "elementUpdate", "elementDelete", "elementPreview", "elementTransform", "elementFixRotation",
 		"transitionCreate", "transitionUpdate", "transitionDelete",
@@ -88,17 +87,6 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 		switch command.Type {
 		case "elementFixRotation":
 			issue = "Фиксация ротации отключена"
-		case "boundsUpdate":
-			if command.Bounds == nil || !validSceneBounds(*command.Bounds) {
-				issue = "Некорректные границы сцены"
-				break
-			}
-			old := scene.Bounds
-			if old != *command.Bounds {
-				scene.Bounds = *command.Bounds
-				changed, structural = true, true
-				restore = func() { scene.Bounds = old }
-			}
 		case "addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
 			if command.Seq == 0 || command.Client == "" {
 				issue = "Изменение геометрии требует надёжной команды"
