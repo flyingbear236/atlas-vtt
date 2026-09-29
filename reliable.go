@@ -149,6 +149,18 @@ type Command struct {
 	DeltaX                   float64           `json:"deltaX,omitempty"`
 	DeltaY                   float64           `json:"deltaY,omitempty"`
 	ExpectedGeometryRevision *uint64           `json:"expectedGeometryRevision,omitempty"`
+	wireBytes                int
+}
+
+func (command *Command) UnmarshalJSON(data []byte) error {
+	type commandWire Command
+	var decoded commandWire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*command = Command(decoded)
+	command.wireBytes = len(data)
+	return nil
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {

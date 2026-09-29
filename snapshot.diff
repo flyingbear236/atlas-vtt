@@ -1,7 +1,7 @@
 diff --git a/.gitignore b/.gitignore
 new file mode 100644
+index 0000000..02c0ec5
 --- /dev/null
-+++ b/.gitignore
 +++ b/.gitignore
 @@ -0,0 +1,6 @@
 +/data/
@@ -13,8 +13,8 @@ new file mode 100644
 \ No newline at end of file
 diff --git a/AGENTS.md b/AGENTS.md
 new file mode 100644
+index 0000000..c6b10d7
 --- /dev/null
-+++ b/AGENTS.md
 +++ b/AGENTS.md
 @@ -0,0 +1,144 @@
 +Отвечай на русском.
@@ -161,12 +161,141 @@ new file mode 100644
 +Перед изменением кода зафиксируй исходное состояние затрагиваемых файлов, чтобы существующий незакоммиченный `git diff` не попал в `changes.diff` как работа текущей итерации. Каждый файл перезаписывай целиком, не дописывай новые данные в конец.
 +
 +Не включай в эти артефакты сами `snapshot.diff`, `changes.diff`, устаревший `codex-changes.diff`, `data/`, зависимости, кэши, собранные бинарники и результаты профилирования. `codex-changes.diff` больше не создавай и не обновляй.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..c826d23
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,123 @@
++# Атлас — прототип VTT
++
++Самостоятельная реализация по `desc.txt`: Go-сервер, браузерный JavaScript без сборщика, Canvas 2D и WebSocket. React/Vue и Go в ТЗ были вариантами, а не обязательным стеком. Зависимости: Gorilla WebSocket и отдельный libvips для обработки изображений.
++
++## Запуск
++
++Нужны Go 1.26+ и libvips. Для Windows x64 из папки проекта сначала выполните `./scripts/install-vips.ps1` (официальный libvips 8.18.6, SHA-256 проверяется). Затем:
++
++```powershell
++go run .
++```
++
++Открыть **http://127.0.0.1:8080**. Создать стол, открыть сцену и загрузить свою карту PNG/JPEG.
++
++Можно собрать исполняемый файл со встроенным интерфейсом. libvips остаётся внешней зависимостью:
++
++```powershell
++go build -o atlas.exe .
++.\atlas.exe
++```
++
++Для игроков в локальной сети:
++
++```powershell
++.\atlas.exe -addr 0.0.0.0:8080
++```
++
++Ведущий открывает `http://IP-адрес-компьютера:8080`, затем нажимает «Пригласить». Ссылка содержит приглашение игрока. Для доступа с другого компьютера порт 8080 должен быть доступен в локальной сети. Для размещения в интернете нужен HTTPS reverse proxy, который поддерживает WebSocket.
++
++## Что работает
++
++- Создание кампании с несколькими сценами, ведущим и несколькими игроками. Ведущий создаёт, переименовывает, публикует и удаляет сцены; игрок видит только опубликованные. Клиент подписан максимум на одну сцену.
++- У сцены собственные логические размеры и до двух этажей. У каждого этажа есть непрозрачность, отдельная видимость снизу, обычные visual layers, ровно один Token Layer и одна прямоугольная игровая область. Token Layer можно переставлять среди visual layers: например, крона дерева рисуется над токеном, а мебель под ним.
++- Загруженное на сцену изображение становится обычным `SceneElement`: его можно двигать, менять размер и угол, переносить между слоями, дублировать без копии файла и менять порядок отрисовки. Один Campaign Asset используется любым числом элементов.
++- У самого нижнего visual layer ручка вращения скрыта до явного «Разрешить вращение» на время текущего редактирования. Команда «Зафиксировать ротацию» асинхронно создаёт immutable derived raster через libvips, сохраняет положение и видимый размер элемента и обнуляет runtime rotation. Прозрачные тайлы такого результата отмечаются компактным manifest и не хранятся/не запрашиваются.
++- Визуальное PNG/JPEG до 256 МиБ, 150 миллионов пикселей и 32768 px по стороне проходит одну общую `representationPolicy`: bitmap используется при оценке декодированной памяти до 8 МиБ и стороне до 8192 px, иначе создаётся tiled LOD. Решение не зависит от сжатого размера файла или роли изображения на сцене. Повернутый tiled-элемент запрашивает только тайлы, реально пересекающие viewport, и один соседний ряд. Исходное изображение не отправляется в браузер.
++- Токены привязаны к Token Layer своего этажа. Player не может выйти за Walkable Bounds; GM может административно поставить токен снаружи и увидит красную отметку. Авторитетный Transition проверяет права, исходный этаж, область перехода и точку назначения.
++- Campaign Asset Store хранит metadata и файлы отдельно от экземпляров на сцене. Поддержаны политики `keep`/`reclaimable` и обнаружение orphan без немедленного удаления файла.
++- Загрузка изображений токенов; сервер готовит вариант до 512 px. Создание, изменение, удаление токенов, цвет, размер, имя, назначение игрока и скрытие от игроков.
++- Своя камера у каждого участника: перетаскивание фона, масштаб колесом или кнопками, вписывание карты, включение сетки. У Player есть активный принадлежащий ему токен: он серверно определяет текущий этаж. Выбор своего токена на Canvas либо в списке делает его активным; выбор в списке также центрирует камеру. Последний активный токен и камера запоминаются только этим браузером и заново проверяются сервером после reconnect. Стартовый масштаб ограничен так, чтобы region loading захватывал несколько spatial cells, а не всю большую карту. Alt + перетаскивание позволяет двигать камеру поверх токена. Сетка визуальная, без привязки.
++- Перемещение разрешённых токенов: до 20 сетевых обновлений в секунду при перетаскивании и обязательная финальная позиция при отпускании. Свой токен рисуется сразу, удалённые координаты интерполируются.
++- Авторитетный сервер: игрок не может менять свойства, двигать чужие/скрытые токены, выбирать `SceneElement` или загружать ассеты. Player не видит редактор этажей/слоёв и Walkable Layer. В списке навигации он видит все свои нескрытые токены, включая далёкие и находящиеся на другом этаже, но список не раскрывает их asset ID и не загружает изображения. Скрытые токены и элементы вне `Scene.Bounds` не включаются в region snapshot; доступ к изображениям проверяется с учётом активного токена и текущего compositing этажей.
++- Последовательные ревизии. При пропуске события запрашивается актуальный snapshot текущей загруженной области. Устаревшие события игнорируются. Одновременно допускается максимум один `view` request: если камера уехала дальше до ответа, после snapshot запрашивается только последнее актуальное положение, поэтому быстрый pan не создаёт очередь устаревших region snapshots. Автопереподключение с паузой 1–10 секунд и повторная синхронизация. Кэш изображений сохраняется.
++- Локальное хранение в `data/`: оригиналы, тайлы, метаданные, кампании и ключи доступа. Позиции coalesce в RAM и сохраняются общим flush примерно раз в 5 секунд; ACK финальной позиции и realtime не ждут диск. При аварийном завершении могут потеряться последние несколько секунд движения. Создание/удаление, свойства, permissions и Scene CRUD записываются до ACK и одновременно flush'ят накопленные позиции. Ctrl+C сохраняет pending state и закрывает соединения.
++- Region loading сначала выбирает участвующие в compositing этажи, затем viewport и элементы, и лишь затем их asset metadata/байты. Этаж с нулевым effective alpha не вызывает сетевых запросов или декодирования. До шести загрузок одновременно; ненужные запросы отменяются при движении камеры.
++- IndexedDB: LRU-кэш байтов с лимитом 128 МБ и ограниченной очередью ожидающих записей. RAM-бюджет изображений выбирается автоматически по грубому `navigator.deviceMemory`: 64 МБ для устройств до 4 GiB, 128 МБ для среднего/неизвестного класса и 256 МБ для 16+ GiB, если браузер сообщает такое значение. В диагностике можно локально переопределить бюджет на Auto / 64 / 128 / 256 / 512 МБ; 512 МБ никогда не выбираются автоматически. 8 МБ общего RAM-бюджета зарезервированы под подготовленную графику токенов, остальное доступно ImageBitmap. При большом видимом наборе разрешение декодирования снижается, чтобы набор помещался одновременно. При перегрузке необязательная запись в IndexedDB пропускается. Отказ IndexedDB/квоты не мешает работе. HTTP-ответы ассетов имеют `private, immutable` и срок год.
++- Диагностика: число реально нарисованных кадров, время отрисовки, оценка RAM изображений, объём IndexedDB, байты изображений и WebSocket, попадания в дисковый кэш, активные загрузки и ошибки. В покое 0 кадров/с — нормальный режим перерисовки по изменениям.
++- Для экспериментов: переключение постоянного рендера, переподключение, очистка кэша и добавление 100 токенов за раз (защитный лимит сцены — 100000).
++
++## Управление
++
++1. Создайте стол. На главной кампании выберите сцену или создайте новую.
++2. Ведущий может переименовать, опубликовать, скрыть или удалить сцену. Новая сцена скрыта от игроков.
++3. Откройте сцену. Разделы «Сцена», «Объекты» и «Участники» переключаются в верхней панели; левая панель меняет содержимое, регулируется по ширине и может быть свёрнута.
++4. В разделе «Сцена» ведущий задаёт размеры, создаёт этажи и слои, загружает изображения и управляет деревом. Перетаскивайте элементы на Canvas за рамку и маркеры; Shift при угловом resize разрешает свободные пропорции.
++5. В разделе «Объекты» нажмите `+` или загрузите изображение токена.
++6. Выберите токен на карте/в списке, задайте свойства и сохраните.
++7. Пригласите игрока. Когда он войдёт, назначьте его в поле «Управление». Кнопка «К сценам» возвращает к Campaign Home, где доступны создание/редактирование сцен и «Выйти из кампании».
++
++`F` над активным холстом — показать всю карту, `Escape` — снять выбор, `Delete` — удалить выбранный токен (ведущий). На главной странице доступны сохранённые входы в сессии. Ключ ведущего хранится в браузере; приглашение не даёт прав ведущего. Потеря localStorage означает потерю доступа из этого браузера, поэтому сохраняйте профиль браузера и резервную копию `data/`.
++
++## Проверки
++
++```powershell
++go test -v ./...
++go vet ./...
++```
++
++Интеграционные тесты используют настоящий HTTP/WebSocket сервер: права и синхронизация токенов, floors/layers/elements, transforms, transitions, region loading, скрытые слои и assets, persistence/reconnect, asset retention, уровни и крайние тайлы.
++
++Измерение выбора representation запускается отдельно: `$env:ATLAS_REPRESENTATION_PROFILE='1'; go test -run TestProfileRepresentationPolicy -v`. На текущей машине подготовка bitmap была дешевле для 512² и 1024², а tiled LOD добавлял стоимость подготовки, но ограничивал будущую загрузку и декодирование крупного изображения viewport-тайлами. Поэтому порог основан на декодированной памяти, а не на времени подготовки.
++
++Дополнительная проверка в настоящем Chrome или Edge:
++
++```powershell
++$env:ATLAS_CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe'
++$env:ATLAS_SCREENSHOT='C:\projects\my-game\prototype.png'
++go test -run TestBrowser -v
++```
++
++Она создаёт временный профиль и временную сессию, проверяет навигацию сцены и сворачивание левой панели, загружает тестовую карту через обычный upload endpoint, изменяет токен, переподключается, проверяет ошибки JavaScript и сохраняет снимок. Без `ATLAS_CHROME` браузерная проверка пропускается.
++
++## Границы прототипа
++
++Нет тумана войны, стен, освещения, бросков, Actor/листов персонажей, Asset Library, запекания целого visual layer, физического asset GC, аудио/видео, истории/отмены, офлайн-редактирования и дельта-журнала восстановления. При открытии и восстановлении клиент получает metadata сцены, затем актуальный snapshot только своего region. Full-scene fallback отсутствует: старые варианты протокола не поддерживаются, потому что у прототипа пока нет выпущенных клиентов. Одновременное перемещение одного токена или элемента разрешается последним принятым сервером событием; блокировки захвата нет.
++
++Это прототип для доверенной игровой группы: приглашения постоянные, отдельной системы аккаунтов, отзыва ключей, ограничения частоты HTTP-запросов и очистки серверного хранилища нет. Только тот, у кого есть ключ ведущего, управляет сессией. Уже показанное игроку изображение нельзя отозвать из его браузера последующим скрытием.
++
++RAM-индикатор учитывает ImageBitmap и подготовленную графику токенов, а не весь процесс браузера и не GPU. Лимит IndexedDB не управляет собственным HTTP-кэшем браузера. Загрузка пишет данные во временный файл; тайлы и фиксацию rotation выполняет отдельный процесс libvips. Одновременно обрабатывается одно изображение. Для interlaced PNG и progressive JPEG сама библиотека всё ещё может потреблять сотни МиБ; жёсткого ограничения RSS нет. Фиксация rotation проверена функционально на bitmap и sparse tiled output, но её peak RSS на изображении около лимита 150 Мп отдельно не измерялся. Цели 60 FPS / 200 мс из ТЗ не объявляются достигнутыми: нагрузку 100–1000 объектов, большие карты и несколько компьютеров следует измерять на целевом оборудовании. Основной интерфейс рассчитан на настольный браузер.
++
++## Надёжность во второй итерации
++
++- Изменение свойств — отдельный `properties` patch: в нём нет координат. Устаревший full-token `update` protocol удалён. Игрок может двигать токен, пока ведущий меняет его имя, цвет или размер.
++- Финальная позиция — LWW-команда `final`. У неё отдельный browser stream `client + seq`: сервер меняет RAM, рассылает позицию и отвечает сразу, а позицию вместе с receipt сохраняет ближайший общий flush. Если процесс аварийно завершился до flush, следующий position seq принимается после restart без блокировки очереди.
++- Reliable business-команды используют отдельный Outbox в `sessionStorage`, сохраняются через временный файл, `Sync` и замену до ACK и остаются строго последовательными. Position Outbox тоже повторяет неподтверждённый `final` после обычного reconnect. Запоздалое промежуточное движение того же position stream не откатывает уже подтверждённый финал.
++- Пока нет подтверждения, финальная позиция остаётся на экране как локальное ожидание. Отклонение по правам возвращает серверную позицию и показывает причину.
++- Черновики свойств хранятся отдельно от снимков сервера, по токенам и полям. Обновления участников, перемещения и переподключение не стирают ввод. Подтверждение старой формы не стирает более новый ввод.
++- Неверный ключ, отсутствующая сессия и нарушение последовательности business-команд останавливают автоматические повторы с понятной ошибкой. Ошибки чтения/структуры `sessions.json` прерывают запуск без перезаписи сохранения. Singleton `Scene.Map` отсутствует: карта всегда остаётся обычным `SceneElement`. При запуске текущие visual layers получают явный `kind`, каждому этажу добавляются Token/Walkable layers, а токены привязываются к своему Token Layer.
++- RAM-кэш удерживает видимый набор без взаимного вытеснения. Размеры выбираются отдельно для каждого изображения по его размеру на экране, без увеличения исходника, с сохранением пропорций. Пока детальный тайл загружается или декодируется, renderer подставляет уже доступный более грубый LOD и затем атомарно заменяет его. Старый bitmap того же ресурса также остаётся до готовности нового; дешёвая версия может сохраниться для деградации `high-res → low-res → eviction` при давлении памяти. При переполнении уменьшается разрешение нужных изображений; видимые ассеты имеют приоритет над соседними тайлами. Возраст сам по себе больше не удаляет ImageBitmap: невидимые записи остаются в RAM, пока хватает бюджета. После пересечения high watermark невидимые записи понижаются или выселяются по LRU до примерно 85% лимита, чтобы не возникала постоянная очистка около границы. При окончательном eviction вызывается `ImageBitmap.close()`. Временные буферы декодера и основной Canvas в этот бюджет не входят.
++
++Дополнительные тесты: движение игрока + переименование ведущим → финал → переподключение → перезапуск → проверка имени и позиции; повтор команды после потери ACK; позднее промежуточное движение; отказ диска и повтор; повреждённое сохранение; штатная остановка через тот же контекст отмены, который использует обработчик Ctrl+C. Само нажатие клавиш в консоли тест не имитирует.
++
++Chrome/Edge дополнительно проверяют несохранённый ввод, новые координаты списка, отсутствие координат в патче свойств, прекращение повторов при ошибке входа, ручной RAM override и уменьшение кэша с 128 до 64 МиБ на 80 перекрывающихся изображениях 512×509 при большом масштабе. Модульный browser scenario отдельно проверяет Auto-профили, fallback без `deviceMemory`, отсутствие age-only eviction, LRU, защиту `wanted` и hysteresis.
++
++## Оставшиеся ограничения
++
++Atlas рассчитан на небольшую доверенную группу. Rate limiting, квоты пользователей/сессий/диска и защита публичного хостинга намеренно не реализованы. Запекание visual layers, анимации, коллизии, полноценный FOV, свет и интерактивные SceneElement пока отсутствуют. Остаются общий mutex сервера, полная запись JSON и полный обход IndexedDB при записи. Клиент использует единый region-state contract: при открытии Scene сначала получает только metadata и entry point, затем запрашивает viewport с bounded prefetch; далёкие tokens и их asset metadata клиенту не передаются. Сервер поддерживает неперсистентный uniform-grid spatial index и фильтрует realtime по загруженному региону. Capability/fallback-веток старого протокола нет. Проведены прежние локальные замеры до 2000 токенов, а spatial index отдельно проверен на 50000 токенов; многочасовые игры и несколько физических компьютеров ещё не проверены.
++
++Не закрывайте вкладку до подтверждения: `sessionStorage` не гарантирует сохранение очереди после закрытия вкладки. Несохранённый черновик формы живёт в памяти страницы. Одновременные изменения одного и того же свойства или перемещения ведущего и владельца разрешаются порядком приёма сервером. Гарантия записи предполагает исправный диск и файловую систему; резервная копия `data/` по-прежнему нужна.
++
++Файлы: `main.go` — Campaign persistence и HTTP/WS lifecycle; `scenes.go` — snapshots, region loading и доступ к ассетам; `scene_content.go` — модель floors/layers/elements/transitions; `scene_commands.go` — их команды; `reliable.go` — reliable transport и токены; `image_pipeline.go` — общие raster representations; `derived_pipeline.go` и `rotation_jobs.go` — preprocessing и durable lifecycle фиксации ротации; `web/scene-content.js` — Canvas-геометрия и рендер; `web/scene-tree.js` — дерево сцены; `web/app.js` — интеграция; `scene_content_test.go`, `rotation_jobs_test.go` — серверные проверки; `browser_test.go`, `browser_scenarios_test.go` — Chrome/Edge через DevTools.
++
++## Профилирование третьей итерации
++
++Методика и команды: [profiling/README.md](profiling/README.md). Итоги и пределы: [profiling/REPORT.md](profiling/REPORT.md).
++
++Добавлены пространственный индекс токенов и кэш готовой графики в пределах прежних 64 МБ. При дальнем масштабе подписи скрыты, кроме выбранного токена; остальные появляются при диаметре от 24 px. Нарезка перенесена в libvips; Go больше не хранит полную декодированную карту. Формат тайлов сохранён. В текущей версии лимит карты поднят до 150 млн пикселей, а лимит исходного файла — до 256 МиБ; лимит стороны остаётся 32768 px. Незавершённый специальный обработчик interlaced PNG удалён.
++
++Основные файлы: `web/rendering.js`, `web/token-renderer.js`, `image_pipeline.go`, `image_process_windows.go`, `image_process_other.go`; проверки — `image_pipeline_test.go`, `image_processing_test.go`, `profile*_test.go`.
++
++libvips ищется через ATLAS_VIPS, затем в vips/bin рядом с atlas.exe, в локальной .deps и в PATH. Для переноса на другой ПК копируйте весь каталог vips-dev-8.18 под именем vips рядом с atlas.exe, включая DLL и лицензии. Для Linux/macOS установите libvips из пакетов системы. Без него сохранённые сцены открываются, а новая загрузка выдаёт понятную ошибку. Официальные пакеты: https://www.libvips.org/install.html .
++
++Полный финальный повтор нагрузочных замеров не завершён: работа остановлена по запросу пользователя. Текущие результаты и ограничения записаны в profiling/REPORT.md.
 diff --git a/browser_scenarios_test.go b/browser_scenarios_test.go
 new file mode 100644
+index 0000000..707c804
 --- /dev/null
 +++ b/browser_scenarios_test.go
-+++ b/browser_scenarios_test.go
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,162 @@
 +package main
 +
 +import (
@@ -272,7 +401,8 @@ new file mode 100644
 +const browserModuleScenario = `(async()=>{
 + const {Outbox,Drafts,CacheWriteBudget,imageEdge}=await import('/reliability.js');const values=new Map();const store={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)};const sent=[];
 + const {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction}=await import('/rendering.js');
-+	const {FloorRenderBoundsPathCache,SceneRenderIndex,clipFloorRenderBounds,compositeFloors,drawSceneStack,elementHandleAt,elementIntersectsView,floorCameraBounds,hitElement,pointInRenderBounds,renderBoundsAABB,tileAvailable,tiledFallbackCandidates,transformedFromDrag}=await import('/scene-content.js');
++	const {FloorRenderBoundsPathCache,FloorRenderBoundsResourceCache,SceneRenderIndex,abortUnwantedImageLoads,clipFloorRenderBounds,compositeFloors,drawSceneStack,elementHandleAt,elementIntersectsView,floorCameraBounds,hitElement,pointInRenderBounds,renderBoundsAABB,tileAvailable,tiledFallbackCandidates,transformedFromDrag}=await import('/scene-content.js');
++ const {drawTokens}=await import('/token-renderer.js');
 + const {SceneTreeRuntime}=await import('/scene-tree.js');
 + const {needsActiveTokenRequest}=await import('/scenes.js');
 +
@@ -307,8 +437,13 @@ new file mode 100644
 +	const renderCameraBounds=floorCameraBounds(clipState,'lower');if(renderCameraBounds.left!==0||renderCameraBounds.top!==0||renderCameraBounds.right!==60||renderCameraBounds.bottom!==60)throw Error('camera did not use render bounds AABB');const contentCameraBounds=floorCameraBounds({...clipState,floors:{lower:{...clipFloor,renderBounds:null}}},'lower');if(contentCameraBounds.left!==10||contentCameraBounds.top!==10||contentCameraBounds.right!==50||contentCameraBounds.bottom!==50||renderBoundsAABB(null)!==null)throw Error('null render bounds camera fallback');
 + if(!pointInRenderBounds(clipState,'lower',60,10)||pointInRenderBounds(clipState,'lower',40,40)||!pointInRenderBounds({floors:{lower:{id:'lower'}}},'lower',400,400))throw Error('render bounds hit gate');const hitIndex=new SceneRenderIndex();if(!hitElement(clipState,'lower',40,40,hitIndex)||pointInRenderBounds(clipState,'lower',40,40))throw Error('GM outside-bounds element access was lost');const hitTokens=new SpatialIndex();hitTokens.set({id:'outside',x:40,y:40,size:20});if(!hitTokens.query(40,40,40,40).length||pointInRenderBounds(clipState,'lower',40,40))throw Error('player token hit was not gated before spatial candidates');
 + clipCtx.clearRect(0,0,80,80);clipState.layers.tokens={id:'tokens',floorId:'lower',kind:'tokens',order:1};clipArgs.drawTokenLayer=()=>{clipCtx.fillStyle='#00f';clipCtx.fillRect(0,0,80,80);};drawSceneStack(clipArgs);if(!clipCtx.getImageData(10,40,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('token layer escaped render bounds clip');
-+ clipCtx.clearRect(0,0,80,80);clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillStyle='#fff';clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(!clipCtx.getImageData(10,40,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('grid/world-effect clip helper failed');const firstBuilds=clipPaths.builds;clipCtx.clearRect(0,0,80,80);clipFloor.geometryRevision=2;clipFloor.renderBounds={outer:[{x:30,y:30},{x:70,y:30},{x:70,y:70},{x:30,y:70}],holes:[]};clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(clipPaths.builds!==firstBuilds+1||clipCtx.getImageData(10,10,1,1).data[3]||!clipCtx.getImageData(40,40,1,1).data[3])throw Error('render bounds path cache ignored geometry revision');clipCtx.clearRect(0,0,80,80);drawSceneStack({...clipArgs,editor:true});if(!clipCtx.getImageData(25,25,1,1).data[3])throw Error('GM editor was clipped to render bounds');
-+ const tiledAsset={id:'map',renderMode:'tiled',width:2048,height:2048,levels:3},fallbacks=tiledFallbackCandidates(tiledAsset,0,1,0);if(fallbacks[0]?.path!=='map/1_0_0.png'||fallbacks[0].cropX!==256||fallbacks[0].cropWidth!==256)throw Error('tiled fallback mapping');const drawCalls=[],fallbackCtx={globalAlpha:1,save(){},restore(){},translate(){},rotate(){},drawImage(...args){drawCalls.push(args);}},fallbackState={floors:{lower:{id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};drawSceneStack({ctx:fallbackCtx,state:fallbackState,currentFloorId:'lower',view:{left:520,top:10,right:900,bottom:400},camera:{scale:2},dpr:1,requestImage:()=>null,peekImage:path=>path==='map/1_0_0.png'?{width:128,height:128}:null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex()});if(drawCalls.length!==1||drawCalls[0].length!==9||drawCalls[0][1]!==64||drawCalls[0][3]!==64||drawCalls[0][5]!==512)throw Error('coarse LOD was not cropped into missing detailed tile');
++	clipCtx.clearRect(0,0,80,80);clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillStyle='#fff';clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(!clipCtx.getImageData(10,40,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('grid/world-effect clip helper failed');const firstBuilds=clipPaths.builds;clipCtx.clearRect(0,0,80,80);clipFloor.geometryRevision=2;clipFloor.renderBounds={outer:[{x:30,y:30},{x:70,y:30},{x:70,y:70},{x:30,y:70}],holes:[]};clipPaths.syncState(clipState);if(clipPaths.entries.size)throw Error('stale render bounds path survived snapshot invalidation');clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(clipPaths.builds!==firstBuilds+1||clipCtx.getImageData(10,10,1,1).data[3]||!clipCtx.getImageData(40,40,1,1).data[3])throw Error('render bounds path cache ignored geometry revision');clipCtx.clearRect(0,0,80,80);drawSceneStack({...clipArgs,editor:true});if(!clipCtx.getImageData(25,25,1,1).data[3])throw Error('GM editor was clipped to render bounds');
++	const tiledAsset={id:'map',renderMode:'tiled',width:2048,height:2048,levels:3},fallbacks=tiledFallbackCandidates(tiledAsset,0,1,0);if(fallbacks[0]?.path!=='map/1_0_0.png'||fallbacks[0].cropX!==256||fallbacks[0].cropWidth!==256)throw Error('tiled fallback mapping');const drawCalls=[],fallbackCtx={globalAlpha:1,save(){},restore(){},translate(){},rotate(){},drawImage(...args){drawCalls.push(args);}},fallbackState={floors:{lower:{id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};drawSceneStack({ctx:fallbackCtx,state:fallbackState,currentFloorId:'lower',view:{left:520,top:10,right:900,bottom:400},camera:{scale:2},dpr:1,requestImage:()=>null,peekImage:path=>path==='map/1_0_0.png'?{width:128,height:128}:null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex()});if(drawCalls.length!==1||drawCalls[0].length!==9||drawCalls[0][1]!==64||drawCalls[0][3]!==64||drawCalls[0][5]!==512)throw Error('coarse LOD was not cropped into missing detailed tile');
++	const tileCanvas=document.createElement('canvas'),tileCtx=tileCanvas.getContext('2d'),tileRequests=[],tileBounds=new FloorRenderBoundsResourceCache(32),initialTileBounds={outer:[{x:50,y:50},{x:900,y:50},{x:900,y:400},{x:400,y:400},{x:400,y:900},{x:50,y:900}],holes:[]},tileFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:initialTileBounds},tileState={scene:{id:'tile-bounds'},floors:{lower:tileFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};const tileArgs={ctx:tileCtx,state:tileState,currentFloorId:'lower',view:{left:0,top:0,right:2048,bottom:2048},camera:{scale:1},dpr:1,requestImage:(path,edge,priority='visible')=>{tileRequests.push({path,priority});return null;},peekImage:()=>null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:tileBounds};drawSceneStack(tileArgs);const requestedTiles=tileRequests.map(item=>item.path).sort().join(',');if(requestedTiles!=='map/0_0_0.png,map/0_0_1.png,map/0_1_0.png'||tileRequests.some(item=>item.priority==='prefetch'))throw Error('concave render bounds did not cull outside tile requests');const misses=tileBounds.misses;drawSceneStack(tileArgs);if(tileBounds.hits===0||tileBounds.misses!==misses)throw Error('tile bounds classifications were not cached');tileFloor.geometryRevision=2;tileFloor.renderBounds={outer:[{x:1100,y:1100},{x:1400,y:1100},{x:1400,y:1400},{x:1100,y:1400}],holes:[]};tileBounds.syncState(tileState);if(tileBounds.classifications.size||tileBounds.elements.size)throw Error('stale tile classification survived bounds revision');tileRequests.length=0;drawSceneStack(tileArgs);if(tileRequests.map(item=>item.path).join(',')!=='map/0_2_2.png')throw Error('tile wanted set used stale bounds');tileFloor.geometryRevision=3;tileFloor.renderBounds=initialTileBounds;tileBounds.syncState(tileState);tileRequests.length=0;drawSceneStack(tileArgs);if(tileRequests.map(item=>item.path).sort().join(',')!==requestedTiles)throw Error('tile classification did not recover after bounds restore');for(let revision=4;revision<44;revision++){tileFloor.geometryRevision=revision;tileFloor.renderBounds=revision%2?initialTileBounds:{outer:[{x:1100,y:1100},{x:1400,y:1100},{x:1400,y:1400},{x:1100,y:1400}],holes:[]};tileBounds.syncState(tileState);tileRequests.length=0;drawSceneStack(tileArgs);}if(tileBounds.classifications.size>32||tileBounds.elements.size>512||tileBounds.revisions.size!==1)throw Error('render bounds caches grew during frequent edits');
++	const journeyAsset={id:'journey',renderMode:'tiled',width:8192,height:8192,levels:5},journeyFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:{outer:[{x:0,y:0},{x:1536,y:0},{x:1536,y:512},{x:512,y:512},{x:512,y:1536},{x:0,y:1536}],holes:[]}},journeyState={scene:{id:'tile-journey'},floors:{lower:journeyFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'journey',transform:{x:0,y:0,width:8192,height:8192,rotation:0}}},assets:{journey:journeyAsset}},journeyCache=new FloorRenderBoundsResourceCache(64),decodedTiles=new Set();let journeyRequests=0,journeyDecodes=0,journeyRAM=0;const journeyRender=view=>{let planned=0;drawSceneStack({ctx:tileCtx,state:journeyState,currentFloorId:'lower',view,camera:{scale:1},dpr:1,requestImage:path=>{planned++;if(!decodedTiles.has(path)){decodedTiles.add(path);journeyRequests++;journeyDecodes++;journeyRAM+=512*512*4;}return null;},peekImage:()=>null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:journeyCache});return planned;};const insidePlans=journeyRender({left:0,top:0,right:1024,bottom:768}),insideRequests=journeyRequests,insideDecodes=journeyDecodes,insideRAM=journeyRAM,outsidePlans=journeyRender({left:2048,top:2048,right:3072,bottom:2816});if(!insidePlans||outsidePlans||journeyRequests!==insideRequests||journeyDecodes!==insideDecodes||journeyRAM!==insideRAM)throw Error('outside camera selected large-map resources');const returnPlans=journeyRender({left:0,top:0,right:1024,bottom:768});if(!returnPlans||journeyRequests!==insideRequests||journeyDecodes!==insideDecodes||journeyRAM!==insideRAM||journeyRAM>64*1048576)throw Error('inside/outside/back reloaded or leaked tiled resources: '+JSON.stringify({returnPlans,journeyRequests,insideRequests,journeyDecodes,insideDecodes,journeyRAM,insideRAM}));
++	const keptController=new AbortController(),staleController=new AbortController(),pendingLoads=new Map([['kept',keptController],['stale',staleController]]);if(abortUnwantedImageLoads(pendingLoads,new Set(['kept']))!==1||keptController.signal.aborted||!staleController.signal.aborted||abortUnwantedImageLoads(pendingLoads,new Set(['kept']))!==0)throw Error('stale pending preload was not cancelled');
++	const sharedBounds=new FloorRenderBoundsResourceCache(32),sharedFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:{outer:[{x:0,y:0},{x:60,y:0},{x:60,y:20},{x:20,y:20},{x:20,y:60},{x:0,y:60}],holes:[]}},sharedState={scene:{id:'shared-bounds'},floors:{lower:sharedFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{partial:{id:'partial',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'shared',transform:{x:10,y:10,width:40,height:40,rotation:0}},outside:{id:'outside',floorId:'lower',layerId:'visual',zOrder:1,visible:true,opacity:1,assetId:'shared',transform:{x:30,y:30,width:10,height:10,rotation:0}}},assets:{shared:{id:'shared',kind:'image',renderMode:'bitmap',width:40,height:40}}},sharedRequests=[];const sharedArgs={ctx:tileCtx,state:sharedState,currentFloorId:'lower',view:{left:0,top:0,right:80,bottom:80},camera:{scale:1},dpr:1,requestImage:path=>{sharedRequests.push(path);return null;},editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:sharedBounds};drawSceneStack(sharedArgs);if(sharedRequests.join(',')!=='shared/image.png')throw Error('shared bitmap was not culled per usage');sharedRequests.length=0;drawSceneStack({...sharedArgs,editor:true});if(sharedRequests.length!==2)throw Error('GM bitmap resource culling was enabled');
++	const tokenArtwork=new ArtworkCache(1048576),tokenIndex=new SpatialIndex(),tokenState={partial:{id:'partial',floorId:'lower',x:25,y:25,size:12,name:'partial',color:'#fff',asset:'portrait'},outside:{id:'outside',floorId:'lower',x:40,y:40,size:10,name:'outside',color:'#fff',asset:'portrait'}};for(const token of Object.values(tokenState))tokenIndex.set(token);const tokenRequests=[];drawTokens({ctx:tileCtx,camera:{x:0,y:0,scale:1},viewport:{w:80,h:80},dpr:1,tokens:tokenState,index:tokenIndex,visuals:new Map(),moving:new Set(),drag:null,selected:null,queue:[],requestImage:path=>{tokenRequests.push(path);return null;},artwork:tokenArtwork,delta:16,floorId:'lower',resourceVisible:(x,y,radius)=>sharedBounds.intersectsCircle(sharedState,sharedFloor,x,y,radius)});if(tokenRequests.join(',')!=='portrait/token.png')throw Error('shared token artwork was not culled per usage');tokenArtwork.clear();
 + const artwork=new ArtworkCache(16);artwork.begin(['a','b']);const a=artwork.get('a',2,2,()=>{});if(artwork.get('b',2,2,()=>{})!==null||artwork.get('a',2,2,()=>{})!==a)throw Error('visible artwork churn');artwork.clear();if(artwork.bytes!==0||a.width!==0)throw Error('artwork not released');
 + const box=new Outbox(store,'test',cmd=>{sent.push(cmd);return true},()=>{},()=>{});
 + box.enqueue('final',{token:{id:'a',x:3,y:4}});box.reconnect();if(sent.length!==2||sent[0].seq!==sent[1].seq)throw Error('retry identity lost');
@@ -325,8 +460,8 @@ new file mode 100644
 +})()`
 diff --git a/browser_test.go b/browser_test.go
 new file mode 100644
+index 0000000..c9746ef
 --- /dev/null
-+++ b/browser_test.go
 +++ b/browser_test.go
 @@ -0,0 +1,534 @@
 +package main
@@ -865,8 +1000,8 @@ new file mode 100644
 +}
 diff --git a/derived_pipeline.go b/derived_pipeline.go
 new file mode 100644
+index 0000000..62b9710
 --- /dev/null
-+++ b/derived_pipeline.go
 +++ b/derived_pipeline.go
 @@ -0,0 +1,266 @@
 +package main
@@ -1137,8 +1272,8 @@ new file mode 100644
 +}
 diff --git a/docs/walkable-renderbounds-plan.md b/docs/walkable-renderbounds-plan.md
 new file mode 100644
+index 0000000..d06993a
 --- /dev/null
-+++ b/docs/walkable-renderbounds-plan.md
 +++ b/docs/walkable-renderbounds-plan.md
 @@ -0,0 +1,328 @@
 +# Walkable geometry и render bounds: индекс реализации
@@ -1471,10 +1606,10 @@ new file mode 100644
 +Add, hole, split, move+merge, concave bounds, move token, restart, clip/hit test, camera inside/outside/back; полный suite только если менялась общая инфраструктура.
 diff --git a/geometry.go b/geometry.go
 new file mode 100644
+index 0000000..82980ca
 --- /dev/null
 +++ b/geometry.go
-+++ b/geometry.go
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,367 @@
 +package main
 +
 +import (
@@ -1486,10 +1621,16 @@ new file mode 100644
 +const (
 +	// One millimetre in the existing world coordinate system is precise enough
 +	// for editor geometry and keeps exact integer predicates safe at ±1e6.
-+	geometryQuantum          = 0.001
-+	maxGeometryRingVertices  = 10_000
-+	maxGeometryTotalVertices = 50_000
-+	maxWalkableComponents    = 2_048
++	geometryQuantum = 0.001
++	// Input is tighter because simple-ring validation is quadratic. Persisted
++	// results may be larger, but remain bounded for snapshots and later edits.
++	maxGeometryInputVertices          = 512
++	maxGeometryRingVertices           = 4_096
++	maxGeometryResultVertices         = 8_192
++	maxGeometryOperationInputVertices = maxGeometryResultVertices + maxGeometryInputVertices
++	maxWalkableComponents             = 512
++	maxGeometryOperationComponents    = maxWalkableComponents + 1 // stored components plus the edited rectangle
++	maxGeometryCommandBytes           = 12 << 10
 +)
 +
 +var (
@@ -1734,7 +1875,7 @@ new file mode 100644
 +}
 +
 +func normalizePolygon(input Polygon) (Polygon, error) {
-+	if len(input.Outer)+ringVertexCount(input.Holes) > maxGeometryTotalVertices {
++	if _, ok := polygonVertexCountWithin(input, maxGeometryResultVertices); !ok {
 +		return Polygon{}, errGeometryLimitExceeded
 +	}
 +	outer, err := normalizeRing(input.Outer, true)
@@ -1761,6 +1902,27 @@ new file mode 100644
 +	}
 +	sort.Slice(holes, func(i, j int) bool { return ringLess(holes[i], holes[j]) })
 +	return Polygon{Outer: outer, Holes: holes}, nil
++}
++
++func validateGeometryInputPolygon(polygon Polygon) error {
++	if _, ok := polygonVertexCountWithin(polygon, maxGeometryInputVertices); !ok {
++		return errGeometryLimitExceeded
++	}
++	return nil
++}
++
++func polygonVertexCountWithin(polygon Polygon, limit int) (int, bool) {
++	if limit < 0 || len(polygon.Outer) > limit {
++		return 0, false
++	}
++	total := len(polygon.Outer)
++	for _, ring := range polygon.Holes {
++		if len(ring) > limit-total {
++			return 0, false
++		}
++		total += len(ring)
++	}
++	return total, true
 +}
 +
 +func ringVertexCount(rings [][]ScenePoint) int {
@@ -1817,15 +1979,18 @@ new file mode 100644
 +}
 diff --git a/geometry_commands.go b/geometry_commands.go
 new file mode 100644
+index 0000000..9fa23bd
 --- /dev/null
 +++ b/geometry_commands.go
-+++ b/geometry_commands.go
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,27 @@
 +package main
 +
 +func setRenderBounds(floor Floor, input *Polygon) (Floor, bool, error) {
 +	if input == nil || len(input.Holes) != 0 {
 +		return floor, false, errInvalidGeometry
++	}
++	if err := validateGeometryInputPolygon(*input); err != nil {
++		return floor, false, err
 +	}
 +	polygon, err := normalizePolygon(*input)
 +	if err != nil {
@@ -1847,14 +2012,15 @@ new file mode 100644
 +}
 diff --git a/geometry_test.go b/geometry_test.go
 new file mode 100644
+index 0000000..4bffe96
 --- /dev/null
 +++ b/geometry_test.go
-+++ b/geometry_test.go
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,111 @@
 +package main
 +
 +import (
 +	"errors"
++	"math"
 +	"testing"
 +)
 +
@@ -1939,10 +2105,32 @@ new file mode 100644
 +		t.Fatalf("repeated clear must be a no-op: changed=%v err=%v", changed, err)
 +	}
 +}
++
++func TestGeometryCoordinateAndInputVertexLimits(t *testing.T) {
++	if value, err := quantizeCoordinate(maxSceneDimension); err != nil || value != maxSceneDimension {
++		t.Fatalf("maximum coordinate rejected: value=%v err=%v", value, err)
++	}
++	for _, value := range []float64{maxSceneDimension + geometryQuantum, -maxSceneDimension - geometryQuantum, math.Inf(1), math.NaN()} {
++		if _, err := quantizeCoordinate(value); !errors.Is(err, errInvalidGeometry) {
++			t.Fatalf("coordinate %v was accepted: %v", value, err)
++		}
++	}
++
++	floor := Floor{ID: "floor"}
++	tooMany := Polygon{Outer: make([]ScenePoint, maxGeometryInputVertices+1)}
++	for index := range tooMany.Outer {
++		angle := 2 * math.Pi * float64(index) / float64(len(tooMany.Outer))
++		tooMany.Outer[index] = ScenePoint{X: 1000 * math.Cos(angle), Y: 1000 * math.Sin(angle)}
++	}
++	result, changed, err := setRenderBounds(floor, &tooMany)
++	if !errors.Is(err, errGeometryLimitExceeded) || changed || result.RenderBounds != nil {
++		t.Fatalf("input vertex limit was not atomic: changed=%v err=%v floor=%#v", changed, err, result)
++	}
++}
 diff --git a/go.mod b/go.mod
 new file mode 100644
+index 0000000..1b10044
 --- /dev/null
-+++ b/go.mod
 +++ b/go.mod
 @@ -0,0 +1,13 @@
 +module planar
@@ -1960,8 +2148,8 @@ new file mode 100644
 +)
 diff --git a/go.sum b/go.sum
 new file mode 100644
+index 0000000..6f1faee
 --- /dev/null
-+++ b/go.sum
 +++ b/go.sum
 @@ -0,0 +1,8 @@
 +github.com/ctessum/polyclip-go v1.1.0 h1:TGMfwMynNykXwCZCxI+CHdjo/ZE9JThup/gmrgigGEE=
@@ -1974,8 +2162,8 @@ new file mode 100644
 +github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 diff --git a/image_pipeline.go b/image_pipeline.go
 new file mode 100644
+index 0000000..e59df83
 --- /dev/null
-+++ b/image_pipeline.go
 +++ b/image_pipeline.go
 @@ -0,0 +1,417 @@
 +package main
@@ -2397,8 +2585,8 @@ new file mode 100644
 +}
 diff --git a/image_pipeline_test.go b/image_pipeline_test.go
 new file mode 100644
+index 0000000..757803d
 --- /dev/null
-+++ b/image_pipeline_test.go
 +++ b/image_pipeline_test.go
 @@ -0,0 +1,333 @@
 +package main
@@ -2736,8 +2924,8 @@ new file mode 100644
 +}
 diff --git a/image_process_other.go b/image_process_other.go
 new file mode 100644
+index 0000000..50b4ea4
 --- /dev/null
-+++ b/image_process_other.go
 +++ b/image_process_other.go
 @@ -0,0 +1,7 @@
 +//go:build !windows
@@ -2749,8 +2937,8 @@ new file mode 100644
 +func configureImageProcess(cmd *exec.Cmd) {}
 diff --git a/image_process_windows.go b/image_process_windows.go
 new file mode 100644
+index 0000000..78dbbd7
 --- /dev/null
-+++ b/image_process_windows.go
 +++ b/image_process_windows.go
 @@ -0,0 +1,10 @@
 +package main
@@ -2765,8 +2953,8 @@ new file mode 100644
 +}
 diff --git a/image_processing_test.go b/image_processing_test.go
 new file mode 100644
+index 0000000..136ba56
 --- /dev/null
-+++ b/image_processing_test.go
 +++ b/image_processing_test.go
 @@ -0,0 +1,50 @@
 +package main
@@ -2821,10 +3009,10 @@ new file mode 100644
 +}
 diff --git a/main.go b/main.go
 new file mode 100644
+index 0000000..e91b58f
 --- /dev/null
 +++ b/main.go
-+++ b/main.go
-@@ -0,0 +1,761 @@
+@@ -0,0 +1,763 @@
 +package main
 +
 +import (
@@ -3256,13 +3444,15 @@ new file mode 100644
 +
 +var upgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096}
 +
++const maxWebSocketMessageBytes = 16 << 10
++
 +func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 +	c, e := upgrader.Upgrade(w, r, nil)
 +	if e != nil {
 +		return
 +	}
 +	defer c.Close()
-+	c.SetReadLimit(16384)
++	c.SetReadLimit(maxWebSocketMessageBytes)
 +	c.SetReadDeadline(time.Now().Add(10 * time.Second))
 +	var hello struct {
 +		Session string
@@ -3588,8 +3778,8 @@ new file mode 100644
 +}
 diff --git a/main_test.go b/main_test.go
 new file mode 100644
+index 0000000..dde92dd
 --- /dev/null
-+++ b/main_test.go
 +++ b/main_test.go
 @@ -0,0 +1,419 @@
 +package main
@@ -4013,8 +4203,8 @@ new file mode 100644
 +}
 diff --git a/movement_geometry.go b/movement_geometry.go
 new file mode 100644
+index 0000000..72708e9
 --- /dev/null
-+++ b/movement_geometry.go
 +++ b/movement_geometry.go
 @@ -0,0 +1,197 @@
 +package main
@@ -4216,8 +4406,8 @@ new file mode 100644
 +}
 diff --git a/movement_geometry_test.go b/movement_geometry_test.go
 new file mode 100644
+index 0000000..f9d9afd
 --- /dev/null
-+++ b/movement_geometry_test.go
 +++ b/movement_geometry_test.go
 @@ -0,0 +1,145 @@
 +package main
@@ -4367,8 +4557,8 @@ new file mode 100644
 +func polygonPointer(polygon Polygon) *Polygon { return &polygon }
 diff --git a/my-game.code-workspace b/my-game.code-workspace
 new file mode 100644
+index 0000000..362d7c2
 --- /dev/null
-+++ b/my-game.code-workspace
 +++ b/my-game.code-workspace
 @@ -0,0 +1,7 @@
 +{
@@ -4381,10 +4571,10 @@ new file mode 100644
 \ No newline at end of file
 diff --git a/polygon_clip.go b/polygon_clip.go
 new file mode 100644
+index 0000000..2f4570d
 --- /dev/null
 +++ b/polygon_clip.go
-+++ b/polygon_clip.go
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,181 @@
 +package main
 +
 +import (
@@ -4405,7 +4595,7 @@ new file mode 100644
 +}
 +
 +func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon, error) {
-+	if len(subject)+len(clipping) > maxWalkableComponents {
++	if len(subject)+len(clipping) > maxGeometryOperationComponents {
 +		return nil, errGeometryLimitExceeded
 +	}
 +	subjectClip, err := atlasPolygonsToClip(subject)
@@ -4426,16 +4616,14 @@ new file mode 100644
 +}
 +
 +func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
++	if !polygonsWithinVertexLimit(polygons, maxGeometryOperationInputVertices) {
++		return nil, errGeometryLimitExceeded
++	}
 +	var result polyclip.Polygon
-+	total := 0
 +	for _, polygon := range polygons {
 +		normalized, err := normalizePolygon(polygon)
 +		if err != nil {
 +			return nil, err
-+		}
-+		total += len(normalized.Outer) + ringVertexCount(normalized.Holes)
-+		if total > maxGeometryTotalVertices {
-+			return nil, errGeometryLimitExceeded
 +		}
 +		current := polyclip.Polygon{ringToClip(normalized.Outer)}
 +		for _, hole := range normalized.Holes {
@@ -4448,6 +4636,18 @@ new file mode 100644
 +		}
 +	}
 +	return result, nil
++}
++
++func polygonsWithinVertexLimit(polygons []Polygon, limit int) bool {
++	total := 0
++	for _, polygon := range polygons {
++		count, ok := polygonVertexCountWithin(polygon, limit-total)
++		if !ok {
++			return false
++		}
++		total += count
++	}
++	return true
 +}
 +
 +func ringToClip(ring []ScenePoint) polyclip.Contour {
@@ -4466,11 +4666,10 @@ new file mode 100644
 +}
 +
 +func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
-+	if len(clipped) > maxWalkableComponents*2 {
++	if len(clipped) > maxWalkableComponents*2 || !clipResultWithinLimits(clipped) {
 +		return nil, errGeometryLimitExceeded
 +	}
 +	contours := make([]clipContour, 0, len(clipped))
-+	total := 0
 +	for _, contour := range clipped {
 +		raw := make([]ScenePoint, len(contour))
 +		for i, point := range contour {
@@ -4479,10 +4678,6 @@ new file mode 100644
 +		ring, err := normalizeRing(raw, true)
 +		if err != nil {
 +			return nil, err
-+		}
-+		total += len(ring)
-+		if total > maxGeometryTotalVertices {
-+			return nil, errGeometryLimitExceeded
 +		}
 +		contours = append(contours, clipContour{ring: ring, area: signedRingArea(ring), parent: -1})
 +	}
@@ -4549,16 +4744,32 @@ new file mode 100644
 +	return result, nil
 +}
 +
++func clipResultWithinLimits(clipped polyclip.Polygon) bool {
++	total := 0
++	for _, contour := range clipped {
++		if len(contour) > maxGeometryRingVertices || len(contour) > maxGeometryResultVertices-total {
++			return false
++		}
++		total += len(contour)
++	}
++	return true
++}
++
 +const mathMaxFloat = 1.7976931348623157e+308
 diff --git a/polygon_clip_test.go b/polygon_clip_test.go
 new file mode 100644
+index 0000000..5d46832
 --- /dev/null
 +++ b/polygon_clip_test.go
-+++ b/polygon_clip_test.go
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,74 @@
 +package main
 +
-+import "testing"
++import (
++	"errors"
++	"testing"
++
++	polyclip "github.com/ctessum/polyclip-go"
++)
 +
 +func mustRectangle(t *testing.T, minX, minY, maxX, maxY float64) Polygon {
 +	t.Helper()
@@ -4606,10 +4817,29 @@ new file mode 100644
 +		t.Fatalf("existing hole was not preserved: %#v, %v", result, err)
 +	}
 +}
++
++func TestPolygonClipRejectsResultLimitsBeforeConversion(t *testing.T) {
++	tests := map[string]polyclip.Polygon{
++		"ring vertices": {make(polyclip.Contour, maxGeometryRingVertices+1)},
++		"total vertices": {
++			make(polyclip.Contour, 3000),
++			make(polyclip.Contour, 3000),
++			make(polyclip.Contour, maxGeometryResultVertices-6000+1),
++		},
++		"components": make(polyclip.Polygon, maxWalkableComponents*2+1),
++	}
++	for name, clipped := range tests {
++		t.Run(name, func(t *testing.T) {
++			if _, err := clipPolygonToAtlas(clipped); !errors.Is(err, errGeometryLimitExceeded) {
++				t.Fatalf("limit+1 result accepted: %v", err)
++			}
++		})
++	}
++}
 diff --git a/profile_canvas_test.go b/profile_canvas_test.go
 new file mode 100644
+index 0000000..1564d96
 --- /dev/null
-+++ b/profile_canvas_test.go
 +++ b/profile_canvas_test.go
 @@ -0,0 +1,396 @@
 +package main
@@ -5010,8 +5240,8 @@ new file mode 100644
 +}
 diff --git a/profile_other_test.go b/profile_other_test.go
 new file mode 100644
+index 0000000..52d4fe4
 --- /dev/null
-+++ b/profile_other_test.go
 +++ b/profile_other_test.go
 @@ -0,0 +1,11 @@
 +//go:build !windows
@@ -5027,8 +5257,8 @@ new file mode 100644
 +func readProcessStats(pid int) processStats { return processStats{} }
 diff --git a/profile_probe_test.go b/profile_probe_test.go
 new file mode 100644
+index 0000000..7b2c159
 --- /dev/null
-+++ b/profile_probe_test.go
 +++ b/profile_probe_test.go
 @@ -0,0 +1,36 @@
 +package main
@@ -5069,8 +5299,8 @@ new file mode 100644
 +`
 diff --git a/profile_streaming_test.go b/profile_streaming_test.go
 new file mode 100644
+index 0000000..4b65e11
 --- /dev/null
-+++ b/profile_streaming_test.go
 +++ b/profile_streaming_test.go
 @@ -0,0 +1,219 @@
 +package main
@@ -5294,8 +5524,8 @@ new file mode 100644
 +}
 diff --git a/profile_test.go b/profile_test.go
 new file mode 100644
+index 0000000..bc058d9
 --- /dev/null
-+++ b/profile_test.go
 +++ b/profile_test.go
 @@ -0,0 +1,2192 @@
 +package main
@@ -7492,8 +7722,8 @@ new file mode 100644
 +}
 diff --git a/profile_transfer_test.go b/profile_transfer_test.go
 new file mode 100644
+index 0000000..b3ab077
 --- /dev/null
-+++ b/profile_transfer_test.go
 +++ b/profile_transfer_test.go
 @@ -0,0 +1,105 @@
 +package main
@@ -7603,8 +7833,8 @@ new file mode 100644
 +}
 diff --git a/profile_windows_test.go b/profile_windows_test.go
 new file mode 100644
+index 0000000..63f96ef
 --- /dev/null
-+++ b/profile_windows_test.go
 +++ b/profile_windows_test.go
 @@ -0,0 +1,32 @@
 +package main
@@ -7641,8 +7871,8 @@ new file mode 100644
 +}
 diff --git a/profile_worker_test.go b/profile_worker_test.go
 new file mode 100644
+index 0000000..8183996
 --- /dev/null
-+++ b/profile_worker_test.go
 +++ b/profile_worker_test.go
 @@ -0,0 +1,57 @@
 +package main
@@ -7704,8 +7934,8 @@ new file mode 100644
 +}
 diff --git a/profiling/README.md b/profiling/README.md
 new file mode 100644
+index 0000000..75191bd
 --- /dev/null
-+++ b/profiling/README.md
 +++ b/profiling/README.md
 @@ -0,0 +1,52 @@
 +# Atlas: воспроизводимые нагрузочные прогоны
@@ -7762,8 +7992,8 @@ new file mode 100644
 +Камера/зум в длительном сценарии меняются 3 минуты, по шести 30-секундным интервалам. Это короткий soak-тест, а не доказательство устойчивости многочасовой игры. Изначальные HTTP-кэши браузеров чистые; внутри одного прогона они сохраняются между сценариями. Карты — детерминированные подробные JPEG; иные форматы и визуальная структура могут давать другие результаты. CPU/GPU ноутбука, температура и фоновые программы влияют на цифры.
 diff --git a/profiling/REPORT.md b/profiling/REPORT.md
 new file mode 100644
+index 0000000..690f871
 --- /dev/null
-+++ b/profiling/REPORT.md
 +++ b/profiling/REPORT.md
 @@ -0,0 +1,27 @@
 +# Atlas: состояние на момент остановки
@@ -7793,141 +8023,12 @@ new file mode 100644
 +- Общий mutex и полная запись JSON остаются. Публичный хостинг, rate limiting и квоты не добавлены.
 +
 +Рабочая `data/` не использовалась в тестах. Команды стенда сохранены в [README.md](README.md); новые нагрузочные прогоны после просьбы остановиться не запускались.
-diff --git a/README.md b/README.md
-new file mode 100644
---- /dev/null
-+++ b/README.md
-+++ b/README.md
-@@ -0,0 +1,123 @@
-+# Атлас — прототип VTT
-+
-+Самостоятельная реализация по `desc.txt`: Go-сервер, браузерный JavaScript без сборщика, Canvas 2D и WebSocket. React/Vue и Go в ТЗ были вариантами, а не обязательным стеком. Зависимости: Gorilla WebSocket и отдельный libvips для обработки изображений.
-+
-+## Запуск
-+
-+Нужны Go 1.26+ и libvips. Для Windows x64 из папки проекта сначала выполните `./scripts/install-vips.ps1` (официальный libvips 8.18.6, SHA-256 проверяется). Затем:
-+
-+```powershell
-+go run .
-+```
-+
-+Открыть **http://127.0.0.1:8080**. Создать стол, открыть сцену и загрузить свою карту PNG/JPEG.
-+
-+Можно собрать исполняемый файл со встроенным интерфейсом. libvips остаётся внешней зависимостью:
-+
-+```powershell
-+go build -o atlas.exe .
-+.\atlas.exe
-+```
-+
-+Для игроков в локальной сети:
-+
-+```powershell
-+.\atlas.exe -addr 0.0.0.0:8080
-+```
-+
-+Ведущий открывает `http://IP-адрес-компьютера:8080`, затем нажимает «Пригласить». Ссылка содержит приглашение игрока. Для доступа с другого компьютера порт 8080 должен быть доступен в локальной сети. Для размещения в интернете нужен HTTPS reverse proxy, который поддерживает WebSocket.
-+
-+## Что работает
-+
-+- Создание кампании с несколькими сценами, ведущим и несколькими игроками. Ведущий создаёт, переименовывает, публикует и удаляет сцены; игрок видит только опубликованные. Клиент подписан максимум на одну сцену.
-+- У сцены собственные логические размеры и до двух этажей. У каждого этажа есть непрозрачность, отдельная видимость снизу, обычные visual layers, ровно один Token Layer и одна прямоугольная игровая область. Token Layer можно переставлять среди visual layers: например, крона дерева рисуется над токеном, а мебель под ним.
-+- Загруженное на сцену изображение становится обычным `SceneElement`: его можно двигать, менять размер и угол, переносить между слоями, дублировать без копии файла и менять порядок отрисовки. Один Campaign Asset используется любым числом элементов.
-+- У самого нижнего visual layer ручка вращения скрыта до явного «Разрешить вращение» на время текущего редактирования. Команда «Зафиксировать ротацию» асинхронно создаёт immutable derived raster через libvips, сохраняет положение и видимый размер элемента и обнуляет runtime rotation. Прозрачные тайлы такого результата отмечаются компактным manifest и не хранятся/не запрашиваются.
-+- Визуальное PNG/JPEG до 256 МиБ, 150 миллионов пикселей и 32768 px по стороне проходит одну общую `representationPolicy`: bitmap используется при оценке декодированной памяти до 8 МиБ и стороне до 8192 px, иначе создаётся tiled LOD. Решение не зависит от сжатого размера файла или роли изображения на сцене. Повернутый tiled-элемент запрашивает только тайлы, реально пересекающие viewport, и один соседний ряд. Исходное изображение не отправляется в браузер.
-+- Токены привязаны к Token Layer своего этажа. Player не может выйти за Walkable Bounds; GM может административно поставить токен снаружи и увидит красную отметку. Авторитетный Transition проверяет права, исходный этаж, область перехода и точку назначения.
-+- Campaign Asset Store хранит metadata и файлы отдельно от экземпляров на сцене. Поддержаны политики `keep`/`reclaimable` и обнаружение orphan без немедленного удаления файла.
-+- Загрузка изображений токенов; сервер готовит вариант до 512 px. Создание, изменение, удаление токенов, цвет, размер, имя, назначение игрока и скрытие от игроков.
-+- Своя камера у каждого участника: перетаскивание фона, масштаб колесом или кнопками, вписывание карты, включение сетки. У Player есть активный принадлежащий ему токен: он серверно определяет текущий этаж. Выбор своего токена на Canvas либо в списке делает его активным; выбор в списке также центрирует камеру. Последний активный токен и камера запоминаются только этим браузером и заново проверяются сервером после reconnect. Стартовый масштаб ограничен так, чтобы region loading захватывал несколько spatial cells, а не всю большую карту. Alt + перетаскивание позволяет двигать камеру поверх токена. Сетка визуальная, без привязки.
-+- Перемещение разрешённых токенов: до 20 сетевых обновлений в секунду при перетаскивании и обязательная финальная позиция при отпускании. Свой токен рисуется сразу, удалённые координаты интерполируются.
-+- Авторитетный сервер: игрок не может менять свойства, двигать чужие/скрытые токены, выбирать `SceneElement` или загружать ассеты. Player не видит редактор этажей/слоёв и Walkable Layer. В списке навигации он видит все свои нескрытые токены, включая далёкие и находящиеся на другом этаже, но список не раскрывает их asset ID и не загружает изображения. Скрытые токены и элементы вне `Scene.Bounds` не включаются в region snapshot; доступ к изображениям проверяется с учётом активного токена и текущего compositing этажей.
-+- Последовательные ревизии. При пропуске события запрашивается актуальный snapshot текущей загруженной области. Устаревшие события игнорируются. Одновременно допускается максимум один `view` request: если камера уехала дальше до ответа, после snapshot запрашивается только последнее актуальное положение, поэтому быстрый pan не создаёт очередь устаревших region snapshots. Автопереподключение с паузой 1–10 секунд и повторная синхронизация. Кэш изображений сохраняется.
-+- Локальное хранение в `data/`: оригиналы, тайлы, метаданные, кампании и ключи доступа. Позиции coalesce в RAM и сохраняются общим flush примерно раз в 5 секунд; ACK финальной позиции и realtime не ждут диск. При аварийном завершении могут потеряться последние несколько секунд движения. Создание/удаление, свойства, permissions и Scene CRUD записываются до ACK и одновременно flush'ят накопленные позиции. Ctrl+C сохраняет pending state и закрывает соединения.
-+- Region loading сначала выбирает участвующие в compositing этажи, затем viewport и элементы, и лишь затем их asset metadata/байты. Этаж с нулевым effective alpha не вызывает сетевых запросов или декодирования. До шести загрузок одновременно; ненужные запросы отменяются при движении камеры.
-+- IndexedDB: LRU-кэш байтов с лимитом 128 МБ и ограниченной очередью ожидающих записей. RAM-бюджет изображений выбирается автоматически по грубому `navigator.deviceMemory`: 64 МБ для устройств до 4 GiB, 128 МБ для среднего/неизвестного класса и 256 МБ для 16+ GiB, если браузер сообщает такое значение. В диагностике можно локально переопределить бюджет на Auto / 64 / 128 / 256 / 512 МБ; 512 МБ никогда не выбираются автоматически. 8 МБ общего RAM-бюджета зарезервированы под подготовленную графику токенов, остальное доступно ImageBitmap. При большом видимом наборе разрешение декодирования снижается, чтобы набор помещался одновременно. При перегрузке необязательная запись в IndexedDB пропускается. Отказ IndexedDB/квоты не мешает работе. HTTP-ответы ассетов имеют `private, immutable` и срок год.
-+- Диагностика: число реально нарисованных кадров, время отрисовки, оценка RAM изображений, объём IndexedDB, байты изображений и WebSocket, попадания в дисковый кэш, активные загрузки и ошибки. В покое 0 кадров/с — нормальный режим перерисовки по изменениям.
-+- Для экспериментов: переключение постоянного рендера, переподключение, очистка кэша и добавление 100 токенов за раз (защитный лимит сцены — 100000).
-+
-+## Управление
-+
-+1. Создайте стол. На главной кампании выберите сцену или создайте новую.
-+2. Ведущий может переименовать, опубликовать, скрыть или удалить сцену. Новая сцена скрыта от игроков.
-+3. Откройте сцену. Разделы «Сцена», «Объекты» и «Участники» переключаются в верхней панели; левая панель меняет содержимое, регулируется по ширине и может быть свёрнута.
-+4. В разделе «Сцена» ведущий задаёт размеры, создаёт этажи и слои, загружает изображения и управляет деревом. Перетаскивайте элементы на Canvas за рамку и маркеры; Shift при угловом resize разрешает свободные пропорции.
-+5. В разделе «Объекты» нажмите `+` или загрузите изображение токена.
-+6. Выберите токен на карте/в списке, задайте свойства и сохраните.
-+7. Пригласите игрока. Когда он войдёт, назначьте его в поле «Управление». Кнопка «К сценам» возвращает к Campaign Home, где доступны создание/редактирование сцен и «Выйти из кампании».
-+
-+`F` над активным холстом — показать всю карту, `Escape` — снять выбор, `Delete` — удалить выбранный токен (ведущий). На главной странице доступны сохранённые входы в сессии. Ключ ведущего хранится в браузере; приглашение не даёт прав ведущего. Потеря localStorage означает потерю доступа из этого браузера, поэтому сохраняйте профиль браузера и резервную копию `data/`.
-+
-+## Проверки
-+
-+```powershell
-+go test -v ./...
-+go vet ./...
-+```
-+
-+Интеграционные тесты используют настоящий HTTP/WebSocket сервер: права и синхронизация токенов, floors/layers/elements, transforms, transitions, region loading, скрытые слои и assets, persistence/reconnect, asset retention, уровни и крайние тайлы.
-+
-+Измерение выбора representation запускается отдельно: `$env:ATLAS_REPRESENTATION_PROFILE='1'; go test -run TestProfileRepresentationPolicy -v`. На текущей машине подготовка bitmap была дешевле для 512² и 1024², а tiled LOD добавлял стоимость подготовки, но ограничивал будущую загрузку и декодирование крупного изображения viewport-тайлами. Поэтому порог основан на декодированной памяти, а не на времени подготовки.
-+
-+Дополнительная проверка в настоящем Chrome или Edge:
-+
-+```powershell
-+$env:ATLAS_CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe'
-+$env:ATLAS_SCREENSHOT='C:\projects\my-game\prototype.png'
-+go test -run TestBrowser -v
-+```
-+
-+Она создаёт временный профиль и временную сессию, проверяет навигацию сцены и сворачивание левой панели, загружает тестовую карту через обычный upload endpoint, изменяет токен, переподключается, проверяет ошибки JavaScript и сохраняет снимок. Без `ATLAS_CHROME` браузерная проверка пропускается.
-+
-+## Границы прототипа
-+
-+Нет тумана войны, стен, освещения, бросков, Actor/листов персонажей, Asset Library, запекания целого visual layer, физического asset GC, аудио/видео, истории/отмены, офлайн-редактирования и дельта-журнала восстановления. При открытии и восстановлении клиент получает metadata сцены, затем актуальный snapshot только своего region. Full-scene fallback отсутствует: старые варианты протокола не поддерживаются, потому что у прототипа пока нет выпущенных клиентов. Одновременное перемещение одного токена или элемента разрешается последним принятым сервером событием; блокировки захвата нет.
-+
-+Это прототип для доверенной игровой группы: приглашения постоянные, отдельной системы аккаунтов, отзыва ключей, ограничения частоты HTTP-запросов и очистки серверного хранилища нет. Только тот, у кого есть ключ ведущего, управляет сессией. Уже показанное игроку изображение нельзя отозвать из его браузера последующим скрытием.
-+
-+RAM-индикатор учитывает ImageBitmap и подготовленную графику токенов, а не весь процесс браузера и не GPU. Лимит IndexedDB не управляет собственным HTTP-кэшем браузера. Загрузка пишет данные во временный файл; тайлы и фиксацию rotation выполняет отдельный процесс libvips. Одновременно обрабатывается одно изображение. Для interlaced PNG и progressive JPEG сама библиотека всё ещё может потреблять сотни МиБ; жёсткого ограничения RSS нет. Фиксация rotation проверена функционально на bitmap и sparse tiled output, но её peak RSS на изображении около лимита 150 Мп отдельно не измерялся. Цели 60 FPS / 200 мс из ТЗ не объявляются достигнутыми: нагрузку 100–1000 объектов, большие карты и несколько компьютеров следует измерять на целевом оборудовании. Основной интерфейс рассчитан на настольный браузер.
-+
-+## Надёжность во второй итерации
-+
-+- Изменение свойств — отдельный `properties` patch: в нём нет координат. Устаревший full-token `update` protocol удалён. Игрок может двигать токен, пока ведущий меняет его имя, цвет или размер.
-+- Финальная позиция — LWW-команда `final`. У неё отдельный browser stream `client + seq`: сервер меняет RAM, рассылает позицию и отвечает сразу, а позицию вместе с receipt сохраняет ближайший общий flush. Если процесс аварийно завершился до flush, следующий position seq принимается после restart без блокировки очереди.
-+- Reliable business-команды используют отдельный Outbox в `sessionStorage`, сохраняются через временный файл, `Sync` и замену до ACK и остаются строго последовательными. Position Outbox тоже повторяет неподтверждённый `final` после обычного reconnect. Запоздалое промежуточное движение того же position stream не откатывает уже подтверждённый финал.
-+- Пока нет подтверждения, финальная позиция остаётся на экране как локальное ожидание. Отклонение по правам возвращает серверную позицию и показывает причину.
-+- Черновики свойств хранятся отдельно от снимков сервера, по токенам и полям. Обновления участников, перемещения и переподключение не стирают ввод. Подтверждение старой формы не стирает более новый ввод.
-+- Неверный ключ, отсутствующая сессия и нарушение последовательности business-команд останавливают автоматические повторы с понятной ошибкой. Ошибки чтения/структуры `sessions.json` прерывают запуск без перезаписи сохранения. Singleton `Scene.Map` отсутствует: карта всегда остаётся обычным `SceneElement`. При запуске текущие visual layers получают явный `kind`, каждому этажу добавляются Token/Walkable layers, а токены привязываются к своему Token Layer.
-+- RAM-кэш удерживает видимый набор без взаимного вытеснения. Размеры выбираются отдельно для каждого изображения по его размеру на экране, без увеличения исходника, с сохранением пропорций. Пока детальный тайл загружается или декодируется, renderer подставляет уже доступный более грубый LOD и затем атомарно заменяет его. Старый bitmap того же ресурса также остаётся до готовности нового; дешёвая версия может сохраниться для деградации `high-res → low-res → eviction` при давлении памяти. При переполнении уменьшается разрешение нужных изображений; видимые ассеты имеют приоритет над соседними тайлами. Возраст сам по себе больше не удаляет ImageBitmap: невидимые записи остаются в RAM, пока хватает бюджета. После пересечения high watermark невидимые записи понижаются или выселяются по LRU до примерно 85% лимита, чтобы не возникала постоянная очистка около границы. При окончательном eviction вызывается `ImageBitmap.close()`. Временные буферы декодера и основной Canvas в этот бюджет не входят.
-+
-+Дополнительные тесты: движение игрока + переименование ведущим → финал → переподключение → перезапуск → проверка имени и позиции; повтор команды после потери ACK; позднее промежуточное движение; отказ диска и повтор; повреждённое сохранение; штатная остановка через тот же контекст отмены, который использует обработчик Ctrl+C. Само нажатие клавиш в консоли тест не имитирует.
-+
-+Chrome/Edge дополнительно проверяют несохранённый ввод, новые координаты списка, отсутствие координат в патче свойств, прекращение повторов при ошибке входа, ручной RAM override и уменьшение кэша с 128 до 64 МиБ на 80 перекрывающихся изображениях 512×509 при большом масштабе. Модульный browser scenario отдельно проверяет Auto-профили, fallback без `deviceMemory`, отсутствие age-only eviction, LRU, защиту `wanted` и hysteresis.
-+
-+## Оставшиеся ограничения
-+
-+Atlas рассчитан на небольшую доверенную группу. Rate limiting, квоты пользователей/сессий/диска и защита публичного хостинга намеренно не реализованы. Запекание visual layers, анимации, коллизии, полноценный FOV, свет и интерактивные SceneElement пока отсутствуют. Остаются общий mutex сервера, полная запись JSON и полный обход IndexedDB при записи. Клиент использует единый region-state contract: при открытии Scene сначала получает только metadata и entry point, затем запрашивает viewport с bounded prefetch; далёкие tokens и их asset metadata клиенту не передаются. Сервер поддерживает неперсистентный uniform-grid spatial index и фильтрует realtime по загруженному региону. Capability/fallback-веток старого протокола нет. Проведены прежние локальные замеры до 2000 токенов, а spatial index отдельно проверен на 50000 токенов; многочасовые игры и несколько физических компьютеров ещё не проверены.
-+
-+Не закрывайте вкладку до подтверждения: `sessionStorage` не гарантирует сохранение очереди после закрытия вкладки. Несохранённый черновик формы живёт в памяти страницы. Одновременные изменения одного и того же свойства или перемещения ведущего и владельца разрешаются порядком приёма сервером. Гарантия записи предполагает исправный диск и файловую систему; резервная копия `data/` по-прежнему нужна.
-+
-+Файлы: `main.go` — Campaign persistence и HTTP/WS lifecycle; `scenes.go` — snapshots, region loading и доступ к ассетам; `scene_content.go` — модель floors/layers/elements/transitions; `scene_commands.go` — их команды; `reliable.go` — reliable transport и токены; `image_pipeline.go` — общие raster representations; `derived_pipeline.go` и `rotation_jobs.go` — preprocessing и durable lifecycle фиксации ротации; `web/scene-content.js` — Canvas-геометрия и рендер; `web/scene-tree.js` — дерево сцены; `web/app.js` — интеграция; `scene_content_test.go`, `rotation_jobs_test.go` — серверные проверки; `browser_test.go`, `browser_scenarios_test.go` — Chrome/Edge через DevTools.
-+
-+## Профилирование третьей итерации
-+
-+Методика и команды: [profiling/README.md](profiling/README.md). Итоги и пределы: [profiling/REPORT.md](profiling/REPORT.md).
-+
-+Добавлены пространственный индекс токенов и кэш готовой графики в пределах прежних 64 МБ. При дальнем масштабе подписи скрыты, кроме выбранного токена; остальные появляются при диаметре от 24 px. Нарезка перенесена в libvips; Go больше не хранит полную декодированную карту. Формат тайлов сохранён. В текущей версии лимит карты поднят до 150 млн пикселей, а лимит исходного файла — до 256 МиБ; лимит стороны остаётся 32768 px. Незавершённый специальный обработчик interlaced PNG удалён.
-+
-+Основные файлы: `web/rendering.js`, `web/token-renderer.js`, `image_pipeline.go`, `image_process_windows.go`, `image_process_other.go`; проверки — `image_pipeline_test.go`, `image_processing_test.go`, `profile*_test.go`.
-+
-+libvips ищется через ATLAS_VIPS, затем в vips/bin рядом с atlas.exe, в локальной .deps и в PATH. Для переноса на другой ПК копируйте весь каталог vips-dev-8.18 под именем vips рядом с atlas.exe, включая DLL и лицензии. Для Linux/macOS установите libvips из пакетов системы. Без него сохранённые сцены открываются, а новая загрузка выдаёт понятную ошибку. Официальные пакеты: https://www.libvips.org/install.html .
-+
-+Полный финальный повтор нагрузочных замеров не завершён: работа остановлена по запросу пользователя. Текущие результаты и ограничения записаны в profiling/REPORT.md.
 diff --git a/reliable.go b/reliable.go
 new file mode 100644
+index 0000000..d8b6e42
 --- /dev/null
 +++ b/reliable.go
-+++ b/reliable.go
-@@ -0,0 +1,728 @@
+@@ -0,0 +1,740 @@
 +package main
 +
 +import (
@@ -8079,6 +8180,18 @@ new file mode 100644
 +	DeltaX                   float64           `json:"deltaX,omitempty"`
 +	DeltaY                   float64           `json:"deltaY,omitempty"`
 +	ExpectedGeometryRevision *uint64           `json:"expectedGeometryRevision,omitempty"`
++	wireBytes                int
++}
++
++func (command *Command) UnmarshalJSON(data []byte) error {
++	type commandWire Command
++	var decoded commandWire
++	if err := json.Unmarshal(data, &decoded); err != nil {
++		return err
++	}
++	*command = Command(decoded)
++	command.wireBytes = len(data)
++	return nil
 +}
 +
 +func (s *Server) command(ss *Session, p *peer, c Command) {
@@ -8658,8 +8771,8 @@ new file mode 100644
 +}
 diff --git a/reliable_test.go b/reliable_test.go
 new file mode 100644
+index 0000000..3a97a73
 --- /dev/null
-+++ b/reliable_test.go
 +++ b/reliable_test.go
 @@ -0,0 +1,622 @@
 +package main
@@ -9286,8 +9399,8 @@ new file mode 100644
 +}
 diff --git a/rotation_jobs.go b/rotation_jobs.go
 new file mode 100644
+index 0000000..9338762
 --- /dev/null
-+++ b/rotation_jobs.go
 +++ b/rotation_jobs.go
 @@ -0,0 +1,268 @@
 +package main
@@ -9560,8 +9673,8 @@ new file mode 100644
 +}
 diff --git a/rotation_jobs_test.go b/rotation_jobs_test.go
 new file mode 100644
+index 0000000..6f32746
 --- /dev/null
-+++ b/rotation_jobs_test.go
 +++ b/rotation_jobs_test.go
 @@ -0,0 +1,448 @@
 +package main
@@ -10014,8 +10127,8 @@ new file mode 100644
 +}
 diff --git a/scene_catalog_test.go b/scene_catalog_test.go
 new file mode 100644
+index 0000000..13cefe9
 --- /dev/null
-+++ b/scene_catalog_test.go
 +++ b/scene_catalog_test.go
 @@ -0,0 +1,139 @@
 +package main
@@ -10159,10 +10272,10 @@ new file mode 100644
 +}
 diff --git a/scene_commands.go b/scene_commands.go
 new file mode 100644
+index 0000000..c9a212b
 --- /dev/null
 +++ b/scene_commands.go
-+++ b/scene_commands.go
-@@ -0,0 +1,661 @@
+@@ -0,0 +1,673 @@
 +package main
 +
 +import (
@@ -10245,6 +10358,10 @@ new file mode 100644
 +	var tokenExisted, tokenExists bool
 +	var assetsBeforeMutation map[string]Asset
 +
++	if issue == "" && geometryCommand(command.Type) && command.wireBytes > maxGeometryCommandBytes {
++		issue = "Превышен лимит размера геометрической команды"
++		resyncOnIssue = true
++	}
 +	if issue == "" && !memberIsGM(peer.member) {
 +		issue = "Действие доступно ведущему"
 +	}
@@ -10753,6 +10870,14 @@ new file mode 100644
 +	}
 +}
 +
++func geometryCommand(commandType string) bool {
++	switch commandType {
++	case "addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
++		return true
++	}
++	return false
++}
++
 +func walkableCommandIssue(err error) string {
 +	if errors.Is(err, errGeometryLimitExceeded) {
 +		return "Превышен лимит геометрии"
@@ -10826,8 +10951,8 @@ new file mode 100644
 +}
 diff --git a/scene_content.go b/scene_content.go
 new file mode 100644
+index 0000000..81ceb3a
 --- /dev/null
-+++ b/scene_content.go
 +++ b/scene_content.go
 @@ -0,0 +1,685 @@
 +package main
@@ -11368,7 +11493,7 @@ new file mode 100644
 +}
 +
 +func validFloorGeometry(floor Floor) bool {
-+	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || len(floor.WalkableComponents) > maxWalkableComponents || walkableVertexCount(floor.WalkableComponents) > maxGeometryTotalVertices {
++	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || !walkableGeometryWithinLimits(floor.WalkableComponents) {
 +		return false
 +	}
 +	ids := make(map[string]bool, len(floor.WalkableComponents))
@@ -11517,8 +11642,8 @@ new file mode 100644
 +}
 diff --git a/scene_content_test.go b/scene_content_test.go
 new file mode 100644
+index 0000000..ad98fca
 --- /dev/null
-+++ b/scene_content_test.go
 +++ b/scene_content_test.go
 @@ -0,0 +1,804 @@
 +package main
@@ -12327,8 +12452,8 @@ new file mode 100644
 +}
 diff --git a/scenes.go b/scenes.go
 new file mode 100644
+index 0000000..7e9b260
 --- /dev/null
-+++ b/scenes.go
 +++ b/scenes.go
 @@ -0,0 +1,668 @@
 +package main
@@ -13001,8 +13126,8 @@ new file mode 100644
 +}
 diff --git a/scenes.md b/scenes.md
 new file mode 100644
+index 0000000..8ae5f3b
 --- /dev/null
-+++ b/scenes.md
 +++ b/scenes.md
 @@ -0,0 +1,119 @@
 +Scene data, asset discovery и большие сцены
@@ -13126,8 +13251,8 @@ new file mode 100644
 +
 diff --git a/scenes_test.go b/scenes_test.go
 new file mode 100644
+index 0000000..2db6cbe
 --- /dev/null
-+++ b/scenes_test.go
 +++ b/scenes_test.go
 @@ -0,0 +1,598 @@
 +package main
@@ -13730,8 +13855,8 @@ new file mode 100644
 +}
 diff --git a/scripts/install-vips.ps1 b/scripts/install-vips.ps1
 new file mode 100644
+index 0000000..a19e9bb
 --- /dev/null
-+++ b/scripts/install-vips.ps1
 +++ b/scripts/install-vips.ps1
 @@ -0,0 +1,25 @@
 +$ErrorActionPreference = 'Stop'
@@ -13761,10 +13886,10 @@ new file mode 100644
 +Write-Output "Atlas will use $binary"
 diff --git a/walkable.go b/walkable.go
 new file mode 100644
+index 0000000..0ee899e
 --- /dev/null
 +++ b/walkable.go
-+++ b/walkable.go
-@@ -0,0 +1,418 @@
+@@ -0,0 +1,436 @@
 +package main
 +
 +import (
@@ -13788,7 +13913,7 @@ new file mode 100644
 +// assumes stored components were normalized when accepted; only AABB-selected
 +// candidates enter the comparatively expensive clipping operation.
 +func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
-+	if len(components) > maxWalkableComponents {
++	if !walkableGeometryWithinLimits(components) {
 +		return nil, false, errGeometryLimitExceeded
 +	}
 +	added, err := rectanglePolygon(rectangle)
@@ -13846,6 +13971,9 @@ new file mode 100644
 +		usedIDs[componentID] = true
 +		result = append(result, WalkableComponent{ID: componentID, Polygon: polygon})
 +	}
++	if !walkableGeometryWithinLimits(result) {
++		return nil, false, errGeometryLimitExceeded
++	}
 +	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 +
 +	if walkableComponentSetsEqual(components, result) {
@@ -13858,7 +13986,7 @@ new file mode 100644
 +// keeps the old ID on the lexicographically first normalized piece; subsequent
 +// pieces receive fresh IDs. The input slice is never mutated.
 +func subtractWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
-+	if len(components) > maxWalkableComponents {
++	if !walkableGeometryWithinLimits(components) {
 +		return nil, false, errGeometryLimitExceeded
 +	}
 +	cut, err := rectanglePolygon(rectangle)
@@ -13900,7 +14028,7 @@ new file mode 100644
 +			result = append(result, WalkableComponent{ID: componentID, Polygon: piece})
 +		}
 +	}
-+	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
++	if !walkableGeometryWithinLimits(result) {
 +		return nil, false, errGeometryLimitExceeded
 +	}
 +	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
@@ -13914,7 +14042,7 @@ new file mode 100644
 +// then unions it only with components near the destination. Tokens, assets and
 +// transitions are deliberately outside this pure geometry operation.
 +func moveWalkableComponent(components []WalkableComponent, componentID string, deltaX, deltaY float64) ([]WalkableComponent, bool, error) {
-+	if len(components) > maxWalkableComponents || componentID == "" {
++	if !walkableGeometryWithinLimits(components) || componentID == "" {
 +		return nil, false, errInvalidGeometry
 +	}
 +	ids, err := componentIDs(components)
@@ -13988,7 +14116,7 @@ new file mode 100644
 +		usedIDs[resultID] = true
 +		result = append(result, WalkableComponent{ID: resultID, Polygon: polygon})
 +	}
-+	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
++	if !walkableGeometryWithinLimits(result) {
 +		return nil, false, errGeometryLimitExceeded
 +	}
 +	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
@@ -14013,7 +14141,7 @@ new file mode 100644
 +}
 +
 +func deleteWalkableComponent(components []WalkableComponent, componentID string) ([]WalkableComponent, bool, error) {
-+	if len(components) > maxWalkableComponents || componentID == "" {
++	if !walkableGeometryWithinLimits(components) || componentID == "" {
 +		return nil, false, errInvalidGeometry
 +	}
 +	if _, err := componentIDs(components); err != nil {
@@ -14111,6 +14239,21 @@ new file mode 100644
 +	return total
 +}
 +
++func walkableGeometryWithinLimits(components []WalkableComponent) bool {
++	if len(components) > maxWalkableComponents {
++		return false
++	}
++	total := 0
++	for _, component := range components {
++		count, ok := polygonVertexCountWithin(component.Polygon, maxGeometryResultVertices-total)
++		if !ok {
++			return false
++		}
++		total += count
++	}
++	return true
++}
++
 +func matchingComponentID(polygon Polygon, affected []WalkableComponent, used map[string]bool) string {
 +	for _, component := range affected {
 +		if !used[component.ID] && polygonsEqual(component.Polygon, polygon) {
@@ -14185,10 +14328,10 @@ new file mode 100644
 +}
 diff --git a/walkable_commands_test.go b/walkable_commands_test.go
 new file mode 100644
+index 0000000..84f4a0a
 --- /dev/null
 +++ b/walkable_commands_test.go
-+++ b/walkable_commands_test.go
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,353 @@
 +package main
 +
 +import (
@@ -14196,6 +14339,8 @@ new file mode 100644
 +	"net/http/httptest"
 +	"strings"
 +	"testing"
++
++	"github.com/gorilla/websocket"
 +)
 +
 +func TestWalkableCommandVersionRetryAndDigest(t *testing.T) {
@@ -14342,6 +14487,54 @@ new file mode 100644
 +	server.mu.Unlock()
 +	if len(floor.WalkableComponents) != maxWalkableComponents || floor.GeometryRevision != 0 || currentSceneRevision != initialSceneRevision {
 +		t.Fatalf("limit rejection partially changed state: components=%d geometryRevision=%d sceneRevision=%d", len(floor.WalkableComponents), floor.GeometryRevision, currentSceneRevision)
++	}
++}
++
++func TestGeometryCommandByteLimitRejectionIsAtomic(t *testing.T) {
++	server := testServer(t, t.TempDir())
++	host := httptest.NewServer(server.routes())
++	defer host.Close()
++	gm := post(t, host.URL+"/api/sessions", map[string]string{"name": "Geometry command bytes"})
++	ws := dial(t, host.URL, gm)
++	read(t, ws, "snapshot")
++
++	server.mu.Lock()
++	scene := firstScene(server.sessions[gm["session"]])
++	sceneID, floorID := scene.ID, firstFloorID(scene)
++	initialSceneRevision := scene.Revision
++	server.mu.Unlock()
++
++	expected := uint64(0)
++	command := Command{Type: "setRenderBounds", Client: "geometry-bytes", Seq: 1, SceneID: sceneID, FloorID: floorID, ExpectedGeometryRevision: &expected, RenderBounds: &Polygon{Outer: rectangleInput(0, 0, 100, 100).Outer}}
++	encoded, err := json.Marshal(command)
++	if err != nil {
++		t.Fatal(err)
++	}
++	prefix, suffix := string(encoded[:len(encoded)-1])+`,"padding":"`, `"}`
++	padding := maxGeometryCommandBytes + 1 - len(prefix) - len(suffix)
++	if padding < 1 {
++		t.Fatal("test command unexpectedly exceeds geometry command limit")
++	}
++	payload := []byte(prefix + strings.Repeat("x", padding) + suffix)
++	if len(payload) != maxGeometryCommandBytes+1 || len(payload) >= maxWebSocketMessageBytes {
++		t.Fatalf("invalid test payload size: %d", len(payload))
++	}
++	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
++		t.Fatal(err)
++	}
++	read(t, ws, "snapshot")
++	ack := read(t, ws, "ack")
++	var issue string
++	if err := json.Unmarshal(ack["error"], &issue); err != nil || !strings.Contains(issue, "размера") {
++		t.Fatalf("oversized command was not rejected: %s", ack["error"])
++	}
++
++	server.mu.Lock()
++	floor := server.sessions[gm["session"]].Scenes[sceneID].Floors[floorID]
++	currentSceneRevision := server.sessions[gm["session"]].Scenes[sceneID].Revision
++	server.mu.Unlock()
++	if floor.RenderBounds != nil || floor.GeometryRevision != 0 || currentSceneRevision != initialSceneRevision {
++		t.Fatalf("oversized command partially changed state: floor=%#v sceneRevision=%d", floor, currentSceneRevision)
 +	}
 +}
 +
@@ -14494,13 +14687,16 @@ new file mode 100644
 +}
 diff --git a/walkable_test.go b/walkable_test.go
 new file mode 100644
+index 0000000..b5e4259
 --- /dev/null
 +++ b/walkable_test.go
-+++ b/walkable_test.go
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,259 @@
 +package main
 +
-+import "testing"
++import (
++	"errors"
++	"testing"
++)
 +
 +func rectComponent(t *testing.T, componentID string, minX, minY, maxX, maxY float64) WalkableComponent {
 +	t.Helper()
@@ -14746,17 +14942,25 @@ new file mode 100644
 +		t.Fatal("invalid mode accepted")
 +	}
 +}
++
++func TestWalkableResultVertexLimitRejectsBeforeClipping(t *testing.T) {
++	components := []WalkableComponent{{ID: "oversized", Polygon: Polygon{Outer: make([]ScenePoint, maxGeometryResultVertices+1)}}}
++	result, changed, err := addWalkableRect(components, AABB{MinX: 0, MinY: 0, MaxX: 10, MaxY: 10}, sequenceIDs("unused"))
++	if !errors.Is(err, errGeometryLimitExceeded) || changed || result != nil || len(components[0].Polygon.Outer) != maxGeometryResultVertices+1 {
++		t.Fatalf("result limit was not rejected atomically: result=%#v changed=%v err=%v", result, changed, err)
++	}
++}
 diff --git a/web/app.js b/web/app.js
 new file mode 100644
+index 0000000..3787297
 --- /dev/null
 +++ b/web/app.js
-+++ b/web/app.js
-@@ -0,0 +1,473 @@
+@@ -0,0 +1,474 @@
 +import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
 +import {drawTokens} from './token-renderer.js';
 +import {Outbox, Drafts, CacheWriteBudget} from './reliability.js';
 +import {ScenesRuntime,needsActiveTokenRequest} from './scenes.js';
-+import {FloorRenderBoundsPathCache,SceneRenderIndex,clipFloorRenderBounds,compositeFloors,drawRenderBoundsEditor,drawSceneStack,drawTransitionOverlay,drawWalkableEditor,elementHandleAt,elementsAtPoint,floorCameraBounds,hitElement,inversePoint,orderedFloors,orderedLayers,pointInRenderBounds,renderBoundsAABB,renderBoundsHit,transitionHit,transformedFromDrag,validRenderBounds,validRenderBoundsChange,walkableBounds,walkableComponentAt} from './scene-content.js';
++import {FloorRenderBoundsPathCache,FloorRenderBoundsResourceCache,SceneRenderIndex,abortUnwantedImageLoads,clipFloorRenderBounds,compositeFloors,drawRenderBoundsEditor,drawSceneStack,drawTransitionOverlay,drawWalkableEditor,elementHandleAt,elementsAtPoint,floorCameraBounds,hitElement,inversePoint,orderedFloors,orderedLayers,pointInRenderBounds,renderBoundsAABB,renderBoundsHit,transitionHit,transformedFromDrag,validRenderBounds,validRenderBoundsChange,walkableBounds,walkableComponentAt} from './scene-content.js';
 +import {SceneTreeRuntime} from './scene-tree.js';
 +const $ = id => document.getElementById(id);
 +const isGM=member=>!!(member?.gm||member?.role==='gm');
@@ -14812,6 +15016,7 @@ new file mode 100644
 +const sceneTree=new SceneTreeRuntime({tree:$('sceneTree'),addFloor:$('addFloor'),addLayer:$('addLayer'),addTransition:$('addTransition'),controls:[$('addFloor').parentElement,$('mapUpload').parentElement]},{queue:queueCommand,selectElement,selectTransition,beginTransition,setFloor,getFloor:()=>currentFloorID,focusElement,setWalkableTool,getWalkableTool:()=>walkableTool,setRenderBoundsTool,getRenderBoundsTool:()=>renderBoundsTool});
 +const sceneRenderIndex=new SceneRenderIndex();
 +const renderBoundsPaths=new FloorRenderBoundsPathCache();
++const renderBoundsResources=new FloorRenderBoundsResourceCache();
 +let camera = {x: 0, y: 0, scale: .75}, viewport = {w: 1, h: 1}, grid = true;
 +const REGION_PREFETCH=.5,MAX_REGION_SPAN=524288,INITIAL_SCENE_SCALE=.75,INITIAL_REGION_WORLD_SPAN=6144,VIEWPORT_SAVE_INTERVAL=10000;let regionInFlight=false,sceneCameraInitialized=false,viewportSaveTimer,viewportSaveDirty=false,viewportLastSave=0;
 +let dirty = true, lastFrame = 0, frameTime = 0, rendered = 0, fps = 0, lastMove = 0;
@@ -14978,7 +15183,7 @@ new file mode 100644
 +	  const draggedFloor=drag?.type==='token'?state?.tokens?.[drag.id]?.floorId:'',priorCatalog=state?.elementCatalog,priorCatalogVersion=state?._catalogVersion||0;const initialRegion=msg.region==null;state=msg;if(isGM(state.you)){if(state.elementCatalog)state._catalogVersion=priorCatalogVersion+1;else{state.elementCatalog=priorCatalog||{};state._catalogVersion=priorCatalogVersion;}}else{state.elementCatalog={};state._catalogVersion=0;}if(!initialRegion)regionInFlight=false;desiredSceneID=msg.scene.id;scenes.update(campaign);scenes.showScene();retry=0;
 +   $('connection').textContent='● В сети';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;$('roleBadge').textContent=isGM(msg.you)?'ВЕДУЩИЙ':'ИГРОК';document.querySelectorAll('.gm').forEach(el=>el.hidden=!isGM(msg.you));
 +   if(!sceneCameraInitialized){initializeSceneCamera(msg);sceneCameraInitialized=true;}
-+	  state.ownedTokens=state.ownedTokens||{};currentFloorID=msg.currentFloorId||orderedFloors(state)[0]?.id||'';confirmedActiveTokenID=state.activeTokenId||'';confirmedFloorID=currentFloorID;pendingActiveSwitch=null;sceneRenderIndex.reset();if(!isGM(state.you))rememberActiveToken(state.scene.id,state.activeTokenId||'');resolveCreatedTransition();if(selectedTransition&&!state.transitions?.[selectedTransition])selectedTransition='';if(selectedWalkableComponent&&!state.floors?.[currentFloorID]?.walkableComponents?.some(component=>component.id===selectedWalkableComponent))selectedWalkableComponent='';if(drag?.type==='token'&&draggedFloor&&state.tokens?.[drag.id]?.floorId!==draggedFloor)drag=null;if(drag?.type?.startsWith('walkable')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision)drag=null;if(drag?.type?.startsWith('renderBounds')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision){drag=null;selectedRenderBoundsVertex=-1;}if(renderBoundsDraft&&renderBoundsDraft.geometryRevision!==state.floors?.[renderBoundsDraft.floorId]?.geometryRevision)renderBoundsDraft=null;
++	  state.ownedTokens=state.ownedTokens||{};currentFloorID=msg.currentFloorId||orderedFloors(state)[0]?.id||'';confirmedActiveTokenID=state.activeTokenId||'';confirmedFloorID=currentFloorID;pendingActiveSwitch=null;sceneRenderIndex.reset();renderBoundsPaths.syncState(state);renderBoundsResources.syncState(state);if(!isGM(state.you))rememberActiveToken(state.scene.id,state.activeTokenId||'');resolveCreatedTransition();if(selectedTransition&&!state.transitions?.[selectedTransition])selectedTransition='';if(selectedWalkableComponent&&!state.floors?.[currentFloorID]?.walkableComponents?.some(component=>component.id===selectedWalkableComponent))selectedWalkableComponent='';if(drag?.type==='token'&&draggedFloor&&state.tokens?.[drag.id]?.floorId!==draggedFloor)drag=null;if(drag?.type?.startsWith('walkable')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision)drag=null;if(drag?.type?.startsWith('renderBounds')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision){drag=null;selectedRenderBoundsVertex=-1;}if(renderBoundsDraft&&renderBoundsDraft.geometryRevision!==state.floors?.[renderBoundsDraft.floorId]?.geometryRevision)renderBoundsDraft=null;
 +   if(pendingActiveFocus&&pendingActiveFocus===state.activeTokenId){const token=navigationToken(pendingActiveFocus);if(token){camera.x=token.x-viewport.w/(2*camera.scale);camera.y=token.y-viewport.h/(2*camera.scale);scheduleViewportSave();}pendingActiveFocus='';}
 +   for(const id of visuals.keys())if(!state.tokens[id])visuals.delete(id);
 +	  rebuildTokenIndex();if(selected&&!state.tokens[selected])select(null);if(selectedElement&&!state.elementCatalog?.[selectedElement])selectElement(null);renderPanels();dirty=true;ensureSceneRegion(currentViewRegion());if(!outbox.inflight)outbox.flush();if(!positionOutbox.inflight)positionOutbox.flush();return;
@@ -15037,7 +15242,7 @@ new file mode 100644
 + renderPanels();dirty=true;return true;
 +}
 +function abortUploads(){for(const controller of uploadControllers)controller.abort();uploadControllers.clear();}
-+function clearSceneState(){saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;viewportSaveDirty=false;abortUploads();select(null);selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;rotationOverrides.clear();tokenIndex.clear();sceneRenderIndex.clear();renderBoundsPaths.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;dirty=true;}
++function clearSceneState(){saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;viewportSaveDirty=false;abortUploads();select(null);selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;rotationOverrides.clear();tokenIndex.clear();sceneRenderIndex.clear();renderBoundsPaths.clear();renderBoundsResources.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;dirty=true;}
 +function rebuildTokenIndex(){tokenIndex.clear();movingTokens.clear();for(const t of Object.values(state.tokens)){tokenIndex.set(t);const v=visuals.get(t.id);if(v&&(v.x!==t.x||v.y!==t.y))movingTokens.add(t.id);}}
 +function renderMembers(){
 + $('members').replaceChildren();let online=0;
@@ -15183,7 +15388,7 @@ new file mode 100644
 + for(const key of failures.keys())if(!wanted.has(key))failures.delete(key);
 + // Size changes no longer abort in-flight work. Camera motion can change a plan
 + // every frame; finishing a slightly stale decode is cheaper than restarting it.
-+ for(const [key,c]of pending)if(!wanted.has(key))c.abort();
++ abortUnwantedImageLoads(pending,wanted);
 + let forecast=memoryBytes;
 + for(const [key,p]of admitted){const e=memory.get(key),c=pending.get(key);if(!imageNeedsDecode(e,p))continue;const target=c?c.width*c.height*4:imageBytes(p);forecast+=Math.max(0,target-(e?.bitmapSize||0));}
 + if(forecast>assetLimit)for(const key of admitted.keys()){const fallbackSize=memory.get(key)?.fallback?.size||0;if(!fallbackSize)continue;dropImageFallback(key);forecast-=fallbackSize;if(forecast<=assetLimit)break;}
@@ -15218,7 +15423,7 @@ new file mode 100644
 + })().catch(e=>{if(e.name!=='AbortError'){failures.set(key,Date.now()+5000);if(failures.size===1)toast('Не удалось загрузить изображения. Повтор через 5 секунд.');}}).finally(()=>{pending.delete(key);activeLoads--;dirty=true;});
 +}
 +function draw(now){const start=performance.now();dirty=false;imagePlans=new Map();fallbackWanted=new Set();const dpr=canvas.width/viewport.w;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#121c1d';ctx.fillRect(0,0,viewport.w,viewport.h);ctx.save();ctx.scale(camera.scale,camera.scale);ctx.translate(-camera.x,-camera.y);const right=camera.x+viewport.w/camera.scale,bottom=camera.y+viewport.h/camera.scale;ensureSceneRegion({left:camera.x,top:camera.y,right,bottom});let tokenAnimating=false,gm=false;
-+ if(state){const floor=state.floors?.[currentFloorID],bounds=renderBoundsAABB(floor?.renderBounds),selectedSceneElement=state.elements?.[selectedElement];gm=isGM(state.you);ctx.save();ctx.fillStyle='#182322';if(bounds){clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);ctx.fillRect(bounds.left,bounds.top,bounds.width,bounds.height);}else ctx.fillRect(camera.x,camera.y,right-camera.x,bottom-camera.y);ctx.restore();drawSceneStack({ctx,state,currentFloorId:currentFloorID,view:{left:camera.x,top:camera.y,right,bottom},camera,dpr,requestImage,peekImage,selectedElement,editor:gm,renderIndex:sceneRenderIndex,renderBoundsPaths,showRotationHandle:elementRotationAllowed(selectedSceneElement),drawTokenLayer:(floorId,alpha)=>{tokenAnimating=drawTokens({ctx,camera,viewport,dpr,tokens:state.tokens,index:tokenIndex,visuals,moving:movingTokens,drag,selected,queue:[...(outbox?.data.queue||[]),...(positionOutbox?.data.queue||[])],requestImage,artwork,delta:now-lastFrame,floorId,alpha,walkableBounds:null,showOutOfBounds:false})||tokenAnimating;}});}
++ if(state){const floor=state.floors?.[currentFloorID],bounds=renderBoundsAABB(floor?.renderBounds),selectedSceneElement=state.elements?.[selectedElement];gm=isGM(state.you);ctx.save();ctx.fillStyle='#182322';if(bounds){clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);ctx.fillRect(bounds.left,bounds.top,bounds.width,bounds.height);}else ctx.fillRect(camera.x,camera.y,right-camera.x,bottom-camera.y);ctx.restore();drawSceneStack({ctx,state,currentFloorId:currentFloorID,view:{left:camera.x,top:camera.y,right,bottom},camera,dpr,requestImage,peekImage,selectedElement,editor:gm,renderIndex:sceneRenderIndex,renderBoundsPaths,resourceBounds:renderBoundsResources,showRotationHandle:elementRotationAllowed(selectedSceneElement),drawTokenLayer:(floorId,alpha)=>{const tokenFloor=state.floors?.[floorId],resourceVisible=!gm&&tokenFloor?.renderBounds?(x,y,radius)=>renderBoundsResources.intersectsCircle(state,tokenFloor,x,y,radius):null;tokenAnimating=drawTokens({ctx,camera,viewport,dpr,tokens:state.tokens,index:tokenIndex,visuals,moving:movingTokens,drag,selected,queue:[...(outbox?.data.queue||[]),...(positionOutbox?.data.queue||[])],requestImage,artwork,delta:now-lastFrame,floorId,alpha,walkableBounds:null,showOutOfBounds:false,resourceVisible})||tokenAnimating;}});}
 + if(grid){const step=100;const screenStep=step*camera.scale;if(screenStep>=12){ctx.save();const floor=state?.floors?.[currentFloorID];if(!gm&&floor?.renderBounds)clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);ctx.strokeStyle='#8ea18a16';ctx.lineWidth=1/camera.scale;ctx.beginPath();for(let x=Math.floor(camera.x/step)*step;x<right;x+=step){ctx.moveTo(x,camera.y);ctx.lineTo(x,bottom);}for(let y=Math.floor(camera.y/step)*step;y<bottom;y+=step){ctx.moveTo(camera.x,y);ctx.lineTo(right,y);}ctx.stroke();ctx.restore();}}
 + if(isGM(state?.you)){drawWalkableEditor(ctx,state,currentFloorID,camera,{drag,selectedId:selectedWalkableComponent});drawRenderBoundsEditor(ctx,state,currentFloorID,camera,{tool:renderBoundsTool,draft:renderBoundsDraft,drag,selectedVertex:selectedRenderBoundsVertex});drawTransitionOverlay(ctx,state,currentFloorID,camera,{selectedId:selectedTransition,draft:transitionDraft,cursor:transitionCursor});}dirty=tokenAnimating||dirty;
 + ctx.restore();scheduleImages();$('zoom').textContent=`${Math.round(camera.scale*100)}%`;frameTime=performance.now()-start;rendered++;
@@ -15227,8 +15432,8 @@ new file mode 100644
 +setInterval(()=>{fps=rendered;rendered=0;trimImages();if(failures.size)dirty=true;$('diagnostics').textContent=`${fps} кадров/с · ${frameTime.toFixed(1)} мс/кадр\nRAM изображений ${((memoryBytes+artwork.bytes)/MIB).toFixed(1)} / ${memoryLimit/MIB} МБ${imageMemorySetting==='auto'?' · Auto':''}\nДиск ${(diskBytes/MIB).toFixed(1)} / ${DISK_LIMIT/MIB} МБ${diskEnabled?'':' · недоступен'} · R/W ${diskReads}/${diskWrites} · evict ${diskEvictions} · drop ${diskDrops}\nТайлы ↓ ${(tileBytes/MIB).toFixed(2)} МБ · кэш ${cacheHits} · LOD fallback ${lodFallbacks}\nDecode ${decodeCount} · ${decodeMs.toFixed(0)} мс суммарно · edge ${decodeEdge} · degrade ${imageDegradations}\nWS ↓ ${(bytesIn/1024).toFixed(1)} ↑ ${(bytesOut/1024).toFixed(1)} КБ\nЗагрузка ${activeLoads} · ошибки ${failures.size}`;},1000);
 diff --git a/web/index.html b/web/index.html
 new file mode 100644
+index 0000000..3f57d9d
 --- /dev/null
-+++ b/web/index.html
 +++ b/web/index.html
 @@ -0,0 +1,12 @@
 +<!doctype html>
@@ -15245,8 +15450,8 @@ new file mode 100644
 +</div><div id="toast" role="status" hidden></div><script type="module" src="/app.js"></script></body></html>
 diff --git a/web/reliability.js b/web/reliability.js
 new file mode 100644
+index 0000000..dfdc41c
 --- /dev/null
-+++ b/web/reliability.js
 +++ b/web/reliability.js
 @@ -0,0 +1,47 @@
 +// Durable commands are sent one at a time. A reconnect resends the same sequence;
@@ -15298,8 +15503,8 @@ new file mode 100644
 +export function imageEdge(count,budget){let edge=512;while(edge>1&&count*edge*edge*4>budget)edge/=2;return edge;}
 diff --git a/web/rendering.js b/web/rendering.js
 new file mode 100644
+index 0000000..377196a
 --- /dev/null
-+++ b/web/rendering.js
 +++ b/web/rendering.js
 @@ -0,0 +1,116 @@
 +export class SpatialIndex {
@@ -15420,10 +15625,10 @@ new file mode 100644
 +export function artworkSpec(t,bitmap,diameter){const d=Math.min(512,Math.max(4,2**Math.ceil(Math.log2(Math.max(1,diameter))))),pad=6,key=JSON.stringify([bitmap?t.asset:t.name.slice(0,1),t.color,d,bitmap?.width,bitmap?.height]);return {key,d,pad,w:d+pad*2,h:d+pad*2,paint(g){const r=d/2,c=pad+r;g.fillStyle=t.color||'#c2d89b';g.shadowColor='#0009';g.shadowBlur=5;g.beginPath();g.arc(c,c,r,0,Math.PI*2);g.fill();g.shadowBlur=0;if(bitmap){g.save();g.clip();const scale=Math.max(d/bitmap.width,d/bitmap.height);g.drawImage(bitmap,c-bitmap.width*scale/2,c-bitmap.height*scale/2,bitmap.width*scale,bitmap.height*scale);g.restore();}else{g.fillStyle='#243224';g.font=`600 ${r}px system-ui`;g.textAlign='center';g.textBaseline='middle';g.fillText(t.name.slice(0,1)||'◆',c,c);}g.strokeStyle='#e2dec0';g.lineWidth=1.5;g.stroke();}};}
 diff --git a/web/scene-content.js b/web/scene-content.js
 new file mode 100644
+index 0000000..953cbf4
 --- /dev/null
 +++ b/web/scene-content.js
-+++ b/web/scene-content.js
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,288 @@
 +export function orderedFloors(state){return Object.values(state?.floors||{}).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id));}
 +export function orderedLayers(state,floorId){return Object.values(state?.layers||{}).filter(layer=>layer.floorId===floorId).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id));}
 +
@@ -15507,6 +15712,42 @@ new file mode 100644
 +  for(const [ax,ay]of axes){let pmin=Infinity,pmax=-Infinity;for(const p of points){const value=p.x*ax+p.y*ay;pmin=Math.min(pmin,value);pmax=Math.max(pmax,value);}const values=[left*ax+top*ay,right*ax+top*ay,right*ax+bottom*ay,left*ax+bottom*ay],rmin=Math.min(...values),rmax=Math.max(...values);if(pmax<rmin||rmax<pmin)return false;}return true;
 +}
 +
++function rectIntersectsSimplePolygon(left,top,right,bottom,points,bounds=polygonBounds(points)){
++  if(right<bounds.left||left>bounds.right||bottom<bounds.top||top>bounds.bottom)return false;
++  for(const point of points)if(point.x>=left&&point.x<=right&&point.y>=top&&point.y<=bottom)return true;
++  const corners=[{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}];if(corners.some(point=>ringContains(points,point.x,point.y)))return true;
++  for(let i=0;i<points.length;i++)for(let j=0;j<corners.length;j++)if(renderBoundsSegmentsIntersect(points[i],points[(i+1)%points.length],corners[j],corners[(j+1)%corners.length]))return true;
++  return false;
++}
++
++export class FloorRenderBoundsResourceCache{
++  constructor(limit=8192,elementLimit=512){this.limit=limit;this.elementLimit=elementLimit;this.sceneId='';this.revisions=new Map();this.floors=new Map();this.elements=new Map();this.classifications=new Map();this.hits=0;this.misses=0;}
++  clear(){this.sceneId='';this.revisions.clear();this.floors.clear();this.elements.clear();this.classifications.clear();}
++  invalidateFloor(floorId){this.revisions.delete(floorId);this.floors.delete(floorId);for(const [key,value]of this.elements)if(value.floorId===floorId)this.elements.delete(key);for(const [key,value]of this.classifications)if(value.floorId===floorId)this.classifications.delete(key);}
++  syncState(state){
++    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}const floors=state?.floors||{},live=new Set(Object.keys(floors));
++    for(const floorId of this.revisions.keys())if(!live.has(floorId))this.invalidateFloor(floorId);for(const floor of Object.values(floors))this.sync(state,floor);
++  }
++  sync(state,floor){
++    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}
++    const previous=this.revisions.get(floor.id),revision=floor.geometryRevision;if(previous===revision)return;if(previous!==undefined)this.invalidateFloor(floor.id);this.revisions.set(floor.id,revision);
++  }
++  floorBounds(state,floor){
++    this.sync(state,floor);let cached=this.floors.get(floor.id);if(cached)return cached;const points=floor.renderBounds?.outer||[];cached={points,bounds:points.length?polygonBounds(points):null};this.floors.set(floor.id,cached);return cached;
++  }
++  localBounds(state,floor,element){
++    this.sync(state,floor);const t=element.transform,signature=`${floor.geometryRevision}:${t.x}:${t.y}:${t.width}:${t.height}:${t.rotation}`,key=`${floor.id}:${element.id}`,cached=this.elements.get(key);if(cached?.signature===signature){this.elements.delete(key);this.elements.set(key,cached);return cached;}
++    const points=(floor.renderBounds?.outer||[]).map(point=>inversePoint(t,point.x,point.y)),entry={floorId:floor.id,signature,points,bounds:points.length?polygonBounds(points):null};this.elements.delete(key);this.elements.set(key,entry);while(this.elements.size>this.elementLimit)this.elements.delete(this.elements.keys().next().value);return entry;
++  }
++  intersectsRect(state,floor,element,rectKey,left,top,right,bottom){
++    if(!floor?.renderBounds)return true;const local=this.localBounds(state,floor,element),key=`${floor.id}:${element.id}:${local.signature}:${rectKey}`,cached=this.classifications.get(key);if(cached){this.hits++;this.classifications.delete(key);this.classifications.set(key,cached);return cached.result;}
++    this.misses++;const result=!!local.bounds&&rectIntersectsSimplePolygon(left,top,right,bottom,local.points,local.bounds);this.classifications.set(key,{floorId:floor.id,result});while(this.classifications.size>this.limit)this.classifications.delete(this.classifications.keys().next().value);return result;
++  }
++  intersectsCircle(state,floor,x,y,radius){
++    if(!floor?.renderBounds)return true;const geometry=this.floorBounds(state,floor),bounds=geometry.bounds;if(!bounds||x+radius<bounds.left||x-radius>bounds.right||y+radius<bounds.top||y-radius>bounds.bottom)return false;if(ringContains(geometry.points,x,y))return true;for(let i=0;i<geometry.points.length;i++)if(renderBoundsEdgeDistance({x,y},geometry.points[i],geometry.points[(i+1)%geometry.points.length])<=radius)return true;return false;
++  }
++}
++
 +export function elementIntersectsView(element,view){const t=element?.transform;if(!t||!view)return false;return rectIntersectsPolygon(0,0,t.width,t.height,viewportPolygon(t,view));}
 +
 +const tilePresenceCache=new WeakMap();
@@ -15535,25 +15776,25 @@ new file mode 100644
 +  return false;
 +}
 +
-+function drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage){
++function drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds){
 +  const t=element.transform,polygon=viewportPolygon(t,view),local=polygonBounds(polygon),sx=t.width/asset.width,sy=t.height/asset.height,screenScale=camera.scale*dpr*Math.max(sx,sy);
 +  const z=Math.max(0,Math.min(asset.levels-1,Math.floor(Math.log2(1/Math.max(screenScale,.000001))))),unit=512*2**z,nx=Math.ceil(asset.width/unit),ny=Math.ceil(asset.height/unit),tileW=unit*sx,tileH=unit*sy;
 +  const x0=Math.max(0,Math.floor(local.left/tileW)),y0=Math.max(0,Math.floor(local.top/tileH)),x1=Math.min(nx-1,Math.floor(local.right/tileW)),y1=Math.min(ny-1,Math.floor(local.bottom/tileH));
-+  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(!rectIntersectsPolygon(left,top,right,bottom,polygon))continue;visible.add(`${x}:${y}`);if(!tileAvailable(asset,z,x,y,nx))continue;const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);else drawTiledFallback(ctx,asset,z,x,y,left,top,right-left,bottom-top,peekImage);}
++  const visible=new Set();for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH),key=`${x}:${y}`;if(!rectIntersectsPolygon(left,top,right,bottom,polygon)||resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,`tile:${z}:${key}`,left,top,right,bottom))continue;visible.add(key);if(!tileAvailable(asset,z,x,y,nx))continue;const bitmap=requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z));if(bitmap)ctx.drawImage(bitmap,left,top,right-left,bottom-top);else drawTiledFallback(ctx,asset,z,x,y,left,top,right-left,bottom-top,peekImage);}
 +  const prefetch=new Set();for(const key of visible){const [x,y]=key.split(':').map(Number);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const px=x+dx,py=y+dy,next=`${px}:${py}`;if(px>=0&&py>=0&&px<nx&&py<ny&&!visible.has(next))prefetch.add(next);}}
-+  for(const key of prefetch){const [x,y]=key.split(':').map(Number);if(tileAvailable(asset,z,x,y,nx))requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
++  for(const key of prefetch){const [x,y]=key.split(':').map(Number),left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,`tile:${z}:${key}`,left,top,right,bottom))continue;if(tileAvailable(asset,z,x,y,nx))requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
 +}
 +
-+function drawElement(ctx,element,asset,view,camera,dpr,requestImage,peekImage){
-+  if(!elementIntersectsView(element,view))return;const t=element.transform;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
-+  if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage);
++function drawElement(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds){
++  if(!elementIntersectsView(element,view))return;const t=element.transform;if(resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,'element',0,0,t.width,t.height))return;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
++  if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds);
 +  else if(asset){const edge=Math.max(t.width,t.height)*camera.scale*dpr,bitmap=requestImage(`${asset.id}/image.png`,edge);if(bitmap)ctx.drawImage(bitmap,0,0,t.width,t.height);else{ctx.fillStyle='#33413d';ctx.fillRect(0,0,t.width,t.height);}}
 +  else{ctx.fillStyle='#422';ctx.fillRect(0,0,t.width,t.height);}ctx.restore();
 +}
 +
-+function drawVisualLayer({ctx,state,layer,floorAlpha,view,camera,dpr,requestImage,peekImage,renderIndex}){
++function drawVisualLayer({ctx,state,layer,floor,floorAlpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds}){
 +  if(!layer.visible||layer.opacity<=0)return;const elements=renderIndex?renderIndex.forLayer(state,layer.id):Object.values(state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
-+  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage,peekImage);}
++  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds);}
 +}
 +
 +function drawSelection(ctx,element,camera,showRotation){
@@ -15577,12 +15818,15 @@ new file mode 100644
 +export class FloorRenderBoundsPathCache{
 +  constructor(){this.sceneId='';this.entries=new Map();this.builds=0;}
 +  clear(){this.sceneId='';this.entries.clear();}
++  syncState(state){const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}const floors=state?.floors||{};for(const [floorId,entry]of this.entries){const floor=floors[floorId];if(!floor?.renderBounds||entry.revision!==floor.geometryRevision)this.entries.delete(floorId);}}
 +  path(state,floor){
 +    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.sceneId=sceneId;this.entries.clear();}
 +    if(!floor?.renderBounds){this.entries.delete(floor?.id);return null;}const cached=this.entries.get(floor.id);if(cached?.revision===floor.geometryRevision)return cached.path;
 +    const path=new Path2D(),points=floor.renderBounds.outer||[];if(points.length){path.moveTo(points[0].x,points[0].y);for(let i=1;i<points.length;i++)path.lineTo(points[i].x,points[i].y);path.closePath();}this.entries.set(floor.id,{revision:floor.geometryRevision,path});this.builds++;return path;
 +  }
 +}
++
++export function abortUnwantedImageLoads(pending,wanted){let aborted=0;for(const [key,controller]of pending)if(!wanted.has(key)&&!controller.signal.aborted){controller.abort();aborted++;}return aborted;}
 +const defaultRenderBoundsPaths=new FloorRenderBoundsPathCache();
 +export function clipFloorRenderBounds(ctx,state,floor,paths=defaultRenderBoundsPaths){const path=paths.path(state,floor);if(!path)return false;ctx.clip(path);return true;}
 +function validRenderBoundsBasics(polygon){
@@ -15624,11 +15868,11 @@ new file mode 100644
 +  ctx.save();ctx.beginPath();traceRenderBounds(ctx,preview.outer,!incomplete);if(polygonDraft&&draft.cursor&&draft.points.length){ctx.moveTo(draft.points.at(-1).x,draft.points.at(-1).y);ctx.lineTo(draft.cursor.x,draft.cursor.y);if(draft.points.length>1)ctx.lineTo(draft.points[0].x,draft.points[0].y);}ctx.fillStyle=invalid?'#e66f6728':'#e2bf5b1f';ctx.strokeStyle=invalid?'#ff8178':'#e7c866';ctx.lineWidth=2/camera.scale;ctx.setLineDash((rectangle||edit||polygonDraft)?[8/camera.scale,5/camera.scale]:[]);if(!incomplete)ctx.fill('evenodd');ctx.stroke();ctx.setLineDash([]);if(tool&&preview.outer.length){const radius=4.5/camera.scale;for(let i=0;i<preview.outer.length;i++){const point=preview.outer[i];ctx.fillStyle=invalid?'#ff8178':i===selectedVertex?'#fff4c5':'#f3d77b';ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fill();}if(tool==='edit'){ctx.strokeStyle='#d7be71aa';ctx.lineWidth=1.5/camera.scale;const size=5/camera.scale;for(let i=0;i<preview.outer.length;i++){const a=preview.outer[i],b=preview.outer[(i+1)%preview.outer.length],x=(a.x+b.x)/2,y=(a.y+b.y)/2;ctx.strokeRect(x-size/2,y-size/2,size,size);}}}ctx.restore();
 +}
 +
-+export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,clipRenderBounds=!editor,showRotationHandle=true}){
++export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,resourceBounds,clipRenderBounds=!editor,showRotationHandle=true}){
 +  for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
 +    if(alpha<=0)continue;const clipped=clipRenderBounds&&floor.renderBounds;if(clipped){ctx.save();clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);}
 +    for(const layer of orderedLayers(state,floor.id)){
-+      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex});
++      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floor,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds:clipped?resourceBounds:null});
 +      else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
 +    }
 +    if(clipped)ctx.restore();
@@ -15673,10 +15917,93 @@ new file mode 100644
 +  }
 +  ctx.restore();
 +}
+diff --git a/web/scene-tree.js b/web/scene-tree.js
+new file mode 100644
+index 0000000..366f0d0
+--- /dev/null
++++ b/web/scene-tree.js
+@@ -0,0 +1,77 @@
++import {orderedFloors,orderedLayers} from './scene-content.js';
++const isGM=member=>!!(member?.gm||member?.role==='gm');
++
++const button=(text,title,action)=>{const node=document.createElement('button');node.type='button';node.className='tree-action';node.textContent=text;node.title=title;node.onclick=event=>{event.stopPropagation();action();};return node;};
++
++export class SceneTreeRuntime{
++  constructor(elements,{queue,selectElement,selectTransition,beginTransition,setFloor,getFloor,focusElement,setWalkableTool,getWalkableTool,setRenderBoundsTool,getRenderBoundsTool}){
++    this.elements=elements;this.queue=queue;this.selectElement=selectElement;this.selectTransition=selectTransition;this.beginTransition=beginTransition;this.setFloor=setFloor;this.getFloor=getFloor;this.focusElement=focusElement;this.setWalkableTool=setWalkableTool||(()=>{});this.getWalkableTool=getWalkableTool||(()=> '');this.setRenderBoundsTool=setRenderBoundsTool||(()=>{});this.getRenderBoundsTool=getRenderBoundsTool||(()=> '');this.state=null;this.structureKey='';this.rebuilds=0;this.elementRows=new Map();this.transitionRows=new Map();this.floorSections=new Map();this.selectedElement='';this.selectedTransition='';this.currentFloor='';
++    elements.addFloor.onclick=()=>this.createFloor();elements.addLayer.onclick=()=>this.createLayer();elements.addTransition.onclick=()=>this.beginTransition();
++  }
++
++  update(state,selectedElement,selectedTransition=''){
++    const gm=isGM(state.you),catalog=gm?(state.elementCatalog||{}):state.elements||{};this.state={...state,elements:catalog};const floors=orderedFloors(this.state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
++    for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
++    const floorStructure=floors.map(floor=>[floor.id,floor.name,floor.order,floor.opacity,floor.opacityWhenViewedFromBelow,floor.walkableMode,floor.geometryRevision,floor.walkableComponents?.length||0,!!floor.renderBounds]);
++    const structureKey=JSON.stringify([state.scene.id,state._catalogVersion||0,floorStructure,state.layers,state.transitions,gm,this.getWalkableTool(),this.getRenderBoundsTool()]);
++    if(structureKey!==this.structureKey){this.structureKey=structureKey;this.rebuilds++;this.elementRows.clear();this.transitionRows.clear();this.floorSections.clear();this.elements.tree.replaceChildren();if(gm)for(const floor of [...floors].reverse())this.elements.tree.append(this.floorNode(floor,current,selectedElement));if(gm&&Object.keys(state.transitions||{}).length)this.elements.tree.append(this.transitionSection(selectedTransition));this.selectedElement=selectedElement||'';this.selectedTransition=selectedTransition||'';this.currentFloor=current;return;}
++    if(this.selectedElement!==(selectedElement||'')){this.elementRows.get(this.selectedElement)?.classList.remove('selected');this.elementRows.get(selectedElement)?.classList.add('selected');this.selectedElement=selectedElement||'';}
++    if(this.selectedTransition!==(selectedTransition||'')){this.transitionRows.get(this.selectedTransition)?.classList.remove('selected');this.transitionRows.get(selectedTransition)?.classList.add('selected');this.selectedTransition=selectedTransition||'';}
++    if(this.currentFloor!==current){this.floorSections.get(this.currentFloor)?.classList.remove('active');this.floorSections.get(current)?.classList.add('active');this.currentFloor=current;}
++  }
++
++  createFloor(){if(orderedFloors(this.state).length>=2){alert('Сейчас сцена поддерживает не больше двух этажей');return;}const name=prompt('Название этажа','Новый этаж')?.trim();if(!name)return;const order=Math.max(-1,...orderedFloors(this.state).map(f=>f.order))+1;this.queue('floorCreate',{floor:{name,order}});}
++  createLayer(){const floorId=this.getFloor();if(!floorId)return;const name=prompt('Название слоя','Новый слой')?.trim();if(!name)return;const order=Math.max(-1,...orderedLayers(this.state,floorId).filter(layer=>layer.kind!=='walkable').map(layer=>layer.order))+1;this.queue('layerCreate',{layer:{floorId,name,order}});}
++  transitionSection(selectedTransition){
++    const section=document.createElement('section');section.className='tree-transitions';const head=document.createElement('div');head.className='tree-row tree-transition-heading';const label=document.createElement('strong');label.textContent='Переходы';head.append(label);section.append(head);
++    const items=Object.values(this.state.transitions||{}).sort((a,b)=>(a.name||'').localeCompare(b.name||'')||a.id.localeCompare(b.id));
++    items.forEach((transition,index)=>{const row=document.createElement('div');row.className='tree-row tree-transition-row'+(transition.id===selectedTransition?' selected':'');row.dataset.transitionId=transition.id;this.transitionRows.set(transition.id,row);const name=document.createElement('span');name.textContent=transition.name||`Переход #${index+1}`;row.append(name);row.onclick=()=>{const floorId=transition.endpointA?.floorId;if(floorId&&floorId!==this.getFloor())this.setFloor(floorId);this.selectTransition(transition.id);};section.append(row);});return section;
++  }
++
++  floorNode(floor,current,selectedElement){
++    const section=document.createElement('section');section.className='tree-floor'+(floor.id===current?' active':'');section.dataset.floorId=floor.id;this.floorSections.set(floor.id,section);
++    const head=document.createElement('div');head.className='tree-row tree-floor-row';const label=document.createElement('strong');label.textContent=floor.name;head.append(label);head.onclick=()=>this.setFloor(floor.id);
++    head.append(button(`${Math.round(floor.opacity*100)}%`,'Непрозрачность этажа',()=>this.updateFloorAlpha(floor,'opacity','Непрозрачность этажа, %')),button(`↑${Math.round(floor.opacityWhenViewedFromBelow*100)}%`,'Видимость снизу',()=>this.updateFloorAlpha(floor,'opacityWhenViewedFromBelow','Непрозрачность при просмотре снизу, %')),button('✎','Переименовать',()=>{const name=prompt('Название этажа',floor.name)?.trim();if(name)this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{name}});}),button('↑','Поднять',()=>this.shiftFloor(floor,1)),button('↓','Опустить',()=>this.shiftFloor(floor,-1)),button('×','Удалить',()=>{if(confirm(`Удалить этаж «${floor.name}»?`))this.queue('floorDelete',{floor:{id:floor.id}});}));
++    section.append(head,this.renderBoundsNode(floor));for(const layer of [...orderedLayers(this.state,floor.id)].reverse())section.append(this.layerNode(layer,selectedElement));return section;
++  }
++
++  renderBoundsNode(floor){
++    const row=document.createElement('div');row.className='tree-row tree-render-bounds';row.dataset.boundsState=floor.renderBounds?'set':'none';row.dataset.geometryRevision=String(floor.geometryRevision);const label=document.createElement('span');label.textContent=`Граница · ${floor.renderBounds?'задана':'нет'}`;const tool=this.getRenderBoundsTool(),rect=button('▭','Создать прямоугольную границу отрисовки',()=>this.setRenderBoundsTool(tool==='rect'?'':'rect')),polygon=button('◇','Нарисовать границу отрисовки',()=>this.setRenderBoundsTool(tool==='polygon'?'':'polygon')),edit=button('⌘','Редактировать границу отрисовки',()=>this.setRenderBoundsTool(tool==='edit'?'':'edit')),clear=button('×','Удалить границу отрисовки',()=>this.clearRenderBounds(floor));rect.classList.toggle('active',tool==='rect');polygon.classList.toggle('active',tool==='polygon');edit.classList.toggle('active',tool==='edit');edit.disabled=!floor.renderBounds;clear.disabled=!floor.renderBounds;row.append(label,rect,polygon,edit,clear);return row;
++  }
++
++  clearRenderBounds(floor){if(floor.renderBounds&&confirm('Удалить границу отрисовки этого этажа?'))this.queue('clearRenderBounds',{floorId:floor.id,expectedGeometryRevision:floor.geometryRevision});}
++
++  updateFloorAlpha(floor,field,title){const value=prompt(title,String(Math.round(floor[field]*100)));if(value===null)return;const opacity=Number(value)/100;if(Number.isFinite(opacity)&&opacity>=0&&opacity<=1)this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{[field]:opacity}});}
++
++  layerNode(layer,selectedElement){
++    const section=document.createElement('div');section.className=`tree-layer tree-layer-${layer.kind}`;section.dataset.layerId=layer.id;
++    if(layer.kind==='visual'){section.ondragover=event=>event.preventDefault();section.ondrop=event=>{event.preventDefault();const id=event.dataTransfer.getData('text/atlas-element');if(id)this.moveElementToLayer(id,layer);};}
++    const head=document.createElement('div');head.className='tree-row tree-layer-row';const label=document.createElement('span');label.textContent=layer.name;head.append(label);
++    if(layer.kind==='visual'){
++      head.prepend(button(layer.visible?'◉':'○','Видимость',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{visible:!layer.visible}})));
++      head.append(button(layer.locked?'🔒':'🔓','Блокировка',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{locked:!layer.locked}})),button(`${Math.round(layer.opacity*100)}%`,'Непрозрачность слоя',()=>{const value=prompt('Непрозрачность слоя, %',String(Math.round(layer.opacity*100)));if(value===null)return;const opacity=Number(value)/100;if(Number.isFinite(opacity)&&opacity>=0&&opacity<=1)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{opacity}});}),button('✎','Переименовать',()=>this.renameLayer(layer)),button('↑','Поднять',()=>this.shiftLayer(layer,1)),button('↓','Опустить',()=>this.shiftLayer(layer,-1)),button('×','Удалить',()=>{if(confirm(`Удалить слой «${layer.name}»?`))this.queue('layerDelete',{layer:{id:layer.id}});}));
++    }else if(layer.kind==='tokens'){
++      label.textContent=`◆ ${layer.name}`;head.append(button('✎','Переименовать',()=>this.renameLayer(layer)),button('↑','Поднять',()=>this.shiftLayer(layer,1)),button('↓','Опустить',()=>this.shiftLayer(layer,-1)));
++    }else{
++      const floor=this.state.floors[layer.floorId],tool=this.getWalkableTool();section.dataset.componentCount=String(floor.walkableComponents?.length||0);section.dataset.geometryRevision=String(floor.geometryRevision);label.textContent=`▧ ${layer.name} · ${section.dataset.componentCount}`;
++      const mode=button(floor.walkableMode==='restricted'?'Огр.':'Своб.','Переключить ограничение движения',()=>this.editWalkable(floor)),add=button('＋','Добавить проходимую область',()=>this.setWalkableTool(tool==='add'?'':'add')),subtract=button('−','Вычесть проходимую область',()=>this.setWalkableTool(tool==='subtract'?'':'subtract')),move=button('↔','Перемещать проходимые компоненты',()=>this.setWalkableTool(tool==='move'?'':'move'));
++      add.classList.toggle('active',tool==='add');subtract.classList.toggle('active',tool==='subtract');move.classList.toggle('active',tool==='move');head.append(mode,add,subtract,move);
++    }
++    section.append(head);if(layer.kind==='visual'){const elements=Object.values(this.state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>b.zOrder-a.zOrder||a.id.localeCompare(b.id));for(const element of elements)section.append(this.elementNode(element,selectedElement));}return section;
++  }
++
++  renameLayer(layer){const name=prompt('Название слоя',layer.name)?.trim();if(name)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{name}});}
++  editWalkable(floor){this.queue('setWalkableMode',{floorId:floor.id,expectedGeometryRevision:floor.geometryRevision,walkableMode:floor.walkableMode==='restricted'?'unrestricted':'restricted'});}
++
++  elementNode(element,selectedElement){
++    const row=document.createElement('div');row.className='tree-row tree-element-row'+(element.id===selectedElement?' selected':'');row.draggable=true;row.dataset.elementId=element.id;this.elementRows.set(element.id,row);row.onclick=()=>{this.setFloor(element.floorId,true);this.selectElement(element.id);};row.ondragstart=event=>{event.stopPropagation();event.dataTransfer.setData('text/atlas-element',element.id);};row.ondragover=event=>event.preventDefault();row.ondrop=event=>{event.preventDefault();event.stopPropagation();const id=event.dataTransfer.getData('text/atlas-element');if(id&&id!==element.id)this.dropElement(id,element);};
++    const name=document.createElement('span');name.textContent=element.name||'Изображение';row.append(name,button('⌖','Центрировать на элементе',()=>this.focusElement(element)),button('↑','На один уровень вперёд',()=>this.shiftElement(element,1)),button('↓','На один уровень назад',()=>this.shiftElement(element,-1)),button('⇈','На передний план',()=>this.moveElementZ(element,true)),button('⇊','На задний план',()=>this.moveElementZ(element,false)));return row;
++  }
++
++  moveElementToLayer(id,layer){const element=this.state.elements?.[id];if(!element||layer.kind!=='visual')return;const zOrder=Math.max(-1,...Object.values(this.state.elements).filter(item=>item.layerId===layer.id).map(item=>item.zOrder))+1;this.queue('elementUpdate',{element:{id},elementProperties:{floorId:layer.floorId,layerId:layer.id,zOrder}});this.setFloor(layer.floorId);}
++  dropElement(id,target){const element=this.state.elements?.[id];if(!element)return;if(element.layerId!==target.layerId){this.queue('elementUpdate',{element:{id},elementProperties:{floorId:target.floorId,layerId:target.layerId,zOrder:target.zOrder+1}});this.setFloor(target.floorId);return;}this.queue('elementUpdate',{element:{id},elementProperties:{zOrder:target.zOrder}});this.queue('elementUpdate',{element:{id:target.id},elementProperties:{zOrder:element.zOrder}});}
++  shiftElement(element,direction){const list=Object.values(this.state.elements).filter(item=>item.layerId===element.layerId).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id)),index=list.findIndex(item=>item.id===element.id),other=list[index+direction];if(!other)return;this.queue('elementUpdate',{element:{id:element.id},elementProperties:{zOrder:other.zOrder}});this.queue('elementUpdate',{element:{id:other.id},elementProperties:{zOrder:element.zOrder}});}
++  moveElementZ(element,front){const values=Object.values(this.state.elements).filter(item=>item.layerId===element.layerId).map(item=>item.zOrder),zOrder=front?Math.max(...values)+1:Math.min(...values)-1;this.queue('elementUpdate',{element:{id:element.id},elementProperties:{zOrder}});}
++  shiftFloor(floor,direction){const list=orderedFloors(this.state),index=list.findIndex(item=>item.id===floor.id),other=list[index+direction];if(!other)return;this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{order:other.order}});this.queue('floorUpdate',{floor:{id:other.id},floorProperties:{order:floor.order}});}
++  shiftLayer(layer,direction){const list=orderedLayers(this.state,layer.floorId).filter(item=>item.kind!=='walkable'),index=list.findIndex(item=>item.id===layer.id),other=list[index+direction];if(!other)return;this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{order:other.order}});this.queue('layerUpdate',{layer:{id:other.id},layerProperties:{order:layer.order}});}
++}
 diff --git a/web/scenes.css b/web/scenes.css
 new file mode 100644
+index 0000000..34abe02
 --- /dev/null
-+++ b/web/scenes.css
 +++ b/web/scenes.css
 @@ -0,0 +1,196 @@
 +.scene-tabs {
@@ -15877,8 +16204,8 @@ new file mode 100644
 +.transition-endpoint label { margin-bottom: 9px; }
 diff --git a/web/scenes.js b/web/scenes.js
 new file mode 100644
+index 0000000..5725153
 --- /dev/null
-+++ b/web/scenes.js
 +++ b/web/scenes.js
 @@ -0,0 +1,42 @@
 +export function needsActiveTokenRequest(token,focus,confirmedTokenID,confirmedFloorID,pending){return !!focus||!!pending||token?.id!==confirmedTokenID||token?.floorId!==confirmedFloorID;}
@@ -15923,105 +16250,22 @@ new file mode 100644
 +  showHome(){this.elements.home.hidden=false;this.elements.workspace.hidden=true;this.elements.footer.hidden=true;this.elements.back.hidden=true;this.elements.sceneTabs.hidden=true;}
 +  showScene(){this.elements.home.hidden=true;this.elements.workspace.hidden=false;this.elements.footer.hidden=false;this.elements.back.hidden=false;this.elements.sceneTabs.hidden=false;}
 +}
-diff --git a/web/scene-tree.js b/web/scene-tree.js
-new file mode 100644
---- /dev/null
-+++ b/web/scene-tree.js
-+++ b/web/scene-tree.js
-@@ -0,0 +1,77 @@
-+import {orderedFloors,orderedLayers} from './scene-content.js';
-+const isGM=member=>!!(member?.gm||member?.role==='gm');
-+
-+const button=(text,title,action)=>{const node=document.createElement('button');node.type='button';node.className='tree-action';node.textContent=text;node.title=title;node.onclick=event=>{event.stopPropagation();action();};return node;};
-+
-+export class SceneTreeRuntime{
-+  constructor(elements,{queue,selectElement,selectTransition,beginTransition,setFloor,getFloor,focusElement,setWalkableTool,getWalkableTool,setRenderBoundsTool,getRenderBoundsTool}){
-+    this.elements=elements;this.queue=queue;this.selectElement=selectElement;this.selectTransition=selectTransition;this.beginTransition=beginTransition;this.setFloor=setFloor;this.getFloor=getFloor;this.focusElement=focusElement;this.setWalkableTool=setWalkableTool||(()=>{});this.getWalkableTool=getWalkableTool||(()=> '');this.setRenderBoundsTool=setRenderBoundsTool||(()=>{});this.getRenderBoundsTool=getRenderBoundsTool||(()=> '');this.state=null;this.structureKey='';this.rebuilds=0;this.elementRows=new Map();this.transitionRows=new Map();this.floorSections=new Map();this.selectedElement='';this.selectedTransition='';this.currentFloor='';
-+    elements.addFloor.onclick=()=>this.createFloor();elements.addLayer.onclick=()=>this.createLayer();elements.addTransition.onclick=()=>this.beginTransition();
-+  }
-+
-+  update(state,selectedElement,selectedTransition=''){
-+    const gm=isGM(state.you),catalog=gm?(state.elementCatalog||{}):state.elements||{};this.state={...state,elements:catalog};const floors=orderedFloors(this.state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
-+    for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
-+    const floorStructure=floors.map(floor=>[floor.id,floor.name,floor.order,floor.opacity,floor.opacityWhenViewedFromBelow,floor.walkableMode,floor.geometryRevision,floor.walkableComponents?.length||0,!!floor.renderBounds]);
-+    const structureKey=JSON.stringify([state.scene.id,state._catalogVersion||0,floorStructure,state.layers,state.transitions,gm,this.getWalkableTool(),this.getRenderBoundsTool()]);
-+    if(structureKey!==this.structureKey){this.structureKey=structureKey;this.rebuilds++;this.elementRows.clear();this.transitionRows.clear();this.floorSections.clear();this.elements.tree.replaceChildren();if(gm)for(const floor of [...floors].reverse())this.elements.tree.append(this.floorNode(floor,current,selectedElement));if(gm&&Object.keys(state.transitions||{}).length)this.elements.tree.append(this.transitionSection(selectedTransition));this.selectedElement=selectedElement||'';this.selectedTransition=selectedTransition||'';this.currentFloor=current;return;}
-+    if(this.selectedElement!==(selectedElement||'')){this.elementRows.get(this.selectedElement)?.classList.remove('selected');this.elementRows.get(selectedElement)?.classList.add('selected');this.selectedElement=selectedElement||'';}
-+    if(this.selectedTransition!==(selectedTransition||'')){this.transitionRows.get(this.selectedTransition)?.classList.remove('selected');this.transitionRows.get(selectedTransition)?.classList.add('selected');this.selectedTransition=selectedTransition||'';}
-+    if(this.currentFloor!==current){this.floorSections.get(this.currentFloor)?.classList.remove('active');this.floorSections.get(current)?.classList.add('active');this.currentFloor=current;}
-+  }
-+
-+  createFloor(){if(orderedFloors(this.state).length>=2){alert('Сейчас сцена поддерживает не больше двух этажей');return;}const name=prompt('Название этажа','Новый этаж')?.trim();if(!name)return;const order=Math.max(-1,...orderedFloors(this.state).map(f=>f.order))+1;this.queue('floorCreate',{floor:{name,order}});}
-+  createLayer(){const floorId=this.getFloor();if(!floorId)return;const name=prompt('Название слоя','Новый слой')?.trim();if(!name)return;const order=Math.max(-1,...orderedLayers(this.state,floorId).filter(layer=>layer.kind!=='walkable').map(layer=>layer.order))+1;this.queue('layerCreate',{layer:{floorId,name,order}});}
-+  transitionSection(selectedTransition){
-+    const section=document.createElement('section');section.className='tree-transitions';const head=document.createElement('div');head.className='tree-row tree-transition-heading';const label=document.createElement('strong');label.textContent='Переходы';head.append(label);section.append(head);
-+    const items=Object.values(this.state.transitions||{}).sort((a,b)=>(a.name||'').localeCompare(b.name||'')||a.id.localeCompare(b.id));
-+    items.forEach((transition,index)=>{const row=document.createElement('div');row.className='tree-row tree-transition-row'+(transition.id===selectedTransition?' selected':'');row.dataset.transitionId=transition.id;this.transitionRows.set(transition.id,row);const name=document.createElement('span');name.textContent=transition.name||`Переход #${index+1}`;row.append(name);row.onclick=()=>{const floorId=transition.endpointA?.floorId;if(floorId&&floorId!==this.getFloor())this.setFloor(floorId);this.selectTransition(transition.id);};section.append(row);});return section;
-+  }
-+
-+  floorNode(floor,current,selectedElement){
-+    const section=document.createElement('section');section.className='tree-floor'+(floor.id===current?' active':'');section.dataset.floorId=floor.id;this.floorSections.set(floor.id,section);
-+    const head=document.createElement('div');head.className='tree-row tree-floor-row';const label=document.createElement('strong');label.textContent=floor.name;head.append(label);head.onclick=()=>this.setFloor(floor.id);
-+    head.append(button(`${Math.round(floor.opacity*100)}%`,'Непрозрачность этажа',()=>this.updateFloorAlpha(floor,'opacity','Непрозрачность этажа, %')),button(`↑${Math.round(floor.opacityWhenViewedFromBelow*100)}%`,'Видимость снизу',()=>this.updateFloorAlpha(floor,'opacityWhenViewedFromBelow','Непрозрачность при просмотре снизу, %')),button('✎','Переименовать',()=>{const name=prompt('Название этажа',floor.name)?.trim();if(name)this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{name}});}),button('↑','Поднять',()=>this.shiftFloor(floor,1)),button('↓','Опустить',()=>this.shiftFloor(floor,-1)),button('×','Удалить',()=>{if(confirm(`Удалить этаж «${floor.name}»?`))this.queue('floorDelete',{floor:{id:floor.id}});}));
-+    section.append(head,this.renderBoundsNode(floor));for(const layer of [...orderedLayers(this.state,floor.id)].reverse())section.append(this.layerNode(layer,selectedElement));return section;
-+  }
-+
-+  renderBoundsNode(floor){
-+    const row=document.createElement('div');row.className='tree-row tree-render-bounds';row.dataset.boundsState=floor.renderBounds?'set':'none';row.dataset.geometryRevision=String(floor.geometryRevision);const label=document.createElement('span');label.textContent=`Граница · ${floor.renderBounds?'задана':'нет'}`;const tool=this.getRenderBoundsTool(),rect=button('▭','Создать прямоугольную границу отрисовки',()=>this.setRenderBoundsTool(tool==='rect'?'':'rect')),polygon=button('◇','Нарисовать границу отрисовки',()=>this.setRenderBoundsTool(tool==='polygon'?'':'polygon')),edit=button('⌘','Редактировать границу отрисовки',()=>this.setRenderBoundsTool(tool==='edit'?'':'edit')),clear=button('×','Удалить границу отрисовки',()=>this.clearRenderBounds(floor));rect.classList.toggle('active',tool==='rect');polygon.classList.toggle('active',tool==='polygon');edit.classList.toggle('active',tool==='edit');edit.disabled=!floor.renderBounds;clear.disabled=!floor.renderBounds;row.append(label,rect,polygon,edit,clear);return row;
-+  }
-+
-+  clearRenderBounds(floor){if(floor.renderBounds&&confirm('Удалить границу отрисовки этого этажа?'))this.queue('clearRenderBounds',{floorId:floor.id,expectedGeometryRevision:floor.geometryRevision});}
-+
-+  updateFloorAlpha(floor,field,title){const value=prompt(title,String(Math.round(floor[field]*100)));if(value===null)return;const opacity=Number(value)/100;if(Number.isFinite(opacity)&&opacity>=0&&opacity<=1)this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{[field]:opacity}});}
-+
-+  layerNode(layer,selectedElement){
-+    const section=document.createElement('div');section.className=`tree-layer tree-layer-${layer.kind}`;section.dataset.layerId=layer.id;
-+    if(layer.kind==='visual'){section.ondragover=event=>event.preventDefault();section.ondrop=event=>{event.preventDefault();const id=event.dataTransfer.getData('text/atlas-element');if(id)this.moveElementToLayer(id,layer);};}
-+    const head=document.createElement('div');head.className='tree-row tree-layer-row';const label=document.createElement('span');label.textContent=layer.name;head.append(label);
-+    if(layer.kind==='visual'){
-+      head.prepend(button(layer.visible?'◉':'○','Видимость',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{visible:!layer.visible}})));
-+      head.append(button(layer.locked?'🔒':'🔓','Блокировка',()=>this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{locked:!layer.locked}})),button(`${Math.round(layer.opacity*100)}%`,'Непрозрачность слоя',()=>{const value=prompt('Непрозрачность слоя, %',String(Math.round(layer.opacity*100)));if(value===null)return;const opacity=Number(value)/100;if(Number.isFinite(opacity)&&opacity>=0&&opacity<=1)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{opacity}});}),button('✎','Переименовать',()=>this.renameLayer(layer)),button('↑','Поднять',()=>this.shiftLayer(layer,1)),button('↓','Опустить',()=>this.shiftLayer(layer,-1)),button('×','Удалить',()=>{if(confirm(`Удалить слой «${layer.name}»?`))this.queue('layerDelete',{layer:{id:layer.id}});}));
-+    }else if(layer.kind==='tokens'){
-+      label.textContent=`◆ ${layer.name}`;head.append(button('✎','Переименовать',()=>this.renameLayer(layer)),button('↑','Поднять',()=>this.shiftLayer(layer,1)),button('↓','Опустить',()=>this.shiftLayer(layer,-1)));
-+    }else{
-+      const floor=this.state.floors[layer.floorId],tool=this.getWalkableTool();section.dataset.componentCount=String(floor.walkableComponents?.length||0);section.dataset.geometryRevision=String(floor.geometryRevision);label.textContent=`▧ ${layer.name} · ${section.dataset.componentCount}`;
-+      const mode=button(floor.walkableMode==='restricted'?'Огр.':'Своб.','Переключить ограничение движения',()=>this.editWalkable(floor)),add=button('＋','Добавить проходимую область',()=>this.setWalkableTool(tool==='add'?'':'add')),subtract=button('−','Вычесть проходимую область',()=>this.setWalkableTool(tool==='subtract'?'':'subtract')),move=button('↔','Перемещать проходимые компоненты',()=>this.setWalkableTool(tool==='move'?'':'move'));
-+      add.classList.toggle('active',tool==='add');subtract.classList.toggle('active',tool==='subtract');move.classList.toggle('active',tool==='move');head.append(mode,add,subtract,move);
-+    }
-+    section.append(head);if(layer.kind==='visual'){const elements=Object.values(this.state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>b.zOrder-a.zOrder||a.id.localeCompare(b.id));for(const element of elements)section.append(this.elementNode(element,selectedElement));}return section;
-+  }
-+
-+  renameLayer(layer){const name=prompt('Название слоя',layer.name)?.trim();if(name)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{name}});}
-+  editWalkable(floor){this.queue('setWalkableMode',{floorId:floor.id,expectedGeometryRevision:floor.geometryRevision,walkableMode:floor.walkableMode==='restricted'?'unrestricted':'restricted'});}
-+
-+  elementNode(element,selectedElement){
-+    const row=document.createElement('div');row.className='tree-row tree-element-row'+(element.id===selectedElement?' selected':'');row.draggable=true;row.dataset.elementId=element.id;this.elementRows.set(element.id,row);row.onclick=()=>{this.setFloor(element.floorId,true);this.selectElement(element.id);};row.ondragstart=event=>{event.stopPropagation();event.dataTransfer.setData('text/atlas-element',element.id);};row.ondragover=event=>event.preventDefault();row.ondrop=event=>{event.preventDefault();event.stopPropagation();const id=event.dataTransfer.getData('text/atlas-element');if(id&&id!==element.id)this.dropElement(id,element);};
-+    const name=document.createElement('span');name.textContent=element.name||'Изображение';row.append(name,button('⌖','Центрировать на элементе',()=>this.focusElement(element)),button('↑','На один уровень вперёд',()=>this.shiftElement(element,1)),button('↓','На один уровень назад',()=>this.shiftElement(element,-1)),button('⇈','На передний план',()=>this.moveElementZ(element,true)),button('⇊','На задний план',()=>this.moveElementZ(element,false)));return row;
-+  }
-+
-+  moveElementToLayer(id,layer){const element=this.state.elements?.[id];if(!element||layer.kind!=='visual')return;const zOrder=Math.max(-1,...Object.values(this.state.elements).filter(item=>item.layerId===layer.id).map(item=>item.zOrder))+1;this.queue('elementUpdate',{element:{id},elementProperties:{floorId:layer.floorId,layerId:layer.id,zOrder}});this.setFloor(layer.floorId);}
-+  dropElement(id,target){const element=this.state.elements?.[id];if(!element)return;if(element.layerId!==target.layerId){this.queue('elementUpdate',{element:{id},elementProperties:{floorId:target.floorId,layerId:target.layerId,zOrder:target.zOrder+1}});this.setFloor(target.floorId);return;}this.queue('elementUpdate',{element:{id},elementProperties:{zOrder:target.zOrder}});this.queue('elementUpdate',{element:{id:target.id},elementProperties:{zOrder:element.zOrder}});}
-+  shiftElement(element,direction){const list=Object.values(this.state.elements).filter(item=>item.layerId===element.layerId).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id)),index=list.findIndex(item=>item.id===element.id),other=list[index+direction];if(!other)return;this.queue('elementUpdate',{element:{id:element.id},elementProperties:{zOrder:other.zOrder}});this.queue('elementUpdate',{element:{id:other.id},elementProperties:{zOrder:element.zOrder}});}
-+  moveElementZ(element,front){const values=Object.values(this.state.elements).filter(item=>item.layerId===element.layerId).map(item=>item.zOrder),zOrder=front?Math.max(...values)+1:Math.min(...values)-1;this.queue('elementUpdate',{element:{id:element.id},elementProperties:{zOrder}});}
-+  shiftFloor(floor,direction){const list=orderedFloors(this.state),index=list.findIndex(item=>item.id===floor.id),other=list[index+direction];if(!other)return;this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{order:other.order}});this.queue('floorUpdate',{floor:{id:other.id},floorProperties:{order:floor.order}});}
-+  shiftLayer(layer,direction){const list=orderedLayers(this.state,layer.floorId).filter(item=>item.kind!=='walkable'),index=list.findIndex(item=>item.id===layer.id),other=list[index+direction];if(!other)return;this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{order:other.order}});this.queue('layerUpdate',{layer:{id:other.id},layerProperties:{order:layer.order}});}
-+}
 diff --git a/web/style.css b/web/style.css
 new file mode 100644
+index 0000000..4bb3a24
 --- /dev/null
-+++ b/web/style.css
 +++ b/web/style.css
 @@ -0,0 +1 @@
 +:root{color-scheme:dark;--bg:#111719;--panel:#192123;--border:#2c3637;--muted:#829391;--text:#e5eae1;--accent:#c2d89b}.tree-action.active{color:#edf8d5;background:#46534f;box-shadow:inset 0 0 0 1px #78916f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}button,input,select{font:inherit}button,.file-button{border:1px solid var(--border);border-radius:6px;background:#242e2f;color:var(--text);padding:10px 13px;cursor:pointer;transition:background .15s}button:hover,.file-button:hover{background:#344142}button:disabled,input:disabled,select:disabled{opacity:.45;cursor:not-allowed;color:#81908b}input,select{width:100%;padding:10px;background:#11191a;border:1px solid #354142;border-radius:5px;color:var(--text);outline:none}input:focus,select:focus{border-color:var(--accent)}input[type=color]{height:42px;padding:5px}input[type=checkbox]{width:auto;accent-color:var(--accent)}label{display:block;color:#aebbb5;font-size:12px;margin-bottom:15px}label input,label select{margin-top:6px}a{color:inherit;text-decoration:none}small,.muted{color:var(--muted);font-size:12px}.primary{background:var(--accent);border-color:var(--accent);color:#253021;font-weight:650}.primary:hover{background:#d4e7b5}.wide{width:100%;margin-top:8px}.subtle{background:transparent;font-size:12px}.danger{color:#e5a099;background:transparent}.icon{font-size:23px;padding:0 8px;line-height:28px}.badge{font-size:10px;border:1px solid #3b4945;border-radius:4px;padding:3px 7px;color:#bdcdb5;white-space:nowrap}.divider{border-top:1px solid var(--border);margin:24px 0}.panel-heading{display:flex;align-items:center;justify-content:space-between;font-size:10px;letter-spacing:1.7px;color:#9caaa3;font-weight:650;min-height:28px}h2{font-size:17px;font-weight:550;margin:8px 0 18px}header{height:78px;padding:0 26px;display:flex;gap:20px;align-items:center;border-bottom:1px solid var(--border);background:#192123}.brand{font-size:22px;color:var(--accent);letter-spacing:3px}.brand b{font-size:17px}.separator{height:30px;border-left:1px solid #3b4542}header small{font-size:9px;letter-spacing:1.7px}.header-right{margin-left:auto;display:flex;align-items:center;gap:15px}.status{font-size:11px;color:var(--muted)}.status.connected{color:var(--accent)}.workspace{display:flex;height:calc(100dvh - 110px)}.sidebar{width:250px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);padding:23px 20px;overflow:auto;display:flex;flex-direction:column}.map-card{background:linear-gradient(135deg,#344740,#253333);border:1px solid #4b5b4b;min-height:127px;display:flex;align-items:center;justify-content:center;flex-direction:column;border-radius:7px;padding:12px;text-align:center;gap:5px;margin-bottom:13px}.map-icon{font-size:29px;color:var(--accent)}.map-card strong{font-size:12px;font-weight:500}.map-card small{font-size:10px}.file-button{display:block;text-align:center;margin:0;font-size:12px;padding:9px}.token-list{margin:10px -5px;max-height:260px;overflow:auto}.token-row{width:100%;display:flex;align-items:center;gap:10px;background:transparent;border:1px solid transparent;text-align:left;padding:8px 5px;font-size:12px}.token-row.selected{background:#2b3933;border-color:#50614c}.swatch{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;color:#17221b;flex-shrink:0;font-size:11px;font-weight:bold}.row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.token-row small{margin-left:auto}.member{display:flex;align-items:center;gap:9px;font-size:12px;padding:8px 0}.member small{margin-left:auto;font-size:10px}.member-role-toggle{padding:3px 6px;font-size:9px;white-space:nowrap}#elementOffscreenNote{margin:0 0 14px;padding:8px;border:1px solid var(--border);border-radius:5px}.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#bed99b}.offline{background:#60706b}.sidebar-bottom{margin-top:auto;padding-top:28px;font-size:9px;color:#82948a;white-space:nowrap}.sidebar-bottom span{margin-right:6px}main{position:relative;flex:1;min-width:0;overflow:hidden;background:#10191b}canvas{display:block;width:100%;height:100%;touch-action:none;outline:none;cursor:grab}canvas:active{cursor:grabbing}.scene-label{position:absolute;top:22px;left:25px;padding:8px 13px;background:#1b2625db;border:1px solid #37433f;border-radius:5px;font-size:10px;color:#b5c4b9;display:flex;gap:9px;align-items:center;pointer-events:none}.canvas-tools{position:absolute;bottom:54px;left:50%;transform:translateX(-50%);display:flex;align-items:center;padding:5px;background:#202a2af5;border:1px solid #414e47;border-radius:9px;box-shadow:0 8px 30px #0004;gap:4px}.canvas-tools button{border:0;background:transparent;font-size:20px;padding:3px 9px}.canvas-tools button.active{color:var(--accent);background:#3a4738}.canvas-tools>span{height:21px;border-left:1px solid #455048;margin:0 3px}.canvas-tools output{font-size:11px;min-width:44px;text-align:center}.canvas-hint{position:absolute;bottom:23px;width:100%;text-align:center;color:#8a9c92;font-size:10px;pointer-events:none}.canvas-hint i{font-style:normal;margin:0 7px}.diagnostics{position:absolute;right:14px;top:20px;background:#121b1ae0;padding:9px 11px;border-radius:5px;color:#9fae9f;font:10px/1.7 ui-monospace,monospace;pointer-events:none;white-space:pre}.inspector{width:240px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--border);padding:23px 20px;overflow:auto;display:flex;flex-direction:column}.no-selection{text-align:center;color:#7f9087;padding:50px 0;font-size:12px}.no-selection>span{font-size:38px;color:#70846f}.token-preview{width:70px;height:70px;border-radius:50%;margin:24px auto;display:grid;place-items:center;font-size:30px;color:#1f3025;border:5px solid #ffffff20;box-shadow:0 0 0 1px #738365}.two{display:flex;gap:12px}.two label{width:50%}.check{display:flex;align-items:center;gap:9px;margin:15px 0}.check input{margin:0}.inspector-note{margin-top:auto;padding-top:25px;font-size:11px;color:#90a18f}.inspector-note b{font-weight:550;color:#c1cdbd}.inspector-note p{margin:6px 0 20px}details{border-top:1px solid var(--border);padding-top:16px;font-size:11px;color:#a9b6a4}summary{cursor:pointer}footer{height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-top:1px solid var(--border);font-size:9px;color:#7b8a81;letter-spacing:.5px}footer b{font-weight:400;margin-left:10px;color:#aebbaa}.empty-map{position:absolute;top:40%;width:100%;text-align:center;pointer-events:none;color:#94a28f}.empty-map>span{font-size:50px;color:#748a6c}.empty-map h2{font-size:20px;color:#c3cfba;margin:6px}.empty-map p{font-size:12px}#toast{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);padding:12px 22px;border:1px solid #6d7e57;border-radius:7px;background:#29372c;box-shadow:0 10px 40px #0008;z-index:10;max-width:90vw}.lobby{min-height:100dvh;display:flex;align-items:center;justify-content:center;gap:100px;padding:60px;background:radial-gradient(ellipse at 75% 40%,#2a3b2e66,transparent 60%)}.welcome{max-width:440px}.eyebrow{color:var(--accent);font-size:11px;letter-spacing:3px}h1{font:54px/1.15 Georgia,serif;letter-spacing:-1px;margin:35px 0 20px}h1 em{color:var(--accent);font-weight:400}.welcome>p{color:#a3b09f;line-height:1.8;max-width:370px}.welcome form{margin:32px 0}.welcome form button{width:100%;margin-top:14px;text-align:left;padding:14px}.welcome form button span{float:right}.welcome>small{font-size:10px}.lobby-art{position:relative;width:380px;height:470px;border:1px solid #526344;border-radius:190px 190px 10px 10px;display:grid;place-items:center;background:repeating-linear-gradient(0deg,transparent 0 47px,#839a6210 48px),repeating-linear-gradient(90deg,transparent 0 47px,#839a6210 48px);box-shadow:inset 0 0 80px #132019}.orbit{position:absolute;width:280px;height:280px;border:1px solid #697e4b;border-radius:50%;box-shadow:0 0 0 24px #657b4010,0 0 0 25px #697e4b55}.rune{font-size:210px;color:var(--accent);font-family:Georgia,serif;text-shadow:0 0 40px #b4d17e33}.art-label{position:absolute;bottom:35px;font-size:9px;letter-spacing:2.5px;color:#a9bb94}#resumeList button{margin-bottom:12px;width:100%;text-align:left;font-size:12px}[hidden]{display:none!important}@media(max-width:1100px){.sidebar{width:210px;padding:18px 14px}.inspector{width:210px;padding:18px 14px}.diagnostics{top:67px;left:15px;right:auto}.lobby{gap:50px}.lobby-art{width:300px}}@media(max-width:760px){.lobby{padding:30px}.lobby-art{display:none}h1{font-size:45px}.inspector{width:180px;padding:12px}.sidebar{width:170px;padding:12px}header{padding:0 12px;gap:10px;height:65px}.workspace{height:calc(100dvh - 97px)}.header-right{gap:6px}.header-right button{font-size:10px;padding:8px}.brand b,.separator,header small,.status,.canvas-hint,footer span:last-child{display:none}.canvas-tools{bottom:20px}.scene-label{left:10px;top:10px}.diagnostics{font-size:9px;top:52px;left:10px}}@media(max-width:560px){.sidebar{width:140px}.inspector{position:absolute;right:8px;top:80px;width:175px;max-height:65vh;border:1px solid var(--border);border-radius:8px;display:none}.inspector.has-selection{display:block}.map-card{min-height:90px}.sidebar-bottom{white-space:normal}.badge{display:none}}
 diff --git a/web/token-renderer.js b/web/token-renderer.js
 new file mode 100644
+index 0000000..9d47ae0
 --- /dev/null
-+++ b/web/token-renderer.js
 +++ b/web/token-renderer.js
 @@ -0,0 +1,23 @@
 +import {artworkSpec} from './rendering.js';
 +
-+export function drawTokens({ctx,camera,viewport,dpr,tokens,index,visuals,moving,drag,selected,queue,requestImage,artwork,delta,floorId,alpha=1,walkableBounds,showOutOfBounds=false}){
++export function drawTokens({ctx,camera,viewport,dpr,tokens,index,visuals,moving,drag,selected,queue,requestImage,artwork,delta,floorId,alpha=1,walkableBounds,showOutOfBounds=false,resourceVisible}){
 + const margin=20/camera.scale;
 + const candidates=new Map(index.query(camera.x-margin,camera.y-margin,camera.x+viewport.w/camera.scale+margin,camera.y+viewport.h/camera.scale+margin).filter(t=>t.floorId===floorId).map(t=>[t.id,t]));
 + const finals=new Map();for(const c of queue)if(c.type==='final'&&tokens[c.token.id]?.floorId===floorId){finals.set(c.token.id,c.token);if(tokens[c.token.id])candidates.set(c.token.id,tokens[c.token.id]);}
@@ -16031,7 +16275,7 @@ new file mode 100644
 + for(const t of candidates.values()){
 +  const v=visuals.get(t.id)||{x:t.x,y:t.y},final=finals.get(t.id);
 +  if(drag?.id===t.id){v.x=drag.x;v.y=drag.y;}else if(final){v.x=final.x;v.y=final.y;}else{const a=Math.min(1,delta/70);v.x+=(t.x-v.x)*a;v.y+=(t.y-v.y)*a;if(Math.abs(t.x-v.x)+Math.abs(t.y-v.y)>.1){animating=true;moving.add(t.id);}else{v.x=t.x;v.y=t.y;moving.delete(t.id);}}
-+  visuals.set(t.id,v);const diameter=t.size*camera.scale,x=(v.x-camera.x)*camera.scale,y=(v.y-camera.y)*camera.scale;if(x+diameter/2<0||y+diameter/2<0||x-diameter/2>viewport.w||y-diameter/2>viewport.h)continue;
++  visuals.set(t.id,v);const diameter=t.size*camera.scale,x=(v.x-camera.x)*camera.scale,y=(v.y-camera.y)*camera.scale;if(x+diameter/2<0||y+diameter/2<0||x-diameter/2>viewport.w||y-diameter/2>viewport.h||resourceVisible&&!resourceVisible(v.x,v.y,t.size/2))continue;
 +  const bitmap=t.asset?requestImage(`${t.asset}/token.png`,diameter*dpr):null,spec=artworkSpec(t,bitmap,diameter*dpr),outside=showOutOfBounds&&walkableBounds&&(v.x<walkableBounds.x||v.y<walkableBounds.y||v.x>walkableBounds.x+walkableBounds.width||v.y>walkableBounds.y+walkableBounds.height);items.push({t,x,y,diameter,spec,outside});
 + }
 + artwork.begin(items.flatMap(i=>i.diameter>=24||i.t.id===selected?[i.spec.key,`label:${i.t.name}`]:[i.spec.key]));ctx.save();ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -16042,352 +16286,3 @@ new file mode 100644
 + }
 + ctx.restore();return animating;
 +}
-diff --git a/игровая_зона.txt b/игровая_зона.txt
-new file mode 100644
---- /dev/null
-+++ b/игровая_зона.txt
-+++ b/игровая_зона.txt
-@@ -0,0 +1,342 @@
-+
-+Реализовать новую модель границ перемещения и отрисовки Atlas. Приоритет — ограниченное потребление ресурсов, отсутствие лишней работы при движении камеры и минимальное изменение существующей архитектуры.
-+
-+1. Область итерации
-+
-+Реализовать две независимые сущности на уровне этажа:
-+
-+Сущность| Назначение| Редактирование
-+"walkableGeometry"| Области допустимого перемещения| Добавление и вычитание прямоугольников, перемещение целого полигона
-+"renderBounds"| Область отображения содержимого этажа игроку| Один произвольный полигон, редактируемый через вершины
-+
-+Геометрия хранится в мировых координатах этажа и не зависит от камеры, масштаба экрана или разрешения ассетов.
-+
-+FOV, стены, освещение, поиск пути и автоматическое построение коллизий в эту итерацию не входят.
-+
-+Перед изменениями точечно найти текущие структуры этажей, scene bounds, walkable bounds, обработку движения токенов, выбор тайлов и синхронизацию состояния. Установить реальные зависимости. Не проводить общий рефакторинг проекта.
-+
-+2. Модель проходимой области
-+
-+Проходимая область этажа представляет собой набор полигонов. Каждый полигон содержит внешний контур и при необходимости внутренние отверстия.
-+
-+Пример концептуальной структуры:
-+
-+Polygon:
-+    outer: Point[]
-+    holes: Point[][]
-+
-+WalkableComponent:
-+    id
-+    polygon
-+
-+Floor:
-+    walkableMode: unrestricted | restricted
-+    walkableComponents: WalkableComponent[]
-+    renderBounds: Polygon | null
-+
-+Названия и расположение полей адаптировать к текущей архитектуре.
-+
-+Каждая отдельная связная область получает собственный идентификатор и может перемещаться независимо. Отверстия перемещаются вместе с внешним контуром.
-+
-+Хранить только актуальную результирующую геометрию. Исходные прямоугольники, дерево булевых операций и происхождение частей не сохранять.
-+
-+Режимы должны различаться явно:
-+
-+- "unrestricted": ограничение перемещения этой геометрией отключено.
-+- "restricted" с пустым набором: разрешённых областей нет.
-+- "restricted" с полигонами: перемещение ограничивается заданными областями.
-+
-+Удаление последней области не должно автоматически разрешать перемещение везде.
-+
-+3. Добавление проходимой области
-+
-+GM выбирает инструмент «Добавить проходимую область» и протягивает прямоугольник.
-+
-+На отпускании мыши сервер выполняет объединение прямоугольника с существующей проходимой геометрией этого этажа.
-+
-+Правила:
-+
-+- Пересекающиеся области объединяются.
-+- Общий участок границы ненулевой длины также приводит к объединению.
-+- Касание только одной точкой сохраняет отдельные компоненты: проход нулевой ширины не создаётся.
-+- Прямоугольник внутри существующей области не меняет состояние.
-+- Прямоугольник внутри отверстия может уменьшить отверстие, закрыть его или создать отдельный остров проходимости.
-+- Добавление вдали от остальных областей создаёт отдельный полигон.
-+
-+Пересечение вертикального и горизонтального прямоугольников должно формировать единый результирующий контур, например Г-образную область.
-+
-+Прямоугольники в этой итерации параллельны мировым осям. Поворот инструмента не реализовывать.
-+
-+4. Вычитание проходимой области
-+
-+GM выбирает инструмент «Вычесть проходимую область» и протягивает прямоугольник.
-+
-+На отпускании мыши сервер вычитает прямоугольник из всех затронутых проходимых компонентов текущего этажа.
-+
-+Результаты:
-+
-+- Вырезание внутри области создаёт отверстие.
-+- Вырезание у края изменяет внешний контур.
-+- Сквозной вырез может разделить область на несколько самостоятельных компонентов.
-+- Полное вычитание удаляет компонент.
-+- Вычитание за пределами проходимой геометрии ничего не меняет.
-+
-+При разрезании каждая получившаяся связная область становится отдельно выбираемым и перемещаемым полигоном.
-+
-+Не реализовывать восстановление исходных прямоугольников или специальные команды «разделить обратно» и «слить обратно». Пользователь может изменить результат следующей операцией добавления или вычитания.
-+
-+5. Перемещение проходимых полигонов
-+
-+GM выбирает компонент и перетаскивает его целиком.
-+
-+Во время перетаскивания:
-+
-+- Показывать локальное смещение контура и отверстий.
-+- Не пересчитывать объединение на каждом "pointermove".
-+- Не отправлять сетевые команды на каждое движение.
-+- Не изменять подтверждённую геометрию, используемую для проверки перемещения токенов.
-+
-+На отпускании мыши отправить одну команду с идентификатором компонента и смещением.
-+
-+Сервер переносит компонент и объединяет его с затронутыми областями. Использовать те же правила пересечения и касания, что при добавлении.
-+
-+Операция атомарная: остальные клиенты получают готовый результат.
-+
-+При отмене, конфликте версии или отклонении операции убрать предпросмотр и показать подтверждённое состояние.
-+
-+Перемещение области не перемещает токены, ассеты или переходы.
-+
-+Для идентификаторов установить детерминированное правило: неизменившиеся компоненты сохраняют ID; объединённый результат сохраняет один выбранный по стабильному правилу ID; при разрезании один результат сохраняет старый ID, остальные получают новые. Клиент получает список удалённых и обновлённых компонентов.
-+
-+6. Границы отрисовки этажа
-+
-+"renderBounds" принадлежит этажу и содержит один простой замкнутый полигон:
-+
-+- допускаются выпуклые и вогнутые формы;
-+- самопересечения запрещены;
-+- отверстия и несколько раздельных областей в этой итерации запрещены;
-+- полигон должен иметь ненулевую площадь;
-+- разрывать его на части нельзя.
-+
-+Общую структуру "Polygon" можно переиспользовать, но для "renderBounds" проверять отсутствие отверстий.
-+
-+GM может:
-+
-+- создать прямоугольник протягиванием мыши;
-+- нарисовать полигон последовательными кликами;
-+- завершить рисование кликом по первой вершине или Enter;
-+- перемещать вершины;
-+- добавлять вершины на рёбрах;
-+- удалять вершины, пока остаётся допустимый полигон;
-+- перемещать весь контур;
-+- удалить ограничение.
-+
-+Escape отменяет незавершённое действие. Невалидный предпросмотр выделяется, сохранение запрещается; сервер повторно проверяет геометрию.
-+
-+"renderBounds = null" означает отсутствие ограничения отрисовки. Такое состояние должно явно отображаться в интерфейсе GM.
-+
-+Для нового этажа предлагать создание границы по размеру базовой карты, если она есть. Последующее добавление или перемещение ассетов не расширяет границу автоматически.
-+
-+Граница не ограничивает перемещение камеры: за её пределами камера показывает пустой фон.
-+
-+7. Соотношение двух видов границ
-+
-+Проходимая область и граница отрисовки редактируются независимо.
-+
-+Редактирование "renderBounds" не обрезает и не переписывает сохранённую "walkableGeometry".
-+
-+Для обычного перемещения игроком действуют оба ограничения:
-+
-+- установленная проходимая область;
-+- установленная граница отрисовки этажа.
-+
-+Допустимую область проверять через отдельные геометрические предикаты. Не строить и не сохранять их булево пересечение при каждом изменении.
-+
-+Сохранить существующее правило учёта размера токена. Если такого правила нет, в этой итерации использовать центр токена и явно закрепить это в коде и тестах.
-+
-+Проверять весь отрезок обычного перемещения, включая пересечение отверстий и выход через вогнутый край. Проверки одной конечной точки недостаточно.
-+
-+Для нескольких компонентов переход между раздельными областями обычным движением запрещён. Проверка должна учитывать, что отрезок может проходить через несколько смежных участков допустимой геометрии.
-+
-+Телепортацию, переход между этажами и принудительное перемещение GM обрабатывать согласно отдельным существующим правилам. Проверку назначения вынести в переиспользуемую функцию.
-+
-+Если после редактирования токен оказался снаружи:
-+
-+- сохранить его координаты;
-+- показать GM предупреждение и возможность переместить токен;
-+- не выполнять автоматическое удаление, перенос или поиск ближайшей разрешённой точки;
-+- обычное перемещение игроком отклонять до исправления положения GM.
-+
-+8. Отображение игроку и GM
-+
-+На стороне игрока обрезать по "renderBounds" мировое содержимое этажа: карту, ассеты, токены, сетку и мировые эффекты. Экранный интерфейс под эту обрезку не попадает.
-+
-+Частично выходящий ассет показывать только внутри границы. За пределами границы оставлять однотонный фон без скрытой под ним отрисовки мира.
-+
-+Hit testing игрока должен учитывать границу: невидимые наружные части объектов не должны оставаться доступными для выбора.
-+
-+GM предоставить два режима:
-+
-+- редактирование с отображением наружного содержимого в пределах viewport и выделением границы;
-+- предпросмотр игрока с обычным отсечением содержимого.
-+
-+Не создавать копию сцены или отдельный набор декодированных изображений для предпросмотра.
-+
-+Обрезка является визуальным ограничением. Эта итерация не обеспечивает секретность частей исходного изображения, уже доступного клиенту. Существующие ограничения доступа к этажам и объектам сохранить.
-+
-+9. Геометрическое ядро
-+
-+Авторитетные операции объединения, вычитания и нормализации выполняются сервером.
-+
-+Использовать проверенную библиотеку булевых операций над полигонами, совместимую с текущей сборкой Go. Перед выбором проверить поддержку отверстий, нескольких компонентов, касаний и вырожденных входов, а также лицензию и требования к сборке.
-+
-+Не писать собственный универсальный алгоритм polygon clipping и не заменять геометрию растровой маской размера карты.
-+
-+Для этой итерации булевы операции требуются только над ортогональной walkable-геометрией. Произвольный "renderBounds" требует проверки корректности и пространственных запросов, но не полного набора булевых операций.
-+
-+Зафиксировать единую точность координат:
-+
-+- использовать согласованную квантование координат для геометрии;
-+- выбрать шаг относительно существующих мировых единиц;
-+- одинаково применять его на клиенте и сервере;
-+- не привязывать точность к масштабу камеры;
-+- ограничить диапазон координат с учётом безопасной арифметики выбранной библиотеки.
-+
-+После операции удалять повторные вершины, нулевые рёбра и лишние коллинеарные вершины. Нормализовать направления контуров и порядок представления.
-+
-+Не выполнять приблизительное упрощение, которое может закрыть узкий проход или изменить форму зоны. За пределами принятой точности топология должна сохраняться.
-+
-+Добавить явные лимиты на входные вершины, результирующие вершины, компоненты и размер команды. Превышение лимита отклоняет операцию целиком, без частичного сохранения. Конкретные значения выбрать после проверки библиотеки на ограниченном реалистичном наборе данных.
-+
-+10. Экономия ресурсов при отрисовке
-+
-+Разделить выбор ресурсов и финальную обрезку.
-+
-+Для выбора ресурсов:
-+
-+1. Сначала учитывать активный этаж и viewport с существующим ограниченным запасом предзагрузки.
-+2. Выполнить дешёвую проверку пересечения ограничивающих прямоугольников.
-+3. Для оставшихся кандидатов учитывать пересечение с "renderBounds".
-+4. Только затем планировать запрос, декодирование и отрисовку.
-+
-+Тайлы и ассеты, полностью лежащие за пределами границы, не должны инициировать загрузку или декодирование. Пограничные тайлы загружаются целиком и обрезаются при рисовании.
-+
-+Точная проверка пересечения должна корректно обрабатывать:
-+
-+- пересечение рёбер;
-+- тайл целиком внутри полигона;
-+- полигон целиком внутри тайла;
-+- вогнутые участки.
-+
-+Проверки только углов тайла недостаточно.
-+
-+Для крупных тайловых изображений использовать существующую систему тайлов и уровней детализации. Для цельного изображения частичное пересечение может требовать декодирования всего изображения; не обещать экономию памяти пропорционально площади обрезки.
-+
-+Для финального рисования:
-+
-+- подготовить "Path2D" по актуальной геометрии;
-+- применять clipping на уровне мирового прохода этажа;
-+- восстанавливать состояние Canvas после прохода;
-+- не пересоздавать путь при каждом кадре или перемещении камеры;
-+- перестраивать геометрические производные при изменении соответствующих bounds.
-+
-+Не создавать полноразмерные offscreen canvas, маски или текстуры по габаритам карты.
-+
-+Не выполнять булевы операции с viewport на каждом кадре. При необходимости кэшировать классификацию активных тайлов по версии границы, привязав записи к жизненному циклу ограниченного тайлового кэша. Не заводить бессрочный словарь всех посещённых тайлов.
-+
-+При изменении границы отменять ещё не начавшуюся ненужную загрузку и предзагрузку. Учитывать общие потребители ресурсов: ассет может использоваться другим видимым объектом.
-+
-+Уже декодированные изображения оставлять под управлением существующего ограниченного LRU. Изменение bounds не должно повышать бюджет кэша или вызывать массовую повторную декодировку.
-+
-+11. Экономия ресурсов сервера
-+
-+Геометрические операции выполняются только при подтверждённом редактировании.
-+
-+Хранить производные AABB компонентов и использовать их для отбора кандидатов объединения и вычитания. Обрабатывать только затронутые компоненты и добавленный либо перемещённый контур.
-+
-+Не выполнять последовательное попарное объединение всего этажа после каждой операции.
-+
-+Для проверки движения сначала отбирать возможные компоненты и рёбра по пространственным границам. Использовать существующий пространственный индекс, если он применим. Новый сложный индекс добавлять только при подтверждённой необходимости на поддерживаемой нагрузке.
-+
-+Повторно использовать подготовленные геометрические данные до изменения версии. Не создавать копии всех контуров для каждого движения токена.
-+
-+12. Синхронизация и сохранение
-+
-+Подстроить команды под существующий протокол. Концептуально нужны операции:
-+
-+addWalkableRect
-+subtractWalkableRect
-+moveWalkableComponent
-+deleteWalkableComponent
-+setWalkableMode
-+setRenderBounds
-+clearRenderBounds
-+
-+Команда содержит идентификатор этажа, ID операции, ожидаемую версию и минимальные параметры действия.
-+
-+Во время рисования прямоугольника и перетаскивания вершины предпросмотр остаётся локальным. На завершение жеста отправляется одна команда.
-+
-+Сервер проверяет полномочия GM, версию, координаты, лимиты и корректность результата. Применение, увеличение версии и публикация результата должны согласовываться с существующей моделью сохранения.
-+
-+При конфликте версий отклонить устаревшее редактирование и синхронизировать актуальное состояние. Не применять смещение молча к уже изменившемуся компоненту.
-+
-+Передавать итоговую нормализованную геометрию изменённых компонентов и удалённые ID. Клиенты не обязаны повторять булевы вычисления.
-+
-+Если текущий протокол требует полного snapshot сцены, сохранить совместимость и отправлять его только после завершённой операции. Не переписывать всю синхронизацию ради этой итерации. Отдельно указать фактическую сетевую гранулярность результата.
-+
-+Повторная доставка одной команды не должна повторно применять перемещение или создавать дополнительные компоненты. Использовать существующий механизм дедупликации либо ограниченный механизм с явным сроком жизни.
-+
-+Производные AABB, "Path2D" и пространственные кэши не сохранять как независимый источник истины.
-+
-+13. Переход от текущих scene bounds
-+
-+Установить, какие функции сейчас зависят от "scene bounds": отрисовка, стартовая камера, размещение объектов, ограничения координат или иные операции.
-+
-+Функцию ограничения отрисовки перенести на уровень этажа. Прямоугольные границы представить четырьмя вершинами.
-+
-+Стартовая камера может использовать производный AABB нового "renderBounds". Точный контур остаётся источником истины.
-+
-+Не оставлять параллельно две независимо редактируемые сущности с одинаковым назначением.
-+
-+Сложную миграцию старых кампаний не реализовывать: допустим запуск новой кампании. При этом старые данные должны либо явно распознаваться как несовместимые, либо преобразовываться простым однозначным способом. Не трактовать их молча как корректные новые данные.
-+
-+14. Задел на FOV
-+
-+Будущие стены и препятствия хранить отдельно от обеих геометрий.
-+
-+Граница отрисовки может служить внешним пределом результата FOV. Видимость конкретного наблюдателя дополнительно определяется его положением и препятствиями.
-+
-+В текущей итерации достаточно:
-+
-+- единых мировых координат;
-+- независимых геометрических структур;
-+- переиспользуемых проверок точек, отрезков и контуров;
-+- места в проходе отрисовки для дополнительного ограничения видимости.
-+
-+Не создавать сейчас универсальный движок видимости, автоматические стены по контуру walkable или кэши для каждого наблюдателя.
-+
-+15. Проверки и критерии приёмки
-+
-+Выполнить сборку затронутого кода и точечные проверки:
-+
-+- объединение прямоугольников в Г-образную область;
-+- объединение по общему ребру и сохранение отдельных компонентов при касании углами;
-+- внутреннее отверстие, сквозной разрез и полное удаление области;
-+- добавление внутри отверстия;
-+- перенос с объединением нескольких компонентов;
-+- неизменность состояния при пустой операции;
-+- запрет движения через отверстие, промежуток и вогнутый участок;
-+- отклонение самопересекающегося "renderBounds";
-+- частичное отсечение ассета и отсутствие выбора его скрытой части;
-+- отсутствие запросов и декодирования тайлов целиком вне границы;
-+- отсутствие сетевых сообщений на каждом движении мыши;
-+- конфликт версий и повторная доставка команды;
-+- сохранение и загрузка актуальной геометрии.
-+
-+Провести одну ограниченную проверку на большой тайловой карте с вогнутой границей: переместить камеру из внутренней области наружу и обратно, проверить счётчики запросов, декодирования и удерживаемой памяти. Повторно использовать имеющиеся диагностические средства.
-+
-+Отдельно проверить достижение лимита геометрии: операция отклоняется без изменения этажа и без чрезмерного промежуточного потребления ресурсов.
-+    
-+Полный test suite запускать только при изменении общей инфраструктуры или нескольких зависимых подсистем, когда локальных проверок недостаточно.
-+
-+В результате кратко указать изменённое поведение, выполненные проверки, существенные непроверенные сценарии и ограничения выбранной реализации. Вернуть только изменённые файлы, без дополнительных отчётов и постороннего рефакторинга.
-\ No newline at end of file

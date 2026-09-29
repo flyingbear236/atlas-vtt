@@ -536,7 +536,7 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 }
 
 func validFloorGeometry(floor Floor) bool {
-	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || len(floor.WalkableComponents) > maxWalkableComponents || walkableVertexCount(floor.WalkableComponents) > maxGeometryTotalVertices {
+	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || !walkableGeometryWithinLimits(floor.WalkableComponents) {
 		return false
 	}
 	ids := make(map[string]bool, len(floor.WalkableComponents))

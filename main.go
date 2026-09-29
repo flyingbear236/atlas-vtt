@@ -429,13 +429,15 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 
 var upgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096}
 
+const maxWebSocketMessageBytes = 16 << 10
+
 func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	c, e := upgrader.Upgrade(w, r, nil)
 	if e != nil {
 		return
 	}
 	defer c.Close()
-	c.SetReadLimit(16384)
+	c.SetReadLimit(maxWebSocketMessageBytes)
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var hello struct {
 		Session string

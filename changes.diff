@@ -1,547 +1,531 @@
-diff --git a/web/app.js b/web/app.js
-index bf13218..f4241f6 100644
---- a/web/app.js
-+++ b/web/app.js
-@@ -2,11 +2,11 @@ import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fi
- import {drawTokens} from './token-renderer.js';
- import {Outbox, Drafts, CacheWriteBudget} from './reliability.js';
- import {ScenesRuntime,needsActiveTokenRequest} from './scenes.js';
--import {SceneRenderIndex,compositeFloors,drawRenderBoundsEditor,drawSceneStack,drawTransitionOverlay,drawWalkableEditor,elementHandleAt,elementsAtPoint,hitElement,inversePoint,orderedFloors,orderedLayers,renderBoundsHit,transitionHit,transformedFromDrag,validRenderBounds,validRenderBoundsChange,walkableBounds,walkableComponentAt} from './scene-content.js';
-+import {FloorRenderBoundsPathCache,SceneRenderIndex,clipFloorRenderBounds,compositeFloors,drawRenderBoundsEditor,drawSceneStack,drawTransitionOverlay,drawWalkableEditor,elementHandleAt,elementsAtPoint,floorCameraBounds,hitElement,inversePoint,orderedFloors,orderedLayers,pointInRenderBounds,renderBoundsAABB,renderBoundsHit,transitionHit,transformedFromDrag,validRenderBounds,validRenderBoundsChange,walkableBounds,walkableComponentAt} from './scene-content.js';
- import {SceneTreeRuntime} from './scene-tree.js';
- const $ = id => document.getElementById(id);
- const isGM=member=>!!(member?.gm||member?.role==='gm');
--const CONTENT_COMMANDS=new Set(['move','final','properties','create','delete','boundsUpdate','floorCreate','floorUpdate','floorDelete','layerCreate','layerUpdate','layerDelete','elementCreate','elementUpdate','elementDelete','elementPreview','elementTransform','transitionCreate','transitionUpdate','transitionDelete','assetRetention','addWalkableRect','subtractWalkableRect','moveWalkableComponent','deleteWalkableComponent','setWalkableMode','setRenderBounds','clearRenderBounds']);
-+const CONTENT_COMMANDS=new Set(['move','final','properties','create','delete','floorCreate','floorUpdate','floorDelete','layerCreate','layerUpdate','layerDelete','elementCreate','elementUpdate','elementDelete','elementPreview','elementTransform','transitionCreate','transitionUpdate','transitionDelete','assetRetention','addWalkableRect','subtractWalkableRect','moveWalkableComponent','deleteWalkableComponent','setWalkableMode','setRenderBounds','clearRenderBounds']);
- const UPLOAD_LIMIT_BYTES=256*1024*1024;
- // Mutable only so the isolated profiler can compare Canvas lifecycles. Normal
- // application code never replaces the surface in this iteration.
-@@ -55,8 +55,9 @@ for(const [id,field] of [['tokenName','name'],['tokenSize','size'],['tokenColor'
- const uploadControllers=new Set();
- const rotationOverrides=new Set();
- const scenes=new ScenesRuntime({homeAdd:$('homeSceneAdd'),back:$('toScenes'),home:$('campaignHome'),workspace:$('workspace'),footer:$('appFooter'),cards:$('sceneCards'),empty:$('emptyScenes'),campaignName:$('campaignName'),sceneTabs:$('sceneTabs')},{open:openScene,home:goCampaignHome,queue:queueCommand});
--const sceneTree=new SceneTreeRuntime({tree:$('sceneTree'),addFloor:$('addFloor'),addLayer:$('addLayer'),boundsWidth:$('boundsWidth'),boundsHeight:$('boundsHeight'),boundsSave:$('boundsSave'),addTransition:$('addTransition'),controls:[$('addFloor').parentElement,$('boundsSave').parentElement,$('mapUpload').parentElement]},{queue:queueCommand,selectElement,selectTransition,beginTransition,setFloor,getFloor:()=>currentFloorID,focusElement,setWalkableTool,getWalkableTool:()=>walkableTool,setRenderBoundsTool,getRenderBoundsTool:()=>renderBoundsTool});
-+const sceneTree=new SceneTreeRuntime({tree:$('sceneTree'),addFloor:$('addFloor'),addLayer:$('addLayer'),addTransition:$('addTransition'),controls:[$('addFloor').parentElement,$('mapUpload').parentElement]},{queue:queueCommand,selectElement,selectTransition,beginTransition,setFloor,getFloor:()=>currentFloorID,focusElement,setWalkableTool,getWalkableTool:()=>walkableTool,setRenderBoundsTool,getRenderBoundsTool:()=>renderBoundsTool});
- const sceneRenderIndex=new SceneRenderIndex();
-+const renderBoundsPaths=new FloorRenderBoundsPathCache();
- let camera = {x: 0, y: 0, scale: .75}, viewport = {w: 1, h: 1}, grid = true;
- const REGION_PREFETCH=.5,MAX_REGION_SPAN=524288,INITIAL_SCENE_SCALE=.75,INITIAL_REGION_WORLD_SPAN=6144,VIEWPORT_SAVE_INTERVAL=10000;let regionInFlight=false,sceneCameraInitialized=false,viewportSaveTimer,viewportSaveDirty=false,viewportLastSave=0;
- let dirty = true, lastFrame = 0, frameTime = 0, rendered = 0, fps = 0, lastMove = 0;
-@@ -170,7 +171,7 @@ function saveViewportNow(){clearTimeout(viewportSaveTimer);viewportSaveTimer=nul
- function scheduleViewportSave(){if(!state?.scene?.id)return;viewportSaveDirty=true;if(viewportSaveTimer)return;const delay=Math.max(0,VIEWPORT_SAVE_INTERVAL-(Date.now()-viewportLastSave));viewportSaveTimer=setTimeout(()=>{viewportSaveTimer=null;saveViewportNow();},delay);}
- function initializeSceneCamera(snapshot){
-  const saved=readSavedViewport(snapshot.scene.id,'');let cx,cy,scale;
-- if(saved){({cx,cy,scale}=saved);}else{const bounds=snapshot.scene.bounds,entry=snapshot.entry,fitScale=Math.min(2,(viewport.w-70)/bounds.width,(viewport.h-70)/bounds.height),regionScale=Math.max(viewport.w,viewport.h)*(1+REGION_PREFETCH*2)/INITIAL_REGION_WORLD_SPAN;scale=Math.min(2,Math.max(INITIAL_SCENE_SCALE,regionScale,fitScale));cx=entry?.x??bounds.width/2;cy=entry?.y??bounds.height/2;}
-+ if(saved){({cx,cy,scale}=saved);}else{const floorId=snapshot.currentFloorId||orderedFloors(snapshot)[0]?.id||'',bounds=floorCameraBounds(snapshot,floorId),entry=snapshot.entry,fitScale=bounds?Math.min(2,(viewport.w-70)/bounds.width,(viewport.h-70)/bounds.height):INITIAL_SCENE_SCALE,regionScale=Math.max(viewport.w,viewport.h)*(1+REGION_PREFETCH*2)/INITIAL_REGION_WORLD_SPAN;scale=Math.min(2,Math.max(INITIAL_SCENE_SCALE,regionScale,fitScale));cx=entry?.x??(bounds?(bounds.left+bounds.right)/2:0);cy=entry?.y??(bounds?(bounds.top+bounds.bottom)/2:0);}
-  camera={x:cx-viewport.w/(2*scale),y:cy-viewport.h/(2*scale),scale};viewportLastSave=Date.now();viewportSaveDirty=true;scheduleViewportSave();dirty=true;
- }
- window.addEventListener('pagehide',saveViewportNow);
-@@ -282,7 +283,7 @@ function activatePlayerToken(token,focus){
-  renderPanels();dirty=true;return true;
- }
- function abortUploads(){for(const controller of uploadControllers)controller.abort();uploadControllers.clear();}
--function clearSceneState(){saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;viewportSaveDirty=false;abortUploads();select(null);selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;rotationOverrides.clear();tokenIndex.clear();sceneRenderIndex.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;dirty=true;}
-+function clearSceneState(){saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;viewportSaveDirty=false;abortUploads();select(null);selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;rotationOverrides.clear();tokenIndex.clear();sceneRenderIndex.clear();renderBoundsPaths.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;dirty=true;}
- function rebuildTokenIndex(){tokenIndex.clear();movingTokens.clear();for(const t of Object.values(state.tokens)){tokenIndex.set(t);const v=visuals.get(t.id);if(v&&(v.x!==t.x||v.y!==t.y))movingTokens.add(t.id);}}
- function renderMembers(){
-  $('members').replaceChildren();let online=0;
-@@ -366,7 +367,7 @@ async function upload(file,kind){if(!file)return;if(!state?.scene?.id)throw new
- for(const [input,kind] of [['map','scene'],['token','token']])$(`${input}Upload`).onchange=async e=>{const control=e.target;control.disabled=true;try{await upload(control.files[0],kind);}catch(e){if(e.name!=='AbortError')toast(e.message);}finally{control.disabled=false;control.value='';}};
- function resize(){const rect=$('stage').getBoundingClientRect();viewport={w:Math.max(1,rect.width),h:Math.max(1,rect.height)};const dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(viewport.w*dpr);canvas.height=Math.round(viewport.h*dpr);dirty=true;}
- new ResizeObserver(resize).observe($('stage'));
--function fit(){const bounds=state?.scene?.bounds;if(bounds){camera.scale=Math.max(.015,Math.min(2,(viewport.w-70)/bounds.width,(viewport.h-70)/bounds.height));camera.x=bounds.width/2-viewport.w/2/camera.scale;camera.y=bounds.height/2-viewport.h/2/camera.scale;}else{camera={x:-viewport.w,y:-viewport.h,scale:.75};}scheduleViewportSave();dirty=true;}
-+function fit(){const bounds=floorCameraBounds(state,currentFloorID),entry=state?.entry;if(bounds){camera.scale=Math.max(.015,Math.min(2,(viewport.w-70)/bounds.width,(viewport.h-70)/bounds.height));camera.x=(bounds.left+bounds.right)/2-viewport.w/2/camera.scale;camera.y=(bounds.top+bounds.bottom)/2-viewport.h/2/camera.scale;}else{const scale=.75,cx=entry?.x??0,cy=entry?.y??0;camera={x:cx-viewport.w/(2*scale),y:cy-viewport.h/(2*scale),scale};}scheduleViewportSave();dirty=true;}
- function zoom(factor,x=viewport.w/2,y=viewport.h/2){const wx=camera.x+x/camera.scale,wy=camera.y+y/camera.scale;camera.scale=Math.max(.015,Math.min(4,camera.scale*factor));camera.x=wx-x/camera.scale;camera.y=wy-y/camera.scale;scheduleViewportSave();dirty=true;}
- $('fit').onclick=fit;$('plus').onclick=()=>zoom(1.25);$('minus').onclick=()=>zoom(.8);$('grid').onclick=()=>{grid=!grid;$('grid').classList.toggle('active',grid);dirty=true;};
- const point=e=>{const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};};
-@@ -380,7 +381,7 @@ canvas.onwheel=e=>{e.preventDefault();const p=point(e);zoom(Math.exp(-e.deltaY*.
- canvas.onpointerdown=e=>{if(!state)return;canvas.focus();canvas.setPointerCapture(e.pointerId);const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,gm=isGM(state.you);
-  if(gm&&renderBoundsTool&&e.button===0&&!e.altKey){const floor=state.floors?.[currentFloorID];if(!floor)return;if(renderBoundsTool==='rect')drag={type:'renderBoundsRect',floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},current:{x:wx,y:wy},moved:false};else if(renderBoundsTool==='polygon'){const closeRadius=10/camera.scale;if(!renderBoundsDraft)renderBoundsDraft={floorId:currentFloorID,geometryRevision:floor.geometryRevision,points:[{x:wx,y:wy}],cursor:{x:wx,y:wy},invalid:false};else if(renderBoundsDraft.points.length>=3&&Math.hypot(wx-renderBoundsDraft.points[0].x,wy-renderBoundsDraft.points[0].y)<=closeRadius)finishRenderBoundsDraft();else{const last=renderBoundsDraft.points.at(-1);if(Math.hypot(wx-last.x,wy-last.y)>.0005)renderBoundsDraft.points.push({x:wx,y:wy});const polygon=renderBoundsPolygon(renderBoundsDraft.points),n=polygon.outer.length;renderBoundsDraft.invalid=n>=3&&!validRenderBoundsChange(polygon,[n-2,n-1]);}}else if(renderBoundsTool==='edit'&&floor.renderBounds){const hit=renderBoundsHit(floor.renderBounds,wx,wy,camera.scale),original=cloneRenderBounds(floor.renderBounds);if(hit?.part==='vertex'){selectedRenderBoundsVertex=hit.index;drag={type:'renderBoundsEdit',mode:'vertex',vertexIndex:hit.index,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},original,preview:cloneRenderBounds(original),invalid:false,moved:false};}else if(hit?.part==='edge'){selectedRenderBoundsVertex=hit.index+1;original.outer.splice(selectedRenderBoundsVertex,0,{x:wx,y:wy});drag={type:'renderBoundsEdit',mode:'insert',vertexIndex:selectedRenderBoundsVertex,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},original,preview:cloneRenderBounds(original),invalid:false,moved:true};}else if(hit?.part==='polygon'){selectedRenderBoundsVertex=-1;drag={type:'renderBoundsEdit',mode:'move',vertexIndex:-1,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},original,preview:cloneRenderBounds(original),invalid:false,moved:false};}else selectedRenderBoundsVertex=-1;}dirty=true;return;}
-  if(gm&&walkableTool&&e.button===0&&!e.altKey){const floor=state.floors?.[currentFloorID];if(!floor)return;if(walkableTool==='add'||walkableTool==='subtract')drag={type:'walkableRect',operation:walkableTool==='add'?'addWalkableRect':'subtractWalkableRect',floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},current:{x:wx,y:wy},moved:false};else{const component=walkableComponentAt(state,currentFloorID,wx,wy);selectedWalkableComponent=component?.id||'';drag=component?{type:'walkableComponent',componentId:component.id,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},dx:0,dy:0,moved:false}:null;}dirty=true;return;}
-- if(gm&&transitionDraft&&transitionDraft.phase!=='awaitingCreate'&&e.button===0){if(transitionDraft.phase==='placingA'||transitionDraft.phase==='placingB'){const key=transitionDraft.phase==='placingA'?'endpointA':'endpointB',floorId=pickTransitionFloor(wx,wy),endpoint={floorId,position:clampTransitionPosition(floorId,{x:wx,y:wy}),radius:transitionDefaultRadius()};transitionDraft={...transitionDraft,[key]:endpoint,phase:key==='endpointA'?'editingA':'editingB'};drag={type:'transitionDraftRadius',key,start:{x:wx,y:wy},moved:false};fillTransitionProperties();dirty=true;return;}const hit=draftTransitionHit(wx,wy);if(hit?.part==='confirm'){confirmTransitionEndpoint();return;}if(hit?.part==='cancel'){cancelTransitionDraft();return;}if(hit){drag={type:hit.part==='radius'?'transitionDraftRadius':'transitionDraftCenter',key:hit.key,startEndpoint:cloneTransitionEndpoint(transitionDraft[hit.key]),start:{x:wx,y:wy},moved:false};return;}dirty=true;return;}const transitionHitResult=gm?transitionHit(state,currentFloorID,wx,wy,camera.scale,selectedTransition):null;if(transitionHitResult&&e.button===0&&!e.altKey){if(transitionHitResult.transition.id!==selectedTransition){selectTransition(transitionHitResult.transition.id);}else if(transitionHitResult.part==='center'||transitionHitResult.part==='radius'){drag={type:transitionHitResult.part==='center'?'transitionCenter':'transitionRadius',id:selectedTransition,key:transitionHitResult.key,startEndpoint:cloneTransitionEndpoint(transitionHitResult.transition[transitionHitResult.key]),start:{x:wx,y:wy},moved:false};}dirty=true;return;}const t=tokenIndex.query(wx,wy,wx,wy).reverse().find(t=>(gm?t.floorId===currentFloorID:canMove(t))&&Math.hypot(wx-t.x,wy-t.y)<=t.size/2),chosen=state.elements?.[selectedElement],handle=gm?elementHandleAt(chosen,wx,wy,camera.scale,elementRotationAllowed(chosen)):null,element=gm?(handle?chosen:hitElement(state,currentFloorID,wx,wy,sceneRenderIndex)):null;if(t&&e.button===0&&!e.altKey){if(!gm)activatePlayerToken(t,false);else select(t.id);if(canMove(t))drag={type:'token',id:t.id,floorId:t.floorId,dx:wx-t.x,dy:wy-t.y,x:t.x,y:t.y,moved:false};}else if(element&&e.button===0&&!e.altKey){selectElement(element.id);const layer=state.layers[element.layerId];if(!element.locked&&!layer.locked)drag={type:'element',id:element.id,mode:handle||'move',start:{...element.transform,pointerX:wx,pointerY:wy},pointerX:wx,pointerY:wy,transform:{...element.transform},moved:false};}else{select(null);selectElement(null);selectedTransition='';fillTransitionProperties();drag={type:'pan',px:p.x,py:p.y,x:camera.x,y:camera.y};}dirty=true;};
-+ if(gm&&transitionDraft&&transitionDraft.phase!=='awaitingCreate'&&e.button===0){if(transitionDraft.phase==='placingA'||transitionDraft.phase==='placingB'){const key=transitionDraft.phase==='placingA'?'endpointA':'endpointB',floorId=pickTransitionFloor(wx,wy),endpoint={floorId,position:clampTransitionPosition(floorId,{x:wx,y:wy}),radius:transitionDefaultRadius()};transitionDraft={...transitionDraft,[key]:endpoint,phase:key==='endpointA'?'editingA':'editingB'};drag={type:'transitionDraftRadius',key,start:{x:wx,y:wy},moved:false};fillTransitionProperties();dirty=true;return;}const hit=draftTransitionHit(wx,wy);if(hit?.part==='confirm'){confirmTransitionEndpoint();return;}if(hit?.part==='cancel'){cancelTransitionDraft();return;}if(hit){drag={type:hit.part==='radius'?'transitionDraftRadius':'transitionDraftCenter',key:hit.key,startEndpoint:cloneTransitionEndpoint(transitionDraft[hit.key]),start:{x:wx,y:wy},moved:false};return;}dirty=true;return;}const transitionHitResult=gm?transitionHit(state,currentFloorID,wx,wy,camera.scale,selectedTransition):null;if(transitionHitResult&&e.button===0&&!e.altKey){if(transitionHitResult.transition.id!==selectedTransition){selectTransition(transitionHitResult.transition.id);}else if(transitionHitResult.part==='center'||transitionHitResult.part==='radius'){drag={type:transitionHitResult.part==='center'?'transitionCenter':'transitionRadius',id:selectedTransition,key:transitionHitResult.key,startEndpoint:cloneTransitionEndpoint(transitionHitResult.transition[transitionHitResult.key]),start:{x:wx,y:wy},moved:false};}dirty=true;return;}const playerPointVisible=gm||pointInRenderBounds(state,currentFloorID,wx,wy),t=playerPointVisible?tokenIndex.query(wx,wy,wx,wy).reverse().find(t=>(gm?t.floorId===currentFloorID:canMove(t))&&Math.hypot(wx-t.x,wy-t.y)<=t.size/2):null,chosen=state.elements?.[selectedElement],handle=gm?elementHandleAt(chosen,wx,wy,camera.scale,elementRotationAllowed(chosen)):null,element=gm?(handle?chosen:hitElement(state,currentFloorID,wx,wy,sceneRenderIndex)):null;if(t&&e.button===0&&!e.altKey){if(!gm)activatePlayerToken(t,false);else select(t.id);if(canMove(t))drag={type:'token',id:t.id,floorId:t.floorId,dx:wx-t.x,dy:wy-t.y,x:t.x,y:t.y,moved:false};}else if(element&&e.button===0&&!e.altKey){selectElement(element.id);const layer=state.layers[element.layerId];if(!element.locked&&!layer.locked)drag={type:'element',id:element.id,mode:handle||'move',start:{...element.transform,pointerX:wx,pointerY:wy},pointerX:wx,pointerY:wy,transform:{...element.transform},moved:false};}else{select(null);selectElement(null);selectedTransition='';fillTransitionProperties();drag={type:'pan',px:p.x,py:p.y,x:camera.x,y:camera.y};}dirty=true;};
- canvas.onpointermove=e=>{const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale;if(transitionDraft?.phase==='placingB'){transitionCursor={x:wx,y:wy};dirty=true;}if(renderBoundsDraft){renderBoundsDraft.cursor={x:wx,y:wy};dirty=true;}if(!drag)return;if(drag.type==='renderBoundsRect'){drag.current={x:wx,y:wy};drag.moved=Math.abs(wx-drag.start.x)>=.001&&Math.abs(wy-drag.start.y)>=.001;}else if(drag.type==='renderBoundsEdit'){const dx=wx-drag.start.x,dy=wy-drag.start.y;drag.preview=cloneRenderBounds(drag.original);if(drag.mode==='move')for(const point of drag.preview.outer){point.x+=dx;point.y+=dy;}else drag.preview.outer[drag.vertexIndex]={x:wx,y:wy};drag.invalid=!validRenderBoundsChange(drag.preview,drag.mode==='move'?[]:[drag.vertexIndex-1,drag.vertexIndex]);drag.moved=drag.mode==='insert'||Math.abs(dx)>=.001||Math.abs(dy)>=.001;}else if(drag.type==='walkableRect'){drag.current={x:wx,y:wy};drag.moved=Math.abs(wx-drag.start.x)>=.001&&Math.abs(wy-drag.start.y)>=.001;}else if(drag.type==='walkableComponent'){drag.dx=wx-drag.start.x;drag.dy=wy-drag.start.y;drag.moved=Math.abs(drag.dx)>=.001||Math.abs(drag.dy)>=.001;}else if(drag.type==='pan'){camera.x=drag.x-(p.x-drag.px)/camera.scale;camera.y=drag.y-(p.y-drag.py)/camera.scale;scheduleViewportSave();}else if(drag.type==='token'){const x=wx-drag.dx,y=wy-drag.dy;if(x!==drag.x||y!==drag.y)drag.moved=true;drag.x=x;drag.y=y;if(drag.moved&&performance.now()-lastMove>50&&!positionOutbox?.hasQueuedBehindInflight()){send({type:'move',token:{id:drag.id,floorId:drag.floorId,x:drag.x,y:drag.y}});lastMove=performance.now();}}else if(drag.type==='element'){const transform=transformedFromDrag(drag.start,drag.mode,wx-drag.pointerX,wy-drag.pointerY,e.shiftKey);drag.transform=transform;drag.moved=true;state.elements[drag.id]={...state.elements[drag.id],transform};if(performance.now()-lastMove>50&&!positionOutbox?.hasQueuedBehindInflight()){send({type:'elementPreview',element:{id:drag.id,transform}});lastMove=performance.now();}}else if(drag.type==='transitionDraftRadius'){const endpoint=transitionDraft?.[drag.key];if(endpoint){const radius=Math.max(8,Math.hypot(wx-endpoint.position.x,wy-endpoint.position.y));if(Math.abs(radius-endpoint.radius)>.01)drag.moved=true;transitionDraft[drag.key]={...endpoint,radius};}}else if(drag.type==='transitionDraftCenter'){const start=drag.startEndpoint,dx=wx-drag.start.x,dy=wy-drag.start.y;transitionDraft[drag.key]={...start,position:clampTransitionPosition(start.floorId,{x:start.position.x+dx,y:start.position.y+dy})};drag.moved=true;}else if(drag.type==='transitionRadius'||drag.type==='transitionCenter'){const transition=state.transitions?.[drag.id],start=drag.startEndpoint;if(transition){const endpoint=drag.type==='transitionRadius'?{...start,radius:Math.max(8,Math.hypot(wx-start.position.x,wy-start.position.y))}:{...start,position:clampTransitionPosition(start.floorId,{x:start.position.x+wx-drag.start.x,y:start.position.y+wy-drag.start.y})};state.transitions[drag.id]={...transition,[drag.key]:endpoint};drag.moved=true;}}dirty=true;};
- function endDrag(commit=true){const completed=drag;drag=null;if(commit&&completed?.type==='renderBoundsRect'&&completed.moved){const left=Math.min(completed.start.x,completed.current.x),top=Math.min(completed.start.y,completed.current.y),right=Math.max(completed.start.x,completed.current.x),bottom=Math.max(completed.start.y,completed.current.y),polygon=renderBoundsPolygon([{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}]);if(validRenderBounds(polygon))queueCommand('setRenderBounds',{floorId:completed.floorId,expectedGeometryRevision:completed.geometryRevision,renderBounds:polygon});}else if(commit&&completed?.type==='renderBoundsEdit'&&completed.moved){if(!completed.invalid){if(queueCommand('setRenderBounds',{floorId:completed.floorId,expectedGeometryRevision:completed.geometryRevision,renderBounds:completed.preview}))selectedRenderBoundsVertex=-1;}else toast('Недопустимое изменение границы отменено');}else if(commit&&completed?.type==='walkableRect'&&completed.moved){const x=Math.min(completed.start.x,completed.current.x),y=Math.min(completed.start.y,completed.current.y),width=Math.abs(completed.current.x-completed.start.x),height=Math.abs(completed.current.y-completed.start.y);queueCommand(completed.operation,{floorId:completed.floorId,expectedGeometryRevision:completed.geometryRevision,walkableBounds:{x,y,width,height}});}else if(commit&&completed?.type==='walkableComponent'&&completed.moved)queueCommand('moveWalkableComponent',{floorId:completed.floorId,componentId:completed.componentId,expectedGeometryRevision:completed.geometryRevision,deltaX:completed.dx,deltaY:completed.dy});else if(completed?.type==='token'&&completed.moved)queuePosition({token:{id:completed.id,floorId:completed.floorId,x:completed.x,y:completed.y}});else if(completed?.type==='element'&&completed.moved)queueTransform('elementTransform',{element:{id:completed.id,transform:completed.transform}});else if((completed?.type==='transitionRadius'||completed?.type==='transitionCenter')&&completed.moved){const transition=state?.transitions?.[completed.id];if(transition)queueCommand('transitionUpdate',{transition});}fillElementProperties();fillTransitionProperties();dirty=true;}
- canvas.onpointerup=()=>endDrag(true);canvas.onpointercancel=()=>endDrag(false);canvas.onlostpointercapture=()=>endDrag(false);canvas.oncontextmenu=e=>e.preventDefault();
-@@ -462,9 +463,9 @@ function loadImage(key,plan){
-   if(installImage(key,bitmap))failures.delete(key);
-  })().catch(e=>{if(e.name!=='AbortError'){failures.set(key,Date.now()+5000);if(failures.size===1)toast('Не удалось загрузить изображения. Повтор через 5 секунд.');}}).finally(()=>{pending.delete(key);activeLoads--;dirty=true;});
- }
--function draw(now){const start=performance.now();dirty=false;imagePlans=new Map();fallbackWanted=new Set();const dpr=canvas.width/viewport.w;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#121c1d';ctx.fillRect(0,0,viewport.w,viewport.h);ctx.save();ctx.scale(camera.scale,camera.scale);ctx.translate(-camera.x,-camera.y);const right=camera.x+viewport.w/camera.scale,bottom=camera.y+viewport.h/camera.scale;ensureSceneRegion({left:camera.x,top:camera.y,right,bottom});let tokenAnimating=false;
-- if(state){const bounds=state.scene.bounds,gm=isGM(state.you),selectedSceneElement=state.elements?.[selectedElement];ctx.fillStyle='#182322';ctx.fillRect(0,0,bounds.width,bounds.height);drawSceneStack({ctx,state,currentFloorId:currentFloorID,view:{left:camera.x,top:camera.y,right,bottom},camera,dpr,requestImage,peekImage,selectedElement,editor:gm,renderIndex:sceneRenderIndex,showRotationHandle:elementRotationAllowed(selectedSceneElement),drawTokenLayer:(floorId,alpha)=>{tokenAnimating=drawTokens({ctx,camera,viewport,dpr,tokens:state.tokens,index:tokenIndex,visuals,moving:movingTokens,drag,selected,queue:[...(outbox?.data.queue||[]),...(positionOutbox?.data.queue||[])],requestImage,artwork,delta:now-lastFrame,floorId,alpha,walkableBounds:null,showOutOfBounds:false})||tokenAnimating;}});}
-- if(grid){const step=100;const screenStep=step*camera.scale;if(screenStep>=12){ctx.strokeStyle='#8ea18a16';ctx.lineWidth=1/camera.scale;ctx.beginPath();for(let x=Math.floor(camera.x/step)*step;x<right;x+=step){ctx.moveTo(x,camera.y);ctx.lineTo(x,bottom);}for(let y=Math.floor(camera.y/step)*step;y<bottom;y+=step){ctx.moveTo(camera.x,y);ctx.lineTo(right,y);}ctx.stroke();}}
-+function draw(now){const start=performance.now();dirty=false;imagePlans=new Map();fallbackWanted=new Set();const dpr=canvas.width/viewport.w;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#121c1d';ctx.fillRect(0,0,viewport.w,viewport.h);ctx.save();ctx.scale(camera.scale,camera.scale);ctx.translate(-camera.x,-camera.y);const right=camera.x+viewport.w/camera.scale,bottom=camera.y+viewport.h/camera.scale;ensureSceneRegion({left:camera.x,top:camera.y,right,bottom});let tokenAnimating=false,gm=false;
-+ if(state){const floor=state.floors?.[currentFloorID],bounds=renderBoundsAABB(floor?.renderBounds),selectedSceneElement=state.elements?.[selectedElement];gm=isGM(state.you);ctx.save();ctx.fillStyle='#182322';if(bounds){clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);ctx.fillRect(bounds.left,bounds.top,bounds.width,bounds.height);}else ctx.fillRect(camera.x,camera.y,right-camera.x,bottom-camera.y);ctx.restore();drawSceneStack({ctx,state,currentFloorId:currentFloorID,view:{left:camera.x,top:camera.y,right,bottom},camera,dpr,requestImage,peekImage,selectedElement,editor:gm,renderIndex:sceneRenderIndex,renderBoundsPaths,showRotationHandle:elementRotationAllowed(selectedSceneElement),drawTokenLayer:(floorId,alpha)=>{tokenAnimating=drawTokens({ctx,camera,viewport,dpr,tokens:state.tokens,index:tokenIndex,visuals,moving:movingTokens,drag,selected,queue:[...(outbox?.data.queue||[]),...(positionOutbox?.data.queue||[])],requestImage,artwork,delta:now-lastFrame,floorId,alpha,walkableBounds:null,showOutOfBounds:false})||tokenAnimating;}});}
-+ if(grid){const step=100;const screenStep=step*camera.scale;if(screenStep>=12){ctx.save();const floor=state?.floors?.[currentFloorID];if(!gm&&floor?.renderBounds)clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);ctx.strokeStyle='#8ea18a16';ctx.lineWidth=1/camera.scale;ctx.beginPath();for(let x=Math.floor(camera.x/step)*step;x<right;x+=step){ctx.moveTo(x,camera.y);ctx.lineTo(x,bottom);}for(let y=Math.floor(camera.y/step)*step;y<bottom;y+=step){ctx.moveTo(camera.x,y);ctx.lineTo(right,y);}ctx.stroke();ctx.restore();}}
-  if(isGM(state?.you)){drawWalkableEditor(ctx,state,currentFloorID,camera,{drag,selectedId:selectedWalkableComponent});drawRenderBoundsEditor(ctx,state,currentFloorID,camera,{tool:renderBoundsTool,draft:renderBoundsDraft,drag,selectedVertex:selectedRenderBoundsVertex});drawTransitionOverlay(ctx,state,currentFloorID,camera,{selectedId:selectedTransition,draft:transitionDraft,cursor:transitionCursor});}dirty=tokenAnimating||dirty;
-  ctx.restore();scheduleImages();$('zoom').textContent=`${Math.round(camera.scale*100)}%`;frameTime=performance.now()-start;rendered++;
- }
-diff --git a/web/scene-content.js b/web/scene-content.js
-index 05d6d7d..2ec00ed 100644
---- a/web/scene-content.js
-+++ b/web/scene-content.js
-@@ -68,6 +68,14 @@ export function transformedFromDrag(start,handle,dx,dy,freeAspect=false){
- 
- function viewportPolygon(transform,view){return [[view.left,view.top],[view.right,view.top],[view.right,view.bottom],[view.left,view.bottom]].map(([x,y])=>inversePoint(transform,x,y));}
- function polygonBounds(points){return {left:Math.min(...points.map(p=>p.x)),top:Math.min(...points.map(p=>p.y)),right:Math.max(...points.map(p=>p.x)),bottom:Math.max(...points.map(p=>p.y))};}
-+export function renderBoundsAABB(polygon){const points=polygon?.outer;if(!points?.length)return null;const bounds=polygonBounds(points);return {...bounds,width:bounds.right-bounds.left,height:bounds.bottom-bounds.top};}
-+export function floorCameraBounds(state,floorId){
-+  const renderBounds=renderBoundsAABB(state?.floors?.[floorId]?.renderBounds);if(renderBounds)return renderBounds;
-+  const catalog=Object.values(state?.elementCatalog||{}),elements=catalog.length?catalog:Object.values(state?.elements||{}),points=[];
-+  for(const element of elements){if(element.floorId!==floorId||!element.transform)continue;const t=element.transform;for(const [x,y]of [[0,0],[t.width,0],[t.width,t.height],[0,t.height]])points.push(worldPoint(t,x,y));}
-+  for(const token of Object.values(state?.tokens||{})){if(token.floorId!==floorId)continue;const radius=(token.size||0)/2;points.push({x:token.x-radius,y:token.y-radius},{x:token.x+radius,y:token.y+radius});}
-+  if(!points.length)return null;const bounds=polygonBounds(points);return {...bounds,width:Math.max(1,bounds.right-bounds.left),height:Math.max(1,bounds.bottom-bounds.top)};
-+}
- function rectIntersectsPolygon(left,top,right,bottom,points){
-   const axes=[[1,0],[0,1]];for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];axes.push([-(b.y-a.y),b.x-a.x]);}
-   for(const [ax,ay]of axes){let pmin=Infinity,pmax=-Infinity;for(const p of points){const value=p.x*ax+p.y*ay;pmin=Math.min(pmin,value);pmax=Math.max(pmax,value);}const values=[left*ax+top*ay,right*ax+top*ay,right*ax+bottom*ay,left*ax+bottom*ay],rmin=Math.min(...values),rmax=Math.max(...values);if(pmax<rmin||rmax<pmin)return false;}return true;
-@@ -131,6 +139,7 @@ export function walkableBounds(state,floorId){return orderedLayers(state,floorId
- 
- function pointOnSegment(a,b,x,y){const cross=(b.x-a.x)*(y-a.y)-(b.y-a.y)*(x-a.x);if(Math.abs(cross)>1e-7)return false;return x>=Math.min(a.x,b.x)-1e-7&&x<=Math.max(a.x,b.x)+1e-7&&y>=Math.min(a.y,b.y)-1e-7&&y<=Math.max(a.y,b.y)+1e-7;}
- function ringContains(ring,x,y){let inside=false;for(let i=0,j=ring.length-1;i<ring.length;j=i++){const a=ring[j],b=ring[i];if(pointOnSegment(a,b,x,y))return 2;if((a.y>y)!==(b.y>y)&&x<(b.x-a.x)*(y-a.y)/(b.y-a.y)+a.x)inside=!inside;}return inside?1:0;}
-+export function pointInRenderBounds(state,floorId,x,y){const polygon=state?.floors?.[floorId]?.renderBounds;return !polygon||!!ringContains(polygon.outer||[],x,y);}
- export function pointInWalkablePolygon(polygon,x,y){const outer=ringContains(polygon?.outer||[],x,y);if(!outer)return false;if(outer===2)return true;for(const hole of polygon.holes||[]){const hit=ringContains(hole,x,y);if(hit===1)return false;if(hit===2)return true;}return true;}
- export function walkableComponentAt(state,floorId,x,y){const components=[...(state?.floors?.[floorId]?.walkableComponents||[])].sort((a,b)=>a.id.localeCompare(b.id));for(let i=components.length-1;i>=0;i--)if(pointInWalkablePolygon(components[i].polygon,x,y))return components[i];return null;}
- 
-@@ -138,6 +147,18 @@ function renderBoundsSegmentsIntersect(a,b,c,d){
-   const cross=(p,q,r)=>(q.x-p.x)*(r.y-p.y)-(q.y-p.y)*(r.x-p.x),on=(p,q,r)=>Math.abs(cross(p,q,r))<=1e-7&&q.x>=Math.min(p.x,r.x)-1e-7&&q.x<=Math.max(p.x,r.x)+1e-7&&q.y>=Math.min(p.y,r.y)-1e-7&&q.y<=Math.max(p.y,r.y)+1e-7,o1=cross(a,b,c),o2=cross(a,b,d),o3=cross(c,d,a),o4=cross(c,d,b);
-   return on(a,c,b)||on(a,d,b)||on(c,a,d)||on(c,b,d)||((o1<0)!==(o2<0))&&((o3<0)!==(o4<0));
- }
-+
-+export class FloorRenderBoundsPathCache{
-+  constructor(){this.sceneId='';this.entries=new Map();this.builds=0;}
-+  clear(){this.sceneId='';this.entries.clear();}
-+  path(state,floor){
-+    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.sceneId=sceneId;this.entries.clear();}
-+    if(!floor?.renderBounds){this.entries.delete(floor?.id);return null;}const cached=this.entries.get(floor.id);if(cached?.revision===floor.geometryRevision)return cached.path;
-+    const path=new Path2D(),points=floor.renderBounds.outer||[];if(points.length){path.moveTo(points[0].x,points[0].y);for(let i=1;i<points.length;i++)path.lineTo(points[i].x,points[i].y);path.closePath();}this.entries.set(floor.id,{revision:floor.geometryRevision,path});this.builds++;return path;
-+  }
-+}
-+const defaultRenderBoundsPaths=new FloorRenderBoundsPathCache();
-+export function clipFloorRenderBounds(ctx,state,floor,paths=defaultRenderBoundsPaths){const path=paths.path(state,floor);if(!path)return false;ctx.clip(path);return true;}
- function validRenderBoundsBasics(polygon){
-   const ring=polygon?.outer;if(!Array.isArray(ring)||ring.length<3||ring.length>10000||(polygon.holes?.length||0))return false;
-   for(const point of ring)if(!Number.isFinite(point?.x)||!Number.isFinite(point?.y)||Math.abs(point.x)>1000000||Math.abs(point.y)>1000000)return false;
-@@ -177,13 +198,14 @@ export function drawRenderBoundsEditor(ctx,state,floorId,camera,{tool='',draft=n
-   ctx.save();ctx.beginPath();traceRenderBounds(ctx,preview.outer,!incomplete);if(polygonDraft&&draft.cursor&&draft.points.length){ctx.moveTo(draft.points.at(-1).x,draft.points.at(-1).y);ctx.lineTo(draft.cursor.x,draft.cursor.y);if(draft.points.length>1)ctx.lineTo(draft.points[0].x,draft.points[0].y);}ctx.fillStyle=invalid?'#e66f6728':'#e2bf5b1f';ctx.strokeStyle=invalid?'#ff8178':'#e7c866';ctx.lineWidth=2/camera.scale;ctx.setLineDash((rectangle||edit||polygonDraft)?[8/camera.scale,5/camera.scale]:[]);if(!incomplete)ctx.fill('evenodd');ctx.stroke();ctx.setLineDash([]);if(tool&&preview.outer.length){const radius=4.5/camera.scale;for(let i=0;i<preview.outer.length;i++){const point=preview.outer[i];ctx.fillStyle=invalid?'#ff8178':i===selectedVertex?'#fff4c5':'#f3d77b';ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fill();}if(tool==='edit'){ctx.strokeStyle='#d7be71aa';ctx.lineWidth=1.5/camera.scale;const size=5/camera.scale;for(let i=0;i<preview.outer.length;i++){const a=preview.outer[i],b=preview.outer[(i+1)%preview.outer.length],x=(a.x+b.x)/2,y=(a.y+b.y)/2;ctx.strokeRect(x-size/2,y-size/2,size,size);}}}ctx.restore();
- }
- 
--export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,showRotationHandle=true}){
-+export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,clipRenderBounds=!editor,showRotationHandle=true}){
-   for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
--    if(alpha<=0)continue;
-+    if(alpha<=0)continue;const clipped=clipRenderBounds&&floor.renderBounds;if(clipped){ctx.save();clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);}
-     for(const layer of orderedLayers(state,floor.id)){
-       if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex});
-       else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
-     }
-+    if(clipped)ctx.restore();
-   }
-   ctx.globalAlpha=1;if(editor){const selected=state.elements?.[selectedElement];if(selected?.floorId===currentFloorId)drawSelection(ctx,selected,camera,showRotationHandle);}
- }
 diff --git a/browser_scenarios_test.go b/browser_scenarios_test.go
-index b105a2e..c7f35a5 100644
+index d9bfcde..707c804 100644
 --- a/browser_scenarios_test.go
 +++ b/browser_scenarios_test.go
-@@ -41,10 +41,33 @@ func browserHeavyScene(t *testing.T, s *Server) {
- 		if scene == nil {
- 			t.Fatal("browser scene with map not found")
- 		}
-+		floorID := firstFloorID(scene)
-+		centerX, centerY := 0.0, 0.0
-+		if bounds := scene.Floors[floorID].RenderBounds; bounds != nil {
-+			aabb := polygonBounds(*bounds)
-+			centerX, centerY = (aabb.MinX+aabb.MaxX)/2, (aabb.MinY+aabb.MaxY)/2
-+		} else {
-+			initialized := false
-+			var minX, minY, maxX, maxY float64
-+			for _, element := range scene.Elements {
-+				if element.FloorID == floorID {
-+					left, top, right, bottom := element.Transform.X, element.Transform.Y, element.Transform.X+element.Transform.Width, element.Transform.Y+element.Transform.Height
-+					if !initialized {
-+						minX, minY, maxX, maxY, initialized = left, top, right, bottom, true
-+					} else {
-+						minX, minY = min(minX, left), min(minY, top)
-+						maxX, maxY = max(maxX, right), max(maxY, bottom)
-+					}
-+				}
-+			}
-+			if initialized {
-+				centerX, centerY = (minX+maxX)/2, (minY+maxY)/2
-+			}
-+		}
- 		for i, a := range assets {
- 			ss.Assets[a.ID] = a
- 			tokenID := id()
--			scene.Tokens[tokenID] = Token{ID: tokenID, Name: "Cache", FloorID: firstFloorID(scene), X: scene.Bounds.Width/2 + float64(i%10), Y: scene.Bounds.Height/2 + float64(i/10), Size: 1024, Color: "#c2d89b", Asset: a.ID}
-+			scene.Tokens[tokenID] = Token{ID: tokenID, Name: "Cache", FloorID: floorID, X: centerX + float64(i%10), Y: centerY + float64(i/10), Size: 1024, Color: "#c2d89b", Asset: a.ID}
- 		}
- 		scene.Revision++
- 		s.dirty = true
-@@ -80,7 +103,7 @@ const browserDraftScenario = `(async()=>{
- const browserModuleScenario = `(async()=>{
-  const {Outbox,Drafts,CacheWriteBudget,imageEdge}=await import('/reliability.js');const values=new Map();const store={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)};const sent=[];
-  const {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction}=await import('/rendering.js');
-- const {SceneRenderIndex,compositeFloors,drawSceneStack,elementHandleAt,elementIntersectsView,tileAvailable,tiledFallbackCandidates,transformedFromDrag}=await import('/scene-content.js');
-+	const {FloorRenderBoundsPathCache,SceneRenderIndex,clipFloorRenderBounds,compositeFloors,drawSceneStack,elementHandleAt,elementIntersectsView,floorCameraBounds,hitElement,pointInRenderBounds,renderBoundsAABB,tileAvailable,tiledFallbackCandidates,transformedFromDrag}=await import('/scene-content.js');
-  const {SceneTreeRuntime}=await import('/scene-tree.js');
-  const {needsActiveTokenRequest}=await import('/scenes.js');
+@@ -142,6 +142,7 @@ const browserModuleScenario = `(async()=>{
+ 	clipCtx.clearRect(0,0,80,80);clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillStyle='#fff';clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(!clipCtx.getImageData(10,40,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('grid/world-effect clip helper failed');const firstBuilds=clipPaths.builds;clipCtx.clearRect(0,0,80,80);clipFloor.geometryRevision=2;clipFloor.renderBounds={outer:[{x:30,y:30},{x:70,y:30},{x:70,y:70},{x:30,y:70}],holes:[]};clipPaths.syncState(clipState);if(clipPaths.entries.size)throw Error('stale render bounds path survived snapshot invalidation');clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(clipPaths.builds!==firstBuilds+1||clipCtx.getImageData(10,10,1,1).data[3]||!clipCtx.getImageData(40,40,1,1).data[3])throw Error('render bounds path cache ignored geometry revision');clipCtx.clearRect(0,0,80,80);drawSceneStack({...clipArgs,editor:true});if(!clipCtx.getImageData(25,25,1,1).data[3])throw Error('GM editor was clipped to render bounds');
+ 	const tiledAsset={id:'map',renderMode:'tiled',width:2048,height:2048,levels:3},fallbacks=tiledFallbackCandidates(tiledAsset,0,1,0);if(fallbacks[0]?.path!=='map/1_0_0.png'||fallbacks[0].cropX!==256||fallbacks[0].cropWidth!==256)throw Error('tiled fallback mapping');const drawCalls=[],fallbackCtx={globalAlpha:1,save(){},restore(){},translate(){},rotate(){},drawImage(...args){drawCalls.push(args);}},fallbackState={floors:{lower:{id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};drawSceneStack({ctx:fallbackCtx,state:fallbackState,currentFloorId:'lower',view:{left:520,top:10,right:900,bottom:400},camera:{scale:2},dpr:1,requestImage:()=>null,peekImage:path=>path==='map/1_0_0.png'?{width:128,height:128}:null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex()});if(drawCalls.length!==1||drawCalls[0].length!==9||drawCalls[0][1]!==64||drawCalls[0][3]!==64||drawCalls[0][5]!==512)throw Error('coarse LOD was not cropped into missing detailed tile');
+ 	const tileCanvas=document.createElement('canvas'),tileCtx=tileCanvas.getContext('2d'),tileRequests=[],tileBounds=new FloorRenderBoundsResourceCache(32),initialTileBounds={outer:[{x:50,y:50},{x:900,y:50},{x:900,y:400},{x:400,y:400},{x:400,y:900},{x:50,y:900}],holes:[]},tileFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:initialTileBounds},tileState={scene:{id:'tile-bounds'},floors:{lower:tileFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};const tileArgs={ctx:tileCtx,state:tileState,currentFloorId:'lower',view:{left:0,top:0,right:2048,bottom:2048},camera:{scale:1},dpr:1,requestImage:(path,edge,priority='visible')=>{tileRequests.push({path,priority});return null;},peekImage:()=>null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:tileBounds};drawSceneStack(tileArgs);const requestedTiles=tileRequests.map(item=>item.path).sort().join(',');if(requestedTiles!=='map/0_0_0.png,map/0_0_1.png,map/0_1_0.png'||tileRequests.some(item=>item.priority==='prefetch'))throw Error('concave render bounds did not cull outside tile requests');const misses=tileBounds.misses;drawSceneStack(tileArgs);if(tileBounds.hits===0||tileBounds.misses!==misses)throw Error('tile bounds classifications were not cached');tileFloor.geometryRevision=2;tileFloor.renderBounds={outer:[{x:1100,y:1100},{x:1400,y:1100},{x:1400,y:1400},{x:1100,y:1400}],holes:[]};tileBounds.syncState(tileState);if(tileBounds.classifications.size||tileBounds.elements.size)throw Error('stale tile classification survived bounds revision');tileRequests.length=0;drawSceneStack(tileArgs);if(tileRequests.map(item=>item.path).join(',')!=='map/0_2_2.png')throw Error('tile wanted set used stale bounds');tileFloor.geometryRevision=3;tileFloor.renderBounds=initialTileBounds;tileBounds.syncState(tileState);tileRequests.length=0;drawSceneStack(tileArgs);if(tileRequests.map(item=>item.path).sort().join(',')!==requestedTiles)throw Error('tile classification did not recover after bounds restore');for(let revision=4;revision<44;revision++){tileFloor.geometryRevision=revision;tileFloor.renderBounds=revision%2?initialTileBounds:{outer:[{x:1100,y:1100},{x:1400,y:1100},{x:1400,y:1400},{x:1100,y:1400}],holes:[]};tileBounds.syncState(tileState);tileRequests.length=0;drawSceneStack(tileArgs);}if(tileBounds.classifications.size>32||tileBounds.elements.size>512||tileBounds.revisions.size!==1)throw Error('render bounds caches grew during frequent edits');
++	const journeyAsset={id:'journey',renderMode:'tiled',width:8192,height:8192,levels:5},journeyFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:{outer:[{x:0,y:0},{x:1536,y:0},{x:1536,y:512},{x:512,y:512},{x:512,y:1536},{x:0,y:1536}],holes:[]}},journeyState={scene:{id:'tile-journey'},floors:{lower:journeyFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'journey',transform:{x:0,y:0,width:8192,height:8192,rotation:0}}},assets:{journey:journeyAsset}},journeyCache=new FloorRenderBoundsResourceCache(64),decodedTiles=new Set();let journeyRequests=0,journeyDecodes=0,journeyRAM=0;const journeyRender=view=>{let planned=0;drawSceneStack({ctx:tileCtx,state:journeyState,currentFloorId:'lower',view,camera:{scale:1},dpr:1,requestImage:path=>{planned++;if(!decodedTiles.has(path)){decodedTiles.add(path);journeyRequests++;journeyDecodes++;journeyRAM+=512*512*4;}return null;},peekImage:()=>null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:journeyCache});return planned;};const insidePlans=journeyRender({left:0,top:0,right:1024,bottom:768}),insideRequests=journeyRequests,insideDecodes=journeyDecodes,insideRAM=journeyRAM,outsidePlans=journeyRender({left:2048,top:2048,right:3072,bottom:2816});if(!insidePlans||outsidePlans||journeyRequests!==insideRequests||journeyDecodes!==insideDecodes||journeyRAM!==insideRAM)throw Error('outside camera selected large-map resources');const returnPlans=journeyRender({left:0,top:0,right:1024,bottom:768});if(!returnPlans||journeyRequests!==insideRequests||journeyDecodes!==insideDecodes||journeyRAM!==insideRAM||journeyRAM>64*1048576)throw Error('inside/outside/back reloaded or leaked tiled resources: '+JSON.stringify({returnPlans,journeyRequests,insideRequests,journeyDecodes,insideDecodes,journeyRAM,insideRAM}));
+ 	const keptController=new AbortController(),staleController=new AbortController(),pendingLoads=new Map([['kept',keptController],['stale',staleController]]);if(abortUnwantedImageLoads(pendingLoads,new Set(['kept']))!==1||keptController.signal.aborted||!staleController.signal.aborted||abortUnwantedImageLoads(pendingLoads,new Set(['kept']))!==0)throw Error('stale pending preload was not cancelled');
+ 	const sharedBounds=new FloorRenderBoundsResourceCache(32),sharedFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:{outer:[{x:0,y:0},{x:60,y:0},{x:60,y:20},{x:20,y:20},{x:20,y:60},{x:0,y:60}],holes:[]}},sharedState={scene:{id:'shared-bounds'},floors:{lower:sharedFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{partial:{id:'partial',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'shared',transform:{x:10,y:10,width:40,height:40,rotation:0}},outside:{id:'outside',floorId:'lower',layerId:'visual',zOrder:1,visible:true,opacity:1,assetId:'shared',transform:{x:30,y:30,width:10,height:10,rotation:0}}},assets:{shared:{id:'shared',kind:'image',renderMode:'bitmap',width:40,height:40}}},sharedRequests=[];const sharedArgs={ctx:tileCtx,state:sharedState,currentFloorId:'lower',view:{left:0,top:0,right:80,bottom:80},camera:{scale:1},dpr:1,requestImage:path=>{sharedRequests.push(path);return null;},editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:sharedBounds};drawSceneStack(sharedArgs);if(sharedRequests.join(',')!=='shared/image.png')throw Error('shared bitmap was not culled per usage');sharedRequests.length=0;drawSceneStack({...sharedArgs,editor:true});if(sharedRequests.length!==2)throw Error('GM bitmap resource culling was enabled');
+ 	const tokenArtwork=new ArtworkCache(1048576),tokenIndex=new SpatialIndex(),tokenState={partial:{id:'partial',floorId:'lower',x:25,y:25,size:12,name:'partial',color:'#fff',asset:'portrait'},outside:{id:'outside',floorId:'lower',x:40,y:40,size:10,name:'outside',color:'#fff',asset:'portrait'}};for(const token of Object.values(tokenState))tokenIndex.set(token);const tokenRequests=[];drawTokens({ctx:tileCtx,camera:{x:0,y:0,scale:1},viewport:{w:80,h:80},dpr:1,tokens:tokenState,index:tokenIndex,visuals:new Map(),moving:new Set(),drag:null,selected:null,queue:[],requestImage:path=>{tokenRequests.push(path);return null;},artwork:tokenArtwork,delta:16,floorId:'lower',resourceVisible:(x,y,radius)=>sharedBounds.intersectsCircle(sharedState,sharedFloor,x,y,radius)});if(tokenRequests.join(',')!=='portrait/token.png')throw Error('shared token artwork was not culled per usage');tokenArtwork.clear();
+diff --git a/geometry.go b/geometry.go
+index 535a40b..82980ca 100644
+--- a/geometry.go
++++ b/geometry.go
+@@ -9,10 +9,16 @@ import (
+ const (
+ 	// One millimetre in the existing world coordinate system is precise enough
+ 	// for editor geometry and keeps exact integer predicates safe at ±1e6.
+-	geometryQuantum          = 0.001
+-	maxGeometryRingVertices  = 10_000
+-	maxGeometryTotalVertices = 50_000
+-	maxWalkableComponents    = 2_048
++	geometryQuantum = 0.001
++	// Input is tighter because simple-ring validation is quadratic. Persisted
++	// results may be larger, but remain bounded for snapshots and later edits.
++	maxGeometryInputVertices          = 512
++	maxGeometryRingVertices           = 4_096
++	maxGeometryResultVertices         = 8_192
++	maxGeometryOperationInputVertices = maxGeometryResultVertices + maxGeometryInputVertices
++	maxWalkableComponents             = 512
++	maxGeometryOperationComponents    = maxWalkableComponents + 1 // stored components plus the edited rectangle
++	maxGeometryCommandBytes           = 12 << 10
+ )
  
-@@ -111,6 +134,11 @@ const browserModuleScenario = `(async()=>{
-  const renderIndex=new SceneRenderIndex();if(renderIndex.forLayer(renderState,'visual').join(',')!=='b,a')throw Error('render index order');const rebuilds=renderIndex.rebuilds,oldA=renderState.elements.a;renderState.elements.a={...oldA,transform:{...oldA.transform,x:10}};renderIndex.elementChanged(oldA,renderState.elements.a);if(renderState.elements[renderIndex.forLayer(renderState,'visual')[1]].transform.x!==10||renderIndex.rebuilds!==rebuilds)throw Error('transform invalidated render order');const movedA={...renderState.elements.a,zOrder:0};renderState.elements.a=movedA;renderIndex.elementChanged(oldA,movedA);if(renderIndex.forLayer(renderState,'visual')[0]!=='a'||renderIndex.rebuilds===rebuilds)throw Error('render order change not invalidated');renderIndex.reset();renderState.elements={b:renderState.elements.b};if(renderIndex.forLayer(renderState,'visual').join(',')!=='b')throw Error('scene switch retained elements');
-  if(!elementIntersectsView({transform:{x:90,y:90,width:100,height:40,rotation:45}},{left:100,top:100,right:160,bottom:160})||elementIntersectsView({transform:{x:1000,y:1000,width:100,height:40,rotation:45}},{left:0,top:0,right:200,bottom:200}))throw Error('rotated bitmap viewport culling');
-  const drawState={floors:{lower:{id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{far:{id:'far',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'image',transform:{x:1000,y:1000,width:100,height:100,rotation:0}}},assets:{image:{id:'image',kind:'image',renderMode:'bitmap',width:100,height:100}}};let requests=0;const drawArgs={ctx:{globalAlpha:1},state:drawState,currentFloorId:'lower',view:{left:0,top:0,right:200,bottom:200},camera:{scale:1},dpr:1,requestImage:()=>{requests++;},editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex()};drawSceneStack(drawArgs);if(requests)throw Error('offscreen bitmap requested');drawState.floors.lower.opacity=0;drawState.elements.far={...drawState.elements.far,transform:{...drawState.elements.far.transform,x:20,y:20}};drawArgs.renderIndex.reset();drawSceneStack(drawArgs);if(requests)throw Error('zero-alpha floor requested bitmap');
-+	const clipCanvas=document.createElement('canvas');clipCanvas.width=80;clipCanvas.height=80;const clipCtx=clipCanvas.getContext('2d'),clipPaths=new FloorRenderBoundsPathCache(),clipFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:{outer:[{x:0,y:0},{x:60,y:0},{x:60,y:20},{x:20,y:20},{x:20,y:60},{x:0,y:60}],holes:[]}},clipState={scene:{id:'clip-scene'},floors:{lower:clipFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{partial:{id:'partial',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,transform:{x:10,y:10,width:40,height:40,rotation:0}}},assets:{}};const clipArgs={ctx:clipCtx,state:clipState,currentFloorId:'lower',view:{left:0,top:0,right:80,bottom:80},camera:{scale:1},dpr:1,requestImage:()=>null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),renderBoundsPaths:clipPaths};drawSceneStack(clipArgs);if(!clipCtx.getImageData(15,15,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('concave bounds did not clip partial element');
-+	const renderCameraBounds=floorCameraBounds(clipState,'lower');if(renderCameraBounds.left!==0||renderCameraBounds.top!==0||renderCameraBounds.right!==60||renderCameraBounds.bottom!==60)throw Error('camera did not use render bounds AABB');const contentCameraBounds=floorCameraBounds({...clipState,floors:{lower:{...clipFloor,renderBounds:null}}},'lower');if(contentCameraBounds.left!==10||contentCameraBounds.top!==10||contentCameraBounds.right!==50||contentCameraBounds.bottom!==50||renderBoundsAABB(null)!==null)throw Error('null render bounds camera fallback');
-+ if(!pointInRenderBounds(clipState,'lower',60,10)||pointInRenderBounds(clipState,'lower',40,40)||!pointInRenderBounds({floors:{lower:{id:'lower'}}},'lower',400,400))throw Error('render bounds hit gate');const hitIndex=new SceneRenderIndex();if(!hitElement(clipState,'lower',40,40,hitIndex)||pointInRenderBounds(clipState,'lower',40,40))throw Error('GM outside-bounds element access was lost');const hitTokens=new SpatialIndex();hitTokens.set({id:'outside',x:40,y:40,size:20});if(!hitTokens.query(40,40,40,40).length||pointInRenderBounds(clipState,'lower',40,40))throw Error('player token hit was not gated before spatial candidates');
-+ clipCtx.clearRect(0,0,80,80);clipState.layers.tokens={id:'tokens',floorId:'lower',kind:'tokens',order:1};clipArgs.drawTokenLayer=()=>{clipCtx.fillStyle='#00f';clipCtx.fillRect(0,0,80,80);};drawSceneStack(clipArgs);if(!clipCtx.getImageData(10,40,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('token layer escaped render bounds clip');
-+ clipCtx.clearRect(0,0,80,80);clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillStyle='#fff';clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(!clipCtx.getImageData(10,40,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('grid/world-effect clip helper failed');const firstBuilds=clipPaths.builds;clipCtx.clearRect(0,0,80,80);clipFloor.geometryRevision=2;clipFloor.renderBounds={outer:[{x:30,y:30},{x:70,y:30},{x:70,y:70},{x:30,y:70}],holes:[]};clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(clipPaths.builds!==firstBuilds+1||clipCtx.getImageData(10,10,1,1).data[3]||!clipCtx.getImageData(40,40,1,1).data[3])throw Error('render bounds path cache ignored geometry revision');clipCtx.clearRect(0,0,80,80);drawSceneStack({...clipArgs,editor:true});if(!clipCtx.getImageData(25,25,1,1).data[3])throw Error('GM editor was clipped to render bounds');
-  const tiledAsset={id:'map',renderMode:'tiled',width:2048,height:2048,levels:3},fallbacks=tiledFallbackCandidates(tiledAsset,0,1,0);if(fallbacks[0]?.path!=='map/1_0_0.png'||fallbacks[0].cropX!==256||fallbacks[0].cropWidth!==256)throw Error('tiled fallback mapping');const drawCalls=[],fallbackCtx={globalAlpha:1,save(){},restore(){},translate(){},rotate(){},drawImage(...args){drawCalls.push(args);}},fallbackState={floors:{lower:{id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};drawSceneStack({ctx:fallbackCtx,state:fallbackState,currentFloorId:'lower',view:{left:520,top:10,right:900,bottom:400},camera:{scale:2},dpr:1,requestImage:()=>null,peekImage:path=>path==='map/1_0_0.png'?{width:128,height:128}:null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex()});if(drawCalls.length!==1||drawCalls[0].length!==9||drawCalls[0][1]!==64||drawCalls[0][3]!==64||drawCalls[0][5]!==512)throw Error('coarse LOD was not cropped into missing detailed tile');
-  const artwork=new ArtworkCache(16);artwork.begin(['a','b']);const a=artwork.get('a',2,2,()=>{});if(artwork.get('b',2,2,()=>{})!==null||artwork.get('a',2,2,()=>{})!==a)throw Error('visible artwork churn');artwork.clear();if(artwork.bytes!==0||a.width!==0)throw Error('artwork not released');
-  const box=new Outbox(store,'test',cmd=>{sent.push(cmd);return true},()=>{},()=>{});
-@@ -121,8 +149,8 @@ const browserModuleScenario = `(async()=>{
-  const d=new Drafts();d.set('a','name','one');d.set('a','name','two');d.confirm('a',{name:'one'});if(d.get('a').name!=='two')throw Error('ack erased newer draft');
-  const writes=new CacheWriteBudget(2,10);const releaseA=writes.acquire(6);if(!releaseA||writes.acquire(5)!==null)throw Error('write byte budget');const releaseB=writes.acquire(4);if(!releaseB||writes.acquire(1)!==null)throw Error('write count budget');releaseA();const releaseC=writes.acquire(5);if(!releaseC||writes.bytes!==9)throw Error('write budget release');releaseB();releaseC();if(writes.count||writes.bytes)throw Error('write budget leaked');
-  for(const count of [1,64,65,100,1000,2000]){const edge=imageEdge(count,64*1048576);if(count*edge*edge*4>64*1048576)throw Error('image budget exceeded')}
-- const perfLayers=Object.fromEntries(Array.from({length:4},(_,i)=>['layer'+i,{id:'layer'+i,floorId:'floor',kind:'visual',order:i,visible:true,opacity:1}])),perfElements=Object.fromEntries(Array.from({length:1000},(_,i)=>['element'+i,{id:'element'+i,name:'Element '+i,floorId:'floor',layerId:'layer'+(i%4),zOrder:i,visible:true,locked:false,opacity:1,assetId:'image',transform:{x:(i%50)*220,y:Math.floor(i/50)*220,width:100,height:100,rotation:i%7}}])),perfCatalog=Object.fromEntries(Object.entries(perfElements).map(([id,element])=>[id,{...element,assetId:''}])),perfState={you:{role:'gm',gm:true},scene:{id:'scene',bounds:{width:12000,height:6000}},floors:{floor:{id:'floor',name:'Floor',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:perfLayers,elements:perfElements,elementCatalog:perfCatalog,_catalogVersion:1,tokens:{},transitions:{},assets:{}};let checksum=0,start=performance.now();for(let pass=0;pass<100;pass++)for(const layer of Object.values(perfLayers)){const sorted=Object.values(perfElements).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));checksum+=sorted.length;}const legacyOrderMs=performance.now()-start,perfIndex=new SceneRenderIndex();for(const layer of Object.values(perfLayers))perfIndex.forLayer(perfState,layer.id);start=performance.now();for(let pass=0;pass<100;pass++)for(const layer of Object.values(perfLayers))checksum+=perfIndex.forLayer(perfState,layer.id).length;const cachedOrderMs=performance.now()-start;
-- let focused='';const treeElements={tree:document.createElement('div'),addFloor:document.createElement('button'),addLayer:document.createElement('button'),boundsWidth:document.createElement('input'),boundsHeight:document.createElement('input'),boundsSave:document.createElement('button'),addTransition:document.createElement('button'),controls:[]},treeRuntime=new SceneTreeRuntime(treeElements,{queue:()=>{},selectElement:()=>{},selectTransition:()=>{},beginTransition:()=>{},setFloor:()=>{},getFloor:()=> 'floor',focusElement:element=>{focused=element.id;}});start=performance.now();for(let pass=0;pass<20;pass++)treeRuntime.update(perfState,'','');const legacyTreeMs=performance.now()-start,treeNode=treeElements.tree.querySelector('.tree-element-row'),treeRebuilds=treeRuntime.rebuilds;start=performance.now();for(let pass=0;pass<20;pass++){const item=perfState.elements.element0;perfState.elements={...perfState.elements,element0:{...item,transform:{...item.transform,x:item.transform.x+1}}};treeRuntime.update(perfState,pass%2?'element0':'','');}const transformOnlyMs=performance.now()-start;if(treeElements.tree.querySelector('.tree-element-row')!==treeNode||treeRuntime.rebuilds!==treeRebuilds)throw Error('viewport state rebuilt persistent scene tree');treeNode.querySelector('[title="Центрировать на элементе"]').click();if(!focused)throw Error('element focus action missing');
-+	const perfLayers=Object.fromEntries(Array.from({length:4},(_,i)=>['layer'+i,{id:'layer'+i,floorId:'floor',kind:'visual',order:i,visible:true,opacity:1}])),perfElements=Object.fromEntries(Array.from({length:1000},(_,i)=>['element'+i,{id:'element'+i,name:'Element '+i,floorId:'floor',layerId:'layer'+(i%4),zOrder:i,visible:true,locked:false,opacity:1,assetId:'image',transform:{x:(i%50)*220,y:Math.floor(i/50)*220,width:100,height:100,rotation:i%7}}])),perfCatalog=Object.fromEntries(Object.entries(perfElements).map(([id,element])=>[id,{...element,assetId:''}])),perfState={you:{role:'gm',gm:true},scene:{id:'scene'},floors:{floor:{id:'floor',name:'Floor',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:perfLayers,elements:perfElements,elementCatalog:perfCatalog,_catalogVersion:1,tokens:{},transitions:{},assets:{}};let checksum=0,start=performance.now();for(let pass=0;pass<100;pass++)for(const layer of Object.values(perfLayers)){const sorted=Object.values(perfElements).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));checksum+=sorted.length;}const legacyOrderMs=performance.now()-start,perfIndex=new SceneRenderIndex();for(const layer of Object.values(perfLayers))perfIndex.forLayer(perfState,layer.id);start=performance.now();for(let pass=0;pass<100;pass++)for(const layer of Object.values(perfLayers))checksum+=perfIndex.forLayer(perfState,layer.id).length;const cachedOrderMs=performance.now()-start;
-+	let focused='';const treeElements={tree:document.createElement('div'),addFloor:document.createElement('button'),addLayer:document.createElement('button'),addTransition:document.createElement('button'),controls:[]},treeRuntime=new SceneTreeRuntime(treeElements,{queue:()=>{},selectElement:()=>{},selectTransition:()=>{},beginTransition:()=>{},setFloor:()=>{},getFloor:()=> 'floor',focusElement:element=>{focused=element.id;}});start=performance.now();for(let pass=0;pass<20;pass++)treeRuntime.update(perfState,'','');const legacyTreeMs=performance.now()-start,treeNode=treeElements.tree.querySelector('.tree-element-row'),treeRebuilds=treeRuntime.rebuilds;start=performance.now();for(let pass=0;pass<20;pass++){const item=perfState.elements.element0;perfState.elements={...perfState.elements,element0:{...item,transform:{...item.transform,x:item.transform.x+1}}};treeRuntime.update(perfState,pass%2?'element0':'','');}const transformOnlyMs=performance.now()-start;if(treeElements.tree.querySelector('.tree-element-row')!==treeNode||treeRuntime.rebuilds!==treeRebuilds)throw Error('viewport state rebuilt persistent scene tree');treeNode.querySelector('[title="Центрировать на элементе"]').click();if(!focused)throw Error('element focus action missing');
-  const viewport={left:0,top:0,right:1000,bottom:800},visibleBitmaps=Object.values(perfElements).filter(element=>elementIntersectsView(element,viewport)).length;window.optimizationMetrics={legacyOrderMs,cachedOrderMs,legacyTreeMs,transformOnlyMs,legacyTreeRebuilds:20,transformTreeRebuilds:0,legacyBitmapRequests:Object.keys(perfElements).length,culledBitmapRequests:visibleBitmaps,checksum};
-  return true;
- })()`
-diff --git a/browser_test.go b/browser_test.go
-index 15d8f33..c9746ef 100644
---- a/browser_test.go
-+++ b/browser_test.go
-@@ -311,18 +311,19 @@ func TestBrowser(t *testing.T) {
- 	renderX1, renderY1 := walkable.X1+35, walkable.Y1+35
- 	renderX2, renderY2 := renderX1+210, renderY1+170
- 	renderBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
-+	renderRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
- 	eval(`document.querySelector('.tree-render-bounds [title="Создать прямоугольную границу отрисовки"]').click();true`)
- 	dragMouse(renderX1, renderY1, renderX2, renderY2)
- 	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != renderBefore {
- 		t.Fatal("render bounds rectangle streamed during drag")
- 	}
- 	releaseMouse(renderX2, renderY2)
--	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds')?.dataset.boundsState==='set')return true;await sleep(50)}return false})()`, renderBefore)) != "true" {
-+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){const row=document.querySelector('.tree-render-bounds');if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&row?.dataset.boundsState==='set'&&row.dataset.geometryRevision!==%s&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, renderBefore, renderRevision)) != "true" {
- 		t.Fatal("render bounds rectangle was not committed once")
- 	}
- 	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
- 	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='clearRenderBounds').length===1&&document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
--		t.Fatal("render bounds clear failed")
-+		t.Fatalf("render bounds clear failed: %s", eval(`JSON.stringify({commands:sentCommands.filter(command=>command.type==='clearRenderBounds'),state:document.querySelector('.tree-render-bounds')?.dataset.boundsState,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
- 	}
- 
- 	// A self-intersecting polygon remains a local invalid preview and Enter
-@@ -484,8 +485,11 @@ func TestBrowser(t *testing.T) {
- 	eval(`(()=>{const original=globalThis.createImageBitmap;window.pressureDecodes=0;globalThis.createImageBitmap=async(...args)=>{const header=new DataView(await args[0].slice(0,24).arrayBuffer());if(header.getUint32(16)===512&&header.getUint32(20)===509)window.pressureDecodes++;return original(...args)};return true})()`)
- 	browserHeavyScene(t, s)
- 	t.Log("checking 80 native assets above the decoded-image budget")
-+	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<100;i++){if(document.querySelectorAll('.token-row').length>=80){document.getElementById('fit').click();return true}await sleep(50)}return false})()`) != "true" {
-+		t.Fatal("heavy scene snapshot did not arrive before camera fit")
-+	}
- 	eval(`for(let i=0;i<4;i++)document.getElementById('plus').click();true`)
--	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<300;i++){if(performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length>=80&&document.getElementById('diagnostics').textContent.includes('Загрузка 0'))break;await sleep(100)}await sleep(2000);const text=document.getElementById('diagnostics').textContent;const hits=Number(text.match(/кэш (\d+)/)[1]);await sleep(2000);const next=document.getElementById('diagnostics').textContent;if(Number(next.match(/кэш (\d+)/)[1])!==hits)throw Error('visible images keep decoding');if(Number(next.match(/RAM изображений ([\d.]+)/)[1])>128)throw Error('128 MiB RAM budget exceeded');if(performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length<80||!next.includes('ошибки 0'))throw Error('images did not load');if(!next.includes('Загрузка 0'))throw Error('image queue did not settle');return document.querySelectorAll('.token-row').length>=80})()`) != "true" {
-+	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<300;i++){if(performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length>=80&&document.getElementById('diagnostics').textContent.includes('Загрузка 0'))break;await sleep(100)}await sleep(2000);const text=document.getElementById('diagnostics').textContent;const hits=Number(text.match(/кэш (\d+)/)[1]);await sleep(2000);const next=document.getElementById('diagnostics').textContent,resources=performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')).length;if(Number(next.match(/кэш (\d+)/)[1])!==hits)throw Error('visible images keep decoding');if(Number(next.match(/RAM изображений ([\d.]+)/)[1])>128)throw Error('128 MiB RAM budget exceeded');if(resources<80||!next.includes('ошибки 0'))throw Error('images did not load: '+resources+'; '+next);if(!next.includes('Загрузка 0'))throw Error('image queue did not settle');return document.querySelectorAll('.token-row').length>=80})()`) != "true" {
- 		t.Fatal("heavy visible cache scenario failed")
- 	}
- 	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms)),s=document.getElementById('imageCacheBudget');s.value='64';s.dispatchEvent(new Event('change',{bubbles:true}));for(let i=0;i<100;i++){await sleep(100);const text=document.getElementById('diagnostics').textContent,m=text.match(/RAM изображений ([\d.]+) \/ (\d+) МБ/);if(m&&Number(m[1])<=64&&Number(m[2])===64&&text.includes('Загрузка 0'))return localStorage.getItem('atlas-image-memory-budget-v1')==='64'}throw Error('cache did not shrink to 64 MiB')})()`) != "true" {
-@@ -494,8 +498,8 @@ func TestBrowser(t *testing.T) {
- 	if eval(`(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms)),before=window.pressureDecodes;for(let i=0;i<7;i++)document.getElementById('minus').click();await sleep(2000);for(let i=0;i<7;i++)document.getElementById('plus').click();await sleep(2000);const afterZoom=window.pressureDecodes;await sleep(2000);const settled=window.pressureDecodes;if(before<80||afterZoom-before>240||settled!==afterZoom)throw Error('zoom repeatedly decoded retained images: '+before+'/'+afterZoom+'/'+settled);return true})()`) != "true" {
- 		t.Fatal("zoom did not retain decoded images")
- 	}
--	if eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20){colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','))}return colors.size>20})()`) != "true" {
--		t.Fatal("Canvas did not render map detail")
-+	if eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20){colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','))}return colors.size>10})()`) != "true" {
-+		t.Fatalf("Canvas did not render map detail: %s", eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20)colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','));return JSON.stringify({colors:colors.size,bounds:document.querySelector('.tree-render-bounds')?.dataset.boundsState,diagnostics:document.getElementById('diagnostics').textContent})})()`))
- 	}
- 	if len(browserErrors) > 0 {
- 		t.Fatalf("Browser errors: %v", browserErrors)
-diff --git a/scene_content.go b/scene_content.go
-index 0b5ab35..bd3cbbd 100644
---- a/scene_content.go
-+++ b/scene_content.go
-@@ -305,8 +305,52 @@ func currentFloorForPeer(peer *peer, scene *Scene) string {
- 	return currentFloorForMember(scene, peer.member, peer.floorID)
+ var (
+@@ -257,7 +263,7 @@ func ringsIntersect(a, b []ScenePoint) bool {
  }
  
--func elementIntersectsSceneBounds(element SceneElement, bounds SceneBounds) bool {
--	return elementIntersectsRegion(element, SceneRegion{Left: 0, Top: 0, Right: bounds.Width, Bottom: bounds.Height})
-+func elementIntersectsRenderBounds(element SceneElement, bounds *Polygon) bool {
-+	if bounds == nil {
-+		return true
+ func normalizePolygon(input Polygon) (Polygon, error) {
+-	if len(input.Outer)+ringVertexCount(input.Holes) > maxGeometryTotalVertices {
++	if _, ok := polygonVertexCountWithin(input, maxGeometryResultVertices); !ok {
+ 		return Polygon{}, errGeometryLimitExceeded
+ 	}
+ 	outer, err := normalizeRing(input.Outer, true)
+@@ -286,6 +292,27 @@ func normalizePolygon(input Polygon) (Polygon, error) {
+ 	return Polygon{Outer: outer, Holes: holes}, nil
+ }
+ 
++func validateGeometryInputPolygon(polygon Polygon) error {
++	if _, ok := polygonVertexCountWithin(polygon, maxGeometryInputVertices); !ok {
++		return errGeometryLimitExceeded
 +	}
-+	t := element.Transform
-+	cx, cy := t.X+t.Width/2, t.Y+t.Height/2
-+	angle := t.Rotation * math.Pi / 180
-+	c, sine := math.Cos(angle), math.Sin(angle)
-+	ring := make([]ScenePoint, 0, 4)
-+	for _, corner := range [][2]float64{{-t.Width / 2, -t.Height / 2}, {t.Width / 2, -t.Height / 2}, {t.Width / 2, t.Height / 2}, {-t.Width / 2, t.Height / 2}} {
-+		ring = append(ring, ScenePoint{X: cx + corner[0]*c - corner[1]*sine, Y: cy + corner[0]*sine + corner[1]*c})
-+	}
-+	elementBounds := AABB{MinX: ring[0].X, MinY: ring[0].Y, MaxX: ring[0].X, MaxY: ring[0].Y}
-+	for _, point := range ring[1:] {
-+		elementBounds.MinX = math.Min(elementBounds.MinX, point.X)
-+		elementBounds.MinY = math.Min(elementBounds.MinY, point.Y)
-+		elementBounds.MaxX = math.Max(elementBounds.MaxX, point.X)
-+		elementBounds.MaxY = math.Max(elementBounds.MaxY, point.Y)
-+	}
-+	if !elementBounds.intersects(polygonBounds(*bounds)) {
-+		return false
-+	}
-+	if ringsIntersect(ring, bounds.Outer) || pointInPolygon(*bounds, ring[0]) {
-+		return true
-+	}
-+	return ringLocation(ring, bounds.Outer[0]) != pointOutside
++	return nil
 +}
 +
-+func initializeFloorRenderBounds(scene *Scene, floorID string, width, height float64) bool {
-+	floor, ok := scene.Floors[floorID]
-+	if !ok || floor.RenderBounds != nil {
-+		return false
++func polygonVertexCountWithin(polygon Polygon, limit int) (int, bool) {
++	if limit < 0 || len(polygon.Outer) > limit {
++		return 0, false
 +	}
-+	for _, element := range scene.Elements {
-+		if element.FloorID == floorID {
-+			return false
++	total := len(polygon.Outer)
++	for _, ring := range polygon.Holes {
++		if len(ring) > limit-total {
++			return 0, false
++		}
++		total += len(ring)
++	}
++	return total, true
++}
++
+ func ringVertexCount(rings [][]ScenePoint) int {
+ 	total := 0
+ 	for _, ring := range rings {
+diff --git a/geometry_commands.go b/geometry_commands.go
+index b99d3a0..9fa23bd 100644
+--- a/geometry_commands.go
++++ b/geometry_commands.go
+@@ -4,6 +4,9 @@ func setRenderBounds(floor Floor, input *Polygon) (Floor, bool, error) {
+ 	if input == nil || len(input.Holes) != 0 {
+ 		return floor, false, errInvalidGeometry
+ 	}
++	if err := validateGeometryInputPolygon(*input); err != nil {
++		return floor, false, err
++	}
+ 	polygon, err := normalizePolygon(*input)
+ 	if err != nil {
+ 		return floor, false, err
+diff --git a/geometry_test.go b/geometry_test.go
+index b1094b0..4bffe96 100644
+--- a/geometry_test.go
++++ b/geometry_test.go
+@@ -2,6 +2,7 @@ package main
+ 
+ import (
+ 	"errors"
++	"math"
+ 	"testing"
+ )
+ 
+@@ -86,3 +87,25 @@ func TestSetRenderBoundsValidation(t *testing.T) {
+ 		t.Fatalf("repeated clear must be a no-op: changed=%v err=%v", changed, err)
+ 	}
+ }
++
++func TestGeometryCoordinateAndInputVertexLimits(t *testing.T) {
++	if value, err := quantizeCoordinate(maxSceneDimension); err != nil || value != maxSceneDimension {
++		t.Fatalf("maximum coordinate rejected: value=%v err=%v", value, err)
++	}
++	for _, value := range []float64{maxSceneDimension + geometryQuantum, -maxSceneDimension - geometryQuantum, math.Inf(1), math.NaN()} {
++		if _, err := quantizeCoordinate(value); !errors.Is(err, errInvalidGeometry) {
++			t.Fatalf("coordinate %v was accepted: %v", value, err)
 +		}
 +	}
-+	bounds, err := rectanglePolygon(AABB{MaxX: width, MaxY: height})
-+	if err != nil {
-+		return false
++
++	floor := Floor{ID: "floor"}
++	tooMany := Polygon{Outer: make([]ScenePoint, maxGeometryInputVertices+1)}
++	for index := range tooMany.Outer {
++		angle := 2 * math.Pi * float64(index) / float64(len(tooMany.Outer))
++		tooMany.Outer[index] = ScenePoint{X: 1000 * math.Cos(angle), Y: 1000 * math.Sin(angle)}
 +	}
-+	floor.RenderBounds = &bounds
-+	floor.GeometryRevision++
-+	scene.Floors[floorID] = floor
-+	return true
- }
- 
- func addFloorLayers(scene *Scene, floorID string) {
-diff --git a/scenes.go b/scenes.go
-index d62b2bd..7e9b260 100644
---- a/scenes.go
-+++ b/scenes.go
-@@ -256,7 +256,8 @@ func elementCells(element SceneElement) ([]spatialCell, bool) {
- 
- func (rt *sceneRuntime) elementPublic(element SceneElement) bool {
- 	layer, ok := rt.scene.Layers[element.LayerID]
--	return ok && layer.Kind == layerKindVisual && element.Visible && layer.Visible && element.Opacity > 0 && layer.Opacity > 0 && elementIntersectsSceneBounds(element, rt.scene.Bounds)
-+	floor := rt.scene.Floors[element.FloorID]
-+	return ok && layer.Kind == layerKindVisual && element.Visible && layer.Visible && element.Opacity > 0 && layer.Opacity > 0 && elementIntersectsRenderBounds(element, floor.RenderBounds)
- }
- 
- func incrementFloorAsset(index map[string]map[string]int, floorID, assetID string) {
-diff --git a/scene_commands.go b/scene_commands.go
-index 26b635e..46bb72a 100644
---- a/scene_commands.go
-+++ b/scene_commands.go
-@@ -12,8 +12,7 @@ import (
- 
- func sceneContentCommand(commandType string) bool {
- 	switch commandType {
--	case "boundsUpdate",
--		"floorCreate", "floorUpdate", "floorDelete",
-+	case "floorCreate", "floorUpdate", "floorDelete",
- 		"layerCreate", "layerUpdate", "layerDelete",
- 		"elementCreate", "elementUpdate", "elementDelete", "elementPreview", "elementTransform", "elementFixRotation",
- 		"transitionCreate", "transitionUpdate", "transitionDelete",
-@@ -88,17 +87,6 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
- 		switch command.Type {
- 		case "elementFixRotation":
- 			issue = "Фиксация ротации отключена"
--		case "boundsUpdate":
--			if command.Bounds == nil || !validSceneBounds(*command.Bounds) {
--				issue = "Некорректные границы сцены"
--				break
--			}
--			old := scene.Bounds
--			if old != *command.Bounds {
--				scene.Bounds = *command.Bounds
--				changed, structural = true, true
--				restore = func() { scene.Bounds = old }
--			}
- 		case "addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
- 			if command.Seq == 0 || command.Client == "" {
- 				issue = "Изменение геометрии требует надёжной команды"
++	result, changed, err := setRenderBounds(floor, &tooMany)
++	if !errors.Is(err, errGeometryLimitExceeded) || changed || result.RenderBounds != nil {
++		t.Fatalf("input vertex limit was not atomic: changed=%v err=%v floor=%#v", changed, err, result)
++	}
++}
 diff --git a/main.go b/main.go
-index 48e6f77..544e12f 100644
+index 544e12f..e91b58f 100644
 --- a/main.go
 +++ b/main.go
-@@ -659,6 +659,10 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
- 	for layerID, layer := range scene.Layers {
- 		oldLayers[layerID] = layer
+@@ -429,13 +429,15 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
+ 
+ var upgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096}
+ 
++const maxWebSocketMessageBytes = 16 << 10
++
+ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
+ 	c, e := upgrader.Upgrade(w, r, nil)
+ 	if e != nil {
+ 		return
  	}
-+	oldFloors := make(map[string]Floor, len(scene.Floors))
-+	for floorID, floor := range scene.Floors {
-+		oldFloors[floorID] = floor
+ 	defer c.Close()
+-	c.SetReadLimit(16384)
++	c.SetReadLimit(maxWebSocketMessageBytes)
+ 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+ 	var hello struct {
+ 		Session string
+diff --git a/polygon_clip.go b/polygon_clip.go
+index 7b9e64e..2f4570d 100644
+--- a/polygon_clip.go
++++ b/polygon_clip.go
+@@ -18,7 +18,7 @@ func differencePolygons(subject, clipping []Polygon) ([]Polygon, error) {
+ }
+ 
+ func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon, error) {
+-	if len(subject)+len(clipping) > maxWalkableComponents {
++	if len(subject)+len(clipping) > maxGeometryOperationComponents {
+ 		return nil, errGeometryLimitExceeded
+ 	}
+ 	subjectClip, err := atlasPolygonsToClip(subject)
+@@ -39,17 +39,15 @@ func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon
+ }
+ 
+ func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
++	if !polygonsWithinVertexLimit(polygons, maxGeometryOperationInputVertices) {
++		return nil, errGeometryLimitExceeded
 +	}
- 	if hadAsset {
- 		a.RetentionPolicy = oldAsset.RetentionPolicy
- 		a.CreatedAt = oldAsset.CreatedAt
-@@ -679,13 +683,13 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
- 		if name == "" {
- 			name = "Изображение"
+ 	var result polyclip.Polygon
+-	total := 0
+ 	for _, polygon := range polygons {
+ 		normalized, err := normalizePolygon(polygon)
+ 		if err != nil {
+ 			return nil, err
  		}
-+		initializeFloorRenderBounds(scene, floorID, float64(a.Width), float64(a.Height))
- 		scene.Elements[elementID] = SceneElement{ID: elementID, FloorID: floorID, LayerID: layerID, AssetID: a.ID, Name: name, Transform: Transform{Width: float64(a.Width), Height: float64(a.Height)}, Visible: true, Opacity: 1}
- 		if len(oldElements) == 0 && len(scene.Tokens) == 0 {
--			scene.Bounds = SceneBounds{Width: float64(a.Width), Height: float64(a.Height)}
- 			walkableID := layerIDByKind(scene, floorID, layerKindWalkable)
- 			walkable := scene.Layers[walkableID]
- 			if walkable.WalkableBounds != nil && *walkable.WalkableBounds == (WalkableBounds{Width: oldBounds.Width, Height: oldBounds.Height}) {
--				walkable.WalkableBounds = defaultWalkableBounds(scene.Bounds)
-+				walkable.WalkableBounds = defaultWalkableBounds(SceneBounds{Width: float64(a.Width), Height: float64(a.Height)})
- 				scene.Layers[walkableID] = walkable
- 			}
- 		}
-@@ -700,7 +704,8 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
- 		} else {
- 			delete(ss.Assets, a.ID)
- 		}
--		scene.Elements, scene.Bounds, scene.Revision, s.dirty = oldElements, oldBounds, oldRevision, oldDirty
-+		scene.Elements, scene.Revision, s.dirty = oldElements, oldRevision, oldDirty
-+		scene.Floors = oldFloors
- 		scene.Layers = oldLayers
- 		scene.rebuildRuntime()
- 		s.mu.Unlock()
-diff --git a/web/scene-tree.js b/web/scene-tree.js
-index a50fe06..366f0d0 100644
---- a/web/scene-tree.js
-+++ b/web/scene-tree.js
-@@ -6,21 +6,20 @@ const button=(text,title,action)=>{const node=document.createElement('button');n
- export class SceneTreeRuntime{
-   constructor(elements,{queue,selectElement,selectTransition,beginTransition,setFloor,getFloor,focusElement,setWalkableTool,getWalkableTool,setRenderBoundsTool,getRenderBoundsTool}){
-     this.elements=elements;this.queue=queue;this.selectElement=selectElement;this.selectTransition=selectTransition;this.beginTransition=beginTransition;this.setFloor=setFloor;this.getFloor=getFloor;this.focusElement=focusElement;this.setWalkableTool=setWalkableTool||(()=>{});this.getWalkableTool=getWalkableTool||(()=> '');this.setRenderBoundsTool=setRenderBoundsTool||(()=>{});this.getRenderBoundsTool=getRenderBoundsTool||(()=> '');this.state=null;this.structureKey='';this.rebuilds=0;this.elementRows=new Map();this.transitionRows=new Map();this.floorSections=new Map();this.selectedElement='';this.selectedTransition='';this.currentFloor='';
--    elements.addFloor.onclick=()=>this.createFloor();elements.addLayer.onclick=()=>this.createLayer();elements.boundsSave.onclick=()=>this.saveBounds();elements.addTransition.onclick=()=>this.beginTransition();
-+    elements.addFloor.onclick=()=>this.createFloor();elements.addLayer.onclick=()=>this.createLayer();elements.addTransition.onclick=()=>this.beginTransition();
-   }
+-		total += len(normalized.Outer) + ringVertexCount(normalized.Holes)
+-		if total > maxGeometryTotalVertices {
+-			return nil, errGeometryLimitExceeded
+-		}
+ 		current := polyclip.Polygon{ringToClip(normalized.Outer)}
+ 		for _, hole := range normalized.Holes {
+ 			current = append(current, ringToClip(hole))
+@@ -63,6 +61,18 @@ func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
+ 	return result, nil
+ }
  
-   update(state,selectedElement,selectedTransition=''){
-     const gm=isGM(state.you),catalog=gm?(state.elementCatalog||{}):state.elements||{};this.state={...state,elements:catalog};const floors=orderedFloors(this.state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
--    this.elements.boundsWidth.value=Math.round(state.scene.bounds.width);this.elements.boundsHeight.value=Math.round(state.scene.bounds.height);for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
-+    for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
-     const floorStructure=floors.map(floor=>[floor.id,floor.name,floor.order,floor.opacity,floor.opacityWhenViewedFromBelow,floor.walkableMode,floor.geometryRevision,floor.walkableComponents?.length||0,!!floor.renderBounds]);
--    const structureKey=JSON.stringify([state.scene.id,state.scene.bounds,state._catalogVersion||0,floorStructure,state.layers,state.transitions,gm,this.getWalkableTool(),this.getRenderBoundsTool()]);
-+    const structureKey=JSON.stringify([state.scene.id,state._catalogVersion||0,floorStructure,state.layers,state.transitions,gm,this.getWalkableTool(),this.getRenderBoundsTool()]);
-     if(structureKey!==this.structureKey){this.structureKey=structureKey;this.rebuilds++;this.elementRows.clear();this.transitionRows.clear();this.floorSections.clear();this.elements.tree.replaceChildren();if(gm)for(const floor of [...floors].reverse())this.elements.tree.append(this.floorNode(floor,current,selectedElement));if(gm&&Object.keys(state.transitions||{}).length)this.elements.tree.append(this.transitionSection(selectedTransition));this.selectedElement=selectedElement||'';this.selectedTransition=selectedTransition||'';this.currentFloor=current;return;}
-     if(this.selectedElement!==(selectedElement||'')){this.elementRows.get(this.selectedElement)?.classList.remove('selected');this.elementRows.get(selectedElement)?.classList.add('selected');this.selectedElement=selectedElement||'';}
-     if(this.selectedTransition!==(selectedTransition||'')){this.transitionRows.get(this.selectedTransition)?.classList.remove('selected');this.transitionRows.get(selectedTransition)?.classList.add('selected');this.selectedTransition=selectedTransition||'';}
-     if(this.currentFloor!==current){this.floorSections.get(this.currentFloor)?.classList.remove('active');this.floorSections.get(current)?.classList.add('active');this.currentFloor=current;}
-   }
++func polygonsWithinVertexLimit(polygons []Polygon, limit int) bool {
++	total := 0
++	for _, polygon := range polygons {
++		count, ok := polygonVertexCountWithin(polygon, limit-total)
++		if !ok {
++			return false
++		}
++		total += count
++	}
++	return true
++}
++
+ func ringToClip(ring []ScenePoint) polyclip.Contour {
+ 	contour := make(polyclip.Contour, len(ring))
+ 	for i, point := range ring {
+@@ -79,11 +89,10 @@ type clipContour struct {
+ }
  
--  saveBounds(){const width=Number(this.elements.boundsWidth.value),height=Number(this.elements.boundsHeight.value);if(!(width>0&&height>0))return;const outside=[...Object.values(this.state.elements||{}),...Object.values(this.state.tokens||{})].filter(item=>{const t=item.transform||{x:item.x,y:item.y,width:item.size,height:item.size};return t.x<0||t.y<0||t.x+t.width>width||t.y+t.height>height;}).length;if(outside&&!confirm(`За новыми границами останутся ${outside} элементов. Продолжить?`))return;this.queue('boundsUpdate',{bounds:{width,height}});}
-   createFloor(){if(orderedFloors(this.state).length>=2){alert('Сейчас сцена поддерживает не больше двух этажей');return;}const name=prompt('Название этажа','Новый этаж')?.trim();if(!name)return;const order=Math.max(-1,...orderedFloors(this.state).map(f=>f.order))+1;this.queue('floorCreate',{floor:{name,order}});}
-   createLayer(){const floorId=this.getFloor();if(!floorId)return;const name=prompt('Название слоя','Новый слой')?.trim();if(!name)return;const order=Math.max(-1,...orderedLayers(this.state,floorId).filter(layer=>layer.kind!=='walkable').map(layer=>layer.order))+1;this.queue('layerCreate',{layer:{floorId,name,order}});}
-   transitionSection(selectedTransition){
-diff --git a/web/index.html b/web/index.html
-index 50382dd..3f57d9d 100644
---- a/web/index.html
-+++ b/web/index.html
-@@ -6,7 +6,7 @@
- <div id="app" hidden>
- <header><a class="brand" href="/">◈ <b>АТЛАС</b></a><span class="separator"></span><div><small>ИГРОВОЙ СТОЛ</small><div id="sessionTitle">Приключение</div></div><nav id="sceneTabs" class="scene-tabs" aria-label="Раздел сцены" hidden><button id="mapTab" class="scene-tab active" type="button" aria-pressed="true">Карта</button><button id="objectsTab" class="scene-tab" type="button" aria-pressed="false">Объекты</button><button id="membersTab" class="scene-tab" type="button" aria-pressed="false">Участники</button></nav><div class="header-right"><span id="connection" class="status">Подключение…</span><span id="roleBadge" class="badge"></span><button id="invite" class="gm">Пригласить ↗</button><button id="toScenes" class="subtle" hidden>К сценам</button></div></header>
- <section id="campaignHome" class="campaign-home"><div class="campaign-home-head"><div><small>КАМПАНИЯ</small><h1 id="campaignName">Приключение</h1><p>Выберите сцену. Каждый участник может открыть свою.</p></div><div class="campaign-home-head-actions"><button id="leaveCampaign" class="subtle">Выйти из кампании</button><button id="homeSceneAdd" class="primary gm">Создать сцену +</button></div></div><div id="sceneCards" class="scene-cards"></div><div id="emptyScenes" class="empty-scenes" hidden><span>◇</span><h2>Сцен пока нет</h2><p class="gm">Создайте первую сцену.</p><p class="player-only">Ведущий ещё не опубликовал ни одной сцены.</p></div></section>
--<div id="workspace" class="workspace" hidden><div id="sidebarFrame" class="sidebar-frame"><aside id="sidebar" class="sidebar"><section id="sidebarMap" class="sidebar-section"><div class="panel-heading"><span>СЦЕНА И СЛОИ</span><span class="gm"><button id="addFloor" class="icon" title="Добавить этаж">＋Э</button><button id="addLayer" class="icon" title="Добавить слой">＋С</button></span></div><div class="scene-bounds gm"><label>Ширина<input id="boundsWidth" type="number" min="1" max="1000000"></label><label>Высота<input id="boundsHeight" type="number" min="1" max="1000000"></label><button id="boundsSave" type="button" class="subtle">Размер</button></div><div id="sceneTree" class="scene-tree"></div><div class="scene-layer-actions gm"><label class="file-button">↑ Добавить изображение<input id="mapUpload" type="file" accept="image/png,image/jpeg" hidden></label><button id="addTransition" type="button" class="subtle wide">Создать переход</button></div></section><section id="sidebarObjects" class="sidebar-section" hidden><div class="panel-heading"><span>ТОКЕНЫ</span><button id="add" class="gm icon" title="Добавить токен">+</button></div><div id="tokens" class="token-list"></div><p id="emptyTokens" class="muted">Токены появятся здесь</p><label class="file-button gm">↑ Загрузить изображение токена<input id="tokenUpload" type="file" accept="image/png,image/jpeg" hidden></label></section><section id="sidebarMembers" class="sidebar-section" hidden><div class="panel-heading"><span>УЧАСТНИКИ</span><span id="memberCount"></span></div><div id="members"></div></section><div class="sidebar-bottom"><span class="live-dot"></span> Состояние хранится на сервере</div></aside><div id="sidebarResize" class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Изменить ширину левой панели" tabindex="0"></div><button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Свернуть левую панель" title="Свернуть левую панель">‹</button></div>
-+<div id="workspace" class="workspace" hidden><div id="sidebarFrame" class="sidebar-frame"><aside id="sidebar" class="sidebar"><section id="sidebarMap" class="sidebar-section"><div class="panel-heading"><span>СЦЕНА И СЛОИ</span><span class="gm"><button id="addFloor" class="icon" title="Добавить этаж">＋Э</button><button id="addLayer" class="icon" title="Добавить слой">＋С</button></span></div><div id="sceneTree" class="scene-tree"></div><div class="scene-layer-actions gm"><label class="file-button">↑ Добавить изображение<input id="mapUpload" type="file" accept="image/png,image/jpeg" hidden></label><button id="addTransition" type="button" class="subtle wide">Создать переход</button></div></section><section id="sidebarObjects" class="sidebar-section" hidden><div class="panel-heading"><span>ТОКЕНЫ</span><button id="add" class="gm icon" title="Добавить токен">+</button></div><div id="tokens" class="token-list"></div><p id="emptyTokens" class="muted">Токены появятся здесь</p><label class="file-button gm">↑ Загрузить изображение токена<input id="tokenUpload" type="file" accept="image/png,image/jpeg" hidden></label></section><section id="sidebarMembers" class="sidebar-section" hidden><div class="panel-heading"><span>УЧАСТНИКИ</span><span id="memberCount"></span></div><div id="members"></div></section><div class="sidebar-bottom"><span class="live-dot"></span> Состояние хранится на сервере</div></aside><div id="sidebarResize" class="sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Изменить ширину левой панели" tabindex="0"></div><button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Свернуть левую панель" title="Свернуть левую панель">‹</button></div>
- <main id="stage"><canvas id="board" tabindex="0" aria-label="Игровая карта. Перетаскивание фона перемещает камеру, колесо меняет масштаб."></canvas><div class="scene-label"><span class="live-dot"></span><span id="sceneLabel">Сцена 01</span></div><div id="emptyMap" class="empty-map"><span>◇</span><h2>Здесь начинается приключение</h2><p>Ведущий может загрузить карту.<br>Токены можно размещать уже сейчас.</p></div><div class="canvas-tools"><button id="fit" title="Показать всю карту">⛶</button><span></span><button id="minus" title="Уменьшить">−</button><output id="zoom">100%</output><button id="plus" title="Увеличить">+</button><span></span><button id="grid" class="active" title="Сетка">▦</button></div><div class="canvas-hint">Перетаскивание — камера <i>·</i> Колесо — масштаб <i>·</i> Токен — выбрать и двигать</div><div id="diagnostics" class="diagnostics"></div></main>
- <aside class="inspector"><div class="panel-heading">СВОЙСТВА ОБЪЕКТА</div><div id="noSelection" class="no-selection"><span>◎</span><p>Выберите токен<br>или элемент сцены</p></div><form id="properties" hidden><div id="tokenPreview" class="token-preview">◆</div><label>Название<input id="tokenName" maxlength="80"></label><div class="two"><label>Размер<input id="tokenSize" type="number" min="16" max="1024"></label><label>Цвет<input id="tokenColor" type="color"></label></div><label>Этаж<select id="tokenFloor"></select></label><label>Управление<select id="tokenOwner"></select></label><label class="check"><input type="checkbox" id="tokenHidden"> Скрыть от игроков</label><button type="submit" hidden>Сохранить свойства</button><button id="delete" class="danger wide gm" type="button">Удалить токен</button></form><form id="elementProperties" hidden><label>Название<input id="elementName" maxlength="120"></label><div class="two"><label>X<input id="elementX" type="number" step="any"></label><label>Y<input id="elementY" type="number" step="any"></label></div><div class="two"><label>Ширина<input id="elementWidth" type="number" min="1" step="any"></label><label>Высота<input id="elementHeight" type="number" min="1" step="any"></label></div><label>Поворот<input id="elementRotation" type="number" step="any"></label><label>Прозрачность<input id="elementOpacity" type="range" min="0" max="1" step="0.05"></label><label>Слой<select id="elementLayer"></select></label><label class="check"><input type="checkbox" id="elementVisible"> Видимый</label><label class="check"><input type="checkbox" id="elementLocked"> Заблокирован</label><button type="submit" hidden>Сохранить элемент</button><button id="allowElementRotation" class="subtle wide gm" type="button">Разрешить вращение</button><button id="duplicateElement" class="subtle wide gm" type="button">Дублировать</button><button id="deleteElement" class="danger wide gm" type="button">Удалить элемент</button></form><form id="transitionProperties" hidden><h2>Переход</h2><label>Направление<select id="transitionDirection"><option value="bidirectional">A ↔ B</option><option value="AToB">A → B</option><option value="BToA">A ← B</option></select></label><div class="transition-endpoint"><strong>Точка A</strong><label>Этаж<select id="transitionFloorA"></select></label><label>Радиус<input id="transitionRadiusA" type="number" min="8" step="any"></label><button id="transitionGoA" class="subtle wide" type="button">Перейти к A</button></div><div class="transition-endpoint"><strong>Точка B</strong><label>Этаж<select id="transitionFloorB"></select></label><label>Радиус<input id="transitionRadiusB" type="number" min="8" step="any"></label><button id="transitionGoB" class="subtle wide" type="button">Перейти к B</button></div><button id="transitionConfirm" class="primary wide" type="button" hidden>Подтвердить точку</button><button id="transitionCancel" class="subtle wide" type="button" hidden>Отменить создание</button><button id="transitionSave" class="primary wide gm" type="submit">Сохранить переход</button><button id="deleteTransition" class="danger wide gm" type="button">Удалить переход</button></form><div class="inspector-note"><b>Камера только ваша</b><p>Масштаб и положение карты не влияют на остальных участников.</p></div><details><summary>Диагностика</summary><label>RAM-кэш изображений<select id="imageCacheBudget"><option value="auto">Auto</option><option value="64">64 MiB</option><option value="128">128 MiB</option><option value="256">256 MiB</option><option value="512">512 MiB</option></select></label><label class="check"><input id="continuous" type="checkbox"> Постоянная отрисовка</label><button id="reconnect" class="subtle wide">Переподключиться</button><button id="clearCache" class="subtle wide">Очистить кэш изображений</button><button id="stress" class="subtle wide gm">Добавить 100 тестовых токенов</button></details></aside></div><footer id="appFooter" hidden><span>АТЛАС <b>PROTOTYPE 01</b></span><span id="revision">Ревизия 0</span><span>Canvas 2D / тайлы / этажи / слои</span></footer>
- </div><div id="toast" role="status" hidden></div><script type="module" src="/app.js"></script></body></html>
-diff --git a/scene_content_test.go b/scene_content_test.go
-index 374ed41..ad98fca 100644
---- a/scene_content_test.go
-+++ b/scene_content_test.go
-@@ -44,6 +44,43 @@ func TestFloorGeometryJSONRoundTrip(t *testing.T) {
+ func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
+-	if len(clipped) > maxWalkableComponents*2 {
++	if len(clipped) > maxWalkableComponents*2 || !clipResultWithinLimits(clipped) {
+ 		return nil, errGeometryLimitExceeded
+ 	}
+ 	contours := make([]clipContour, 0, len(clipped))
+-	total := 0
+ 	for _, contour := range clipped {
+ 		raw := make([]ScenePoint, len(contour))
+ 		for i, point := range contour {
+@@ -93,10 +102,6 @@ func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		total += len(ring)
+-		if total > maxGeometryTotalVertices {
+-			return nil, errGeometryLimitExceeded
+-		}
+ 		contours = append(contours, clipContour{ring: ring, area: signedRingArea(ring), parent: -1})
+ 	}
+ 
+@@ -162,4 +167,15 @@ func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
+ 	return result, nil
+ }
+ 
++func clipResultWithinLimits(clipped polyclip.Polygon) bool {
++	total := 0
++	for _, contour := range clipped {
++		if len(contour) > maxGeometryRingVertices || len(contour) > maxGeometryResultVertices-total {
++			return false
++		}
++		total += len(contour)
++	}
++	return true
++}
++
+ const mathMaxFloat = 1.7976931348623157e+308
+diff --git a/polygon_clip_test.go b/polygon_clip_test.go
+index f7772e2..5d46832 100644
+--- a/polygon_clip_test.go
++++ b/polygon_clip_test.go
+@@ -1,6 +1,11 @@
+ package main
+ 
+-import "testing"
++import (
++	"errors"
++	"testing"
++
++	polyclip "github.com/ctessum/polyclip-go"
++)
+ 
+ func mustRectangle(t *testing.T, minX, minY, maxX, maxY float64) Polygon {
+ 	t.Helper()
+@@ -48,3 +53,22 @@ func TestPolygonClipPreservesExistingHole(t *testing.T) {
+ 		t.Fatalf("existing hole was not preserved: %#v, %v", result, err)
+ 	}
+ }
++
++func TestPolygonClipRejectsResultLimitsBeforeConversion(t *testing.T) {
++	tests := map[string]polyclip.Polygon{
++		"ring vertices": {make(polyclip.Contour, maxGeometryRingVertices+1)},
++		"total vertices": {
++			make(polyclip.Contour, 3000),
++			make(polyclip.Contour, 3000),
++			make(polyclip.Contour, maxGeometryResultVertices-6000+1),
++		},
++		"components": make(polyclip.Polygon, maxWalkableComponents*2+1),
++	}
++	for name, clipped := range tests {
++		t.Run(name, func(t *testing.T) {
++			if _, err := clipPolygonToAtlas(clipped); !errors.Is(err, errGeometryLimitExceeded) {
++				t.Fatalf("limit+1 result accepted: %v", err)
++			}
++		})
++	}
++}
+diff --git a/reliable.go b/reliable.go
+index bbc0b97..d8b6e42 100644
+--- a/reliable.go
++++ b/reliable.go
+@@ -149,6 +149,18 @@ type Command struct {
+ 	DeltaX                   float64           `json:"deltaX,omitempty"`
+ 	DeltaY                   float64           `json:"deltaY,omitempty"`
+ 	ExpectedGeometryRevision *uint64           `json:"expectedGeometryRevision,omitempty"`
++	wireBytes                int
++}
++
++func (command *Command) UnmarshalJSON(data []byte) error {
++	type commandWire Command
++	var decoded commandWire
++	if err := json.Unmarshal(data, &decoded); err != nil {
++		return err
++	}
++	*command = Command(decoded)
++	command.wireBytes = len(data)
++	return nil
+ }
+ 
+ func (s *Server) command(ss *Session, p *peer, c Command) {
+diff --git a/scene_commands.go b/scene_commands.go
+index 46bb72a..c9a212b 100644
+--- a/scene_commands.go
++++ b/scene_commands.go
+@@ -80,6 +80,10 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
+ 	var tokenExisted, tokenExists bool
+ 	var assetsBeforeMutation map[string]Asset
+ 
++	if issue == "" && geometryCommand(command.Type) && command.wireBytes > maxGeometryCommandBytes {
++		issue = "Превышен лимит размера геометрической команды"
++		resyncOnIssue = true
++	}
+ 	if issue == "" && !memberIsGM(peer.member) {
+ 		issue = "Действие доступно ведущему"
+ 	}
+@@ -588,6 +592,14 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
  	}
  }
  
-+func TestRenderBoundsReplaceLegacySceneRectangleSemantics(t *testing.T) {
-+	bounds, err := normalizePolygon(Polygon{Outer: []ScenePoint{{X: 0, Y: 0}, {X: 100, Y: 0}, {X: 100, Y: 30}, {X: 30, Y: 30}, {X: 30, Y: 100}, {X: 0, Y: 100}}})
-+	if err != nil {
-+		t.Fatal(err)
++func geometryCommand(commandType string) bool {
++	switch commandType {
++	case "addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
++		return true
 +	}
-+	inside := SceneElement{Transform: Transform{X: 80, Y: 5, Width: 40, Height: 20}}
-+	notch := SceneElement{Transform: Transform{X: 45, Y: 45, Width: 20, Height: 20}}
-+	rotatedEdge := SceneElement{Transform: Transform{X: 20, Y: 20, Width: 30, Height: 30, Rotation: 45}}
-+	if !elementIntersectsRenderBounds(inside, &bounds) || elementIntersectsRenderBounds(notch, &bounds) || !elementIntersectsRenderBounds(rotatedEdge, &bounds) || !elementIntersectsRenderBounds(notch, nil) {
-+		t.Fatal("visual element filtering does not follow floor render bounds")
-+	}
-+	if sceneContentCommand("boundsUpdate") {
-+		t.Fatal("legacy editable scene bounds command is still accepted")
-+	}
++	return false
 +}
 +
-+func TestFirstMapInitializesOnlyItsFloorRenderBounds(t *testing.T) {
-+	scene := newScene("scene", "Map defaults")
-+	lowerID := firstFloorID(scene)
-+	if !initializeFloorRenderBounds(scene, lowerID, 1200, 800) {
-+		t.Fatal("first floor map did not initialize render bounds")
-+	}
-+	lower := scene.Floors[lowerID]
-+	if lower.RenderBounds == nil || polygonBounds(*lower.RenderBounds) != (AABB{MaxX: 1200, MaxY: 800}) || lower.GeometryRevision != 1 {
-+		t.Fatalf("unexpected first-map render bounds: %#v", lower)
-+	}
-+	if initializeFloorRenderBounds(scene, lowerID, 2000, 1600) || polygonBounds(*scene.Floors[lowerID].RenderBounds) != (AABB{MaxX: 1200, MaxY: 800}) {
-+		t.Fatal("later map changed established render bounds")
-+	}
-+	upperID := "upper"
-+	scene.Floors[upperID] = Floor{ID: upperID, Name: "Upper"}
-+	addFloorLayers(scene, upperID)
-+	if !initializeFloorRenderBounds(scene, upperID, 600, 400) || polygonBounds(*scene.Floors[upperID].RenderBounds) != (AABB{MaxX: 600, MaxY: 400}) {
-+		t.Fatal("first map on a new floor did not get independent render bounds")
-+	}
-+}
-+
- func elementFrom(t *testing.T, message map[string]json.RawMessage) SceneElement {
- 	t.Helper()
- 	var element SceneElement
-@@ -126,6 +163,7 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
- 		t.Fatal(err)
+ func walkableCommandIssue(err error) string {
+ 	if errors.Is(err, errGeometryLimitExceeded) {
+ 		return "Превышен лимит геометрии"
+diff --git a/scene_content.go b/scene_content.go
+index bd3cbbd..81ceb3a 100644
+--- a/scene_content.go
++++ b/scene_content.go
+@@ -536,7 +536,7 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
+ }
+ 
+ func validFloorGeometry(floor Floor) bool {
+-	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || len(floor.WalkableComponents) > maxWalkableComponents || walkableVertexCount(floor.WalkableComponents) > maxGeometryTotalVertices {
++	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || !walkableGeometryWithinLimits(floor.WalkableComponents) {
+ 		return false
  	}
- 	lower.WalkableComponents = []WalkableComponent{{ID: "main", Polygon: walkablePolygon}}
-+	lower.RenderBounds = &walkablePolygon
- 	scene.Floors[lowerID] = lower
- 	var playerMember *Member
- 	for _, member := range session.Members {
-@@ -157,7 +195,7 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
+ 	ids := make(map[string]bool, len(floor.WalkableComponents))
+diff --git a/walkable.go b/walkable.go
+index 140eb3c..0ee899e 100644
+--- a/walkable.go
++++ b/walkable.go
+@@ -21,7 +21,7 @@ func commandWalkableAABB(bounds *WalkableBounds) (AABB, error) {
+ // assumes stored components were normalized when accepted; only AABB-selected
+ // candidates enter the comparatively expensive clipping operation.
+ func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
+-	if len(components) > maxWalkableComponents {
++	if !walkableGeometryWithinLimits(components) {
+ 		return nil, false, errGeometryLimitExceeded
+ 	}
+ 	added, err := rectanglePolygon(rectangle)
+@@ -79,6 +79,9 @@ func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID
+ 		usedIDs[componentID] = true
+ 		result = append(result, WalkableComponent{ID: componentID, Polygon: polygon})
+ 	}
++	if !walkableGeometryWithinLimits(result) {
++		return nil, false, errGeometryLimitExceeded
++	}
+ 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+ 
+ 	if walkableComponentSetsEqual(components, result) {
+@@ -91,7 +94,7 @@ func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID
+ // keeps the old ID on the lexicographically first normalized piece; subsequent
+ // pieces receive fresh IDs. The input slice is never mutated.
+ func subtractWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
+-	if len(components) > maxWalkableComponents {
++	if !walkableGeometryWithinLimits(components) {
+ 		return nil, false, errGeometryLimitExceeded
+ 	}
+ 	cut, err := rectanglePolygon(rectangle)
+@@ -133,7 +136,7 @@ func subtractWalkableRect(components []WalkableComponent, rectangle AABB, genera
+ 			result = append(result, WalkableComponent{ID: componentID, Polygon: piece})
  		}
  	}
- 	if assetVisibleTo(session, playerMember, scene.ID, "upper-asset") || assetVisibleTo(session, playerMember, scene.ID, "outside-asset") {
--		t.Fatal("asset authorization ignored compositing floor or scene bounds")
-+		t.Fatal("asset authorization ignored compositing floor or render bounds")
+-	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
++	if !walkableGeometryWithinLimits(result) {
+ 		return nil, false, errGeometryLimitExceeded
  	}
- 	if !assetVisibleToAtToken(session, playerMember, scene.ID, "upper-asset", "zz-upper") {
- 		t.Fatal("asset authorization ignored the validated active token floor")
-@@ -400,13 +438,18 @@ func TestSceneContentCRUDTransformReuseAndRetention(t *testing.T) {
+ 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+@@ -147,7 +150,7 @@ func subtractWalkableRect(components []WalkableComponent, rectangle AABB, genera
+ // then unions it only with components near the destination. Tokens, assets and
+ // transitions are deliberately outside this pure geometry operation.
+ func moveWalkableComponent(components []WalkableComponent, componentID string, deltaX, deltaY float64) ([]WalkableComponent, bool, error) {
+-	if len(components) > maxWalkableComponents || componentID == "" {
++	if !walkableGeometryWithinLimits(components) || componentID == "" {
+ 		return nil, false, errInvalidGeometry
  	}
- 	server.mu.Unlock()
+ 	ids, err := componentIDs(components)
+@@ -221,7 +224,7 @@ func moveWalkableComponent(components []WalkableComponent, componentID string, d
+ 		usedIDs[resultID] = true
+ 		result = append(result, WalkableComponent{ID: resultID, Polygon: polygon})
+ 	}
+-	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
++	if !walkableGeometryWithinLimits(result) {
+ 		return nil, false, errGeometryLimitExceeded
+ 	}
+ 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+@@ -246,7 +249,7 @@ func translatePolygon(polygon Polygon, deltaX, deltaY float64) (Polygon, error)
+ }
  
--	newBounds := SceneBounds{Width: 20000, Height: 20000}
--	ws.WriteJSON(Command{Type: "boundsUpdate", Client: "content", Seq: 5, SceneID: scene.ID, Bounds: &newBounds})
-+	floorID := firstFloorID(scene)
-+	expectedGeometryRevision := scene.Floors[floorID].GeometryRevision
-+	renderBounds, err := rectanglePolygon(AABB{MinX: -100, MinY: -200, MaxX: 20000, MaxY: 18000})
+ func deleteWalkableComponent(components []WalkableComponent, componentID string) ([]WalkableComponent, bool, error) {
+-	if len(components) > maxWalkableComponents || componentID == "" {
++	if !walkableGeometryWithinLimits(components) || componentID == "" {
+ 		return nil, false, errInvalidGeometry
+ 	}
+ 	if _, err := componentIDs(components); err != nil {
+@@ -344,6 +347,21 @@ func walkableVertexCount(components []WalkableComponent) int {
+ 	return total
+ }
+ 
++func walkableGeometryWithinLimits(components []WalkableComponent) bool {
++	if len(components) > maxWalkableComponents {
++		return false
++	}
++	total := 0
++	for _, component := range components {
++		count, ok := polygonVertexCountWithin(component.Polygon, maxGeometryResultVertices-total)
++		if !ok {
++			return false
++		}
++		total += count
++	}
++	return true
++}
++
+ func matchingComponentID(polygon Polygon, affected []WalkableComponent, used map[string]bool) string {
+ 	for _, component := range affected {
+ 		if !used[component.ID] && polygonsEqual(component.Polygon, polygon) {
+diff --git a/walkable_commands_test.go b/walkable_commands_test.go
+index b4b209d..84f4a0a 100644
+--- a/walkable_commands_test.go
++++ b/walkable_commands_test.go
+@@ -5,6 +5,8 @@ import (
+ 	"net/http/httptest"
+ 	"strings"
+ 	"testing"
++
++	"github.com/gorilla/websocket"
+ )
+ 
+ func TestWalkableCommandVersionRetryAndDigest(t *testing.T) {
+@@ -154,6 +156,54 @@ func TestWalkableCommandLimitRejectionIsAtomic(t *testing.T) {
+ 	}
+ }
+ 
++func TestGeometryCommandByteLimitRejectionIsAtomic(t *testing.T) {
++	server := testServer(t, t.TempDir())
++	host := httptest.NewServer(server.routes())
++	defer host.Close()
++	gm := post(t, host.URL+"/api/sessions", map[string]string{"name": "Geometry command bytes"})
++	ws := dial(t, host.URL, gm)
++	read(t, ws, "snapshot")
++
++	server.mu.Lock()
++	scene := firstScene(server.sessions[gm["session"]])
++	sceneID, floorID := scene.ID, firstFloorID(scene)
++	initialSceneRevision := scene.Revision
++	server.mu.Unlock()
++
++	expected := uint64(0)
++	command := Command{Type: "setRenderBounds", Client: "geometry-bytes", Seq: 1, SceneID: sceneID, FloorID: floorID, ExpectedGeometryRevision: &expected, RenderBounds: &Polygon{Outer: rectangleInput(0, 0, 100, 100).Outer}}
++	encoded, err := json.Marshal(command)
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	ws.WriteJSON(Command{Type: "setRenderBounds", Client: "content", Seq: 5, SceneID: scene.ID, FloorID: floorID, ExpectedGeometryRevision: &expectedGeometryRevision, RenderBounds: &renderBounds})
- 	read(t, ws, "snapshot")
- 	read(t, ws, "ack")
- 	server.mu.Lock()
--	if scene.Bounds != newBounds || scene.Elements[first.ID].Transform != updated.Transform || server.writes <= writes {
--		t.Fatal("bounds update moved content or did not persist pending transform")
-+	if scene.Floors[floorID].RenderBounds == nil || !polygonsEqual(*scene.Floors[floorID].RenderBounds, renderBounds) || scene.Elements[first.ID].Transform != updated.Transform || server.writes <= writes {
-+		t.Fatal("render bounds update moved content or did not persist pending transform")
- 	}
- 	server.mu.Unlock()
- 	restarted, err := newServer(root)
-@@ -414,7 +457,7 @@ func TestSceneContentCRUDTransformReuseAndRetention(t *testing.T) {
- 		t.Fatal(err)
- 	}
- 	persisted := restarted.sessions[gm["session"]].Scenes[scene.ID]
--	if persisted.Bounds != newBounds || persisted.Elements[first.ID].Transform != transform || persisted.Elements[first.ID].LayerID != otherLayer {
-+	if persisted.Floors[floorID].RenderBounds == nil || !polygonsEqual(*persisted.Floors[floorID].RenderBounds, renderBounds) || persisted.Elements[first.ID].Transform != transform || persisted.Elements[first.ID].LayerID != otherLayer {
- 		t.Fatal("scene hierarchy/transform did not survive restart")
- 	}
++	prefix, suffix := string(encoded[:len(encoded)-1])+`,"padding":"`, `"}`
++	padding := maxGeometryCommandBytes + 1 - len(prefix) - len(suffix)
++	if padding < 1 {
++		t.Fatal("test command unexpectedly exceeds geometry command limit")
++	}
++	payload := []byte(prefix + strings.Repeat("x", padding) + suffix)
++	if len(payload) != maxGeometryCommandBytes+1 || len(payload) >= maxWebSocketMessageBytes {
++		t.Fatalf("invalid test payload size: %d", len(payload))
++	}
++	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
++		t.Fatal(err)
++	}
++	read(t, ws, "snapshot")
++	ack := read(t, ws, "ack")
++	var issue string
++	if err := json.Unmarshal(ack["error"], &issue); err != nil || !strings.Contains(issue, "размера") {
++		t.Fatalf("oversized command was not rejected: %s", ack["error"])
++	}
++
++	server.mu.Lock()
++	floor := server.sessions[gm["session"]].Scenes[sceneID].Floors[floorID]
++	currentSceneRevision := server.sessions[gm["session"]].Scenes[sceneID].Revision
++	server.mu.Unlock()
++	if floor.RenderBounds != nil || floor.GeometryRevision != 0 || currentSceneRevision != initialSceneRevision {
++		t.Fatalf("oversized command partially changed state: floor=%#v sceneRevision=%d", floor, currentSceneRevision)
++	}
++}
++
+ func TestWalkablePersistenceRoundTrip(t *testing.T) {
+ 	root := t.TempDir()
+ 	server := testServer(t, root)
+diff --git a/walkable_test.go b/walkable_test.go
+index 74b1bbd..b5e4259 100644
+--- a/walkable_test.go
++++ b/walkable_test.go
+@@ -1,6 +1,9 @@
+ package main
  
+-import "testing"
++import (
++	"errors"
++	"testing"
++)
+ 
+ func rectComponent(t *testing.T, componentID string, minX, minY, maxX, maxY float64) WalkableComponent {
+ 	t.Helper()
+@@ -246,3 +249,11 @@ func TestSetWalkableModeIsExplicitAndPreservesGeometry(t *testing.T) {
+ 		t.Fatal("invalid mode accepted")
+ 	}
+ }
++
++func TestWalkableResultVertexLimitRejectsBeforeClipping(t *testing.T) {
++	components := []WalkableComponent{{ID: "oversized", Polygon: Polygon{Outer: make([]ScenePoint, maxGeometryResultVertices+1)}}}
++	result, changed, err := addWalkableRect(components, AABB{MinX: 0, MinY: 0, MaxX: 10, MaxY: 10}, sequenceIDs("unused"))
++	if !errors.Is(err, errGeometryLimitExceeded) || changed || result != nil || len(components[0].Polygon.Outer) != maxGeometryResultVertices+1 {
++		t.Fatalf("result limit was not rejected atomically: result=%#v changed=%v err=%v", result, changed, err)
++	}
++}

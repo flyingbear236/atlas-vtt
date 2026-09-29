@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func rectComponent(t *testing.T, componentID string, minX, minY, maxX, maxY float64) WalkableComponent {
 	t.Helper()
@@ -244,5 +247,13 @@ func TestSetWalkableModeIsExplicitAndPreservesGeometry(t *testing.T) {
 	}
 	if _, _, err := setWalkableMode(restricted, "automatic"); err == nil {
 		t.Fatal("invalid mode accepted")
+	}
+}
+
+func TestWalkableResultVertexLimitRejectsBeforeClipping(t *testing.T) {
+	components := []WalkableComponent{{ID: "oversized", Polygon: Polygon{Outer: make([]ScenePoint, maxGeometryResultVertices+1)}}}
+	result, changed, err := addWalkableRect(components, AABB{MinX: 0, MinY: 0, MaxX: 10, MaxY: 10}, sequenceIDs("unused"))
+	if !errors.Is(err, errGeometryLimitExceeded) || changed || result != nil || len(components[0].Polygon.Outer) != maxGeometryResultVertices+1 {
+		t.Fatalf("result limit was not rejected atomically: result=%#v changed=%v err=%v", result, changed, err)
 	}
 }

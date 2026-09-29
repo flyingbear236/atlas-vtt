@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestWalkableCommandVersionRetryAndDigest(t *testing.T) {
@@ -151,6 +153,54 @@ func TestWalkableCommandLimitRejectionIsAtomic(t *testing.T) {
 	server.mu.Unlock()
 	if len(floor.WalkableComponents) != maxWalkableComponents || floor.GeometryRevision != 0 || currentSceneRevision != initialSceneRevision {
 		t.Fatalf("limit rejection partially changed state: components=%d geometryRevision=%d sceneRevision=%d", len(floor.WalkableComponents), floor.GeometryRevision, currentSceneRevision)
+	}
+}
+
+func TestGeometryCommandByteLimitRejectionIsAtomic(t *testing.T) {
+	server := testServer(t, t.TempDir())
+	host := httptest.NewServer(server.routes())
+	defer host.Close()
+	gm := post(t, host.URL+"/api/sessions", map[string]string{"name": "Geometry command bytes"})
+	ws := dial(t, host.URL, gm)
+	read(t, ws, "snapshot")
+
+	server.mu.Lock()
+	scene := firstScene(server.sessions[gm["session"]])
+	sceneID, floorID := scene.ID, firstFloorID(scene)
+	initialSceneRevision := scene.Revision
+	server.mu.Unlock()
+
+	expected := uint64(0)
+	command := Command{Type: "setRenderBounds", Client: "geometry-bytes", Seq: 1, SceneID: sceneID, FloorID: floorID, ExpectedGeometryRevision: &expected, RenderBounds: &Polygon{Outer: rectangleInput(0, 0, 100, 100).Outer}}
+	encoded, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix, suffix := string(encoded[:len(encoded)-1])+`,"padding":"`, `"}`
+	padding := maxGeometryCommandBytes + 1 - len(prefix) - len(suffix)
+	if padding < 1 {
+		t.Fatal("test command unexpectedly exceeds geometry command limit")
+	}
+	payload := []byte(prefix + strings.Repeat("x", padding) + suffix)
+	if len(payload) != maxGeometryCommandBytes+1 || len(payload) >= maxWebSocketMessageBytes {
+		t.Fatalf("invalid test payload size: %d", len(payload))
+	}
+	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		t.Fatal(err)
+	}
+	read(t, ws, "snapshot")
+	ack := read(t, ws, "ack")
+	var issue string
+	if err := json.Unmarshal(ack["error"], &issue); err != nil || !strings.Contains(issue, "размера") {
+		t.Fatalf("oversized command was not rejected: %s", ack["error"])
+	}
+
+	server.mu.Lock()
+	floor := server.sessions[gm["session"]].Scenes[sceneID].Floors[floorID]
+	currentSceneRevision := server.sessions[gm["session"]].Scenes[sceneID].Revision
+	server.mu.Unlock()
+	if floor.RenderBounds != nil || floor.GeometryRevision != 0 || currentSceneRevision != initialSceneRevision {
+		t.Fatalf("oversized command partially changed state: floor=%#v sceneRevision=%d", floor, currentSceneRevision)
 	}
 }
 

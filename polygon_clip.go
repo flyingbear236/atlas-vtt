@@ -18,7 +18,7 @@ func differencePolygons(subject, clipping []Polygon) ([]Polygon, error) {
 }
 
 func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon, error) {
-	if len(subject)+len(clipping) > maxWalkableComponents {
+	if len(subject)+len(clipping) > maxGeometryOperationComponents {
 		return nil, errGeometryLimitExceeded
 	}
 	subjectClip, err := atlasPolygonsToClip(subject)
@@ -39,16 +39,14 @@ func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon
 }
 
 func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
+	if !polygonsWithinVertexLimit(polygons, maxGeometryOperationInputVertices) {
+		return nil, errGeometryLimitExceeded
+	}
 	var result polyclip.Polygon
-	total := 0
 	for _, polygon := range polygons {
 		normalized, err := normalizePolygon(polygon)
 		if err != nil {
 			return nil, err
-		}
-		total += len(normalized.Outer) + ringVertexCount(normalized.Holes)
-		if total > maxGeometryTotalVertices {
-			return nil, errGeometryLimitExceeded
 		}
 		current := polyclip.Polygon{ringToClip(normalized.Outer)}
 		for _, hole := range normalized.Holes {
@@ -61,6 +59,18 @@ func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
 		}
 	}
 	return result, nil
+}
+
+func polygonsWithinVertexLimit(polygons []Polygon, limit int) bool {
+	total := 0
+	for _, polygon := range polygons {
+		count, ok := polygonVertexCountWithin(polygon, limit-total)
+		if !ok {
+			return false
+		}
+		total += count
+	}
+	return true
 }
 
 func ringToClip(ring []ScenePoint) polyclip.Contour {
@@ -79,11 +89,10 @@ type clipContour struct {
 }
 
 func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
-	if len(clipped) > maxWalkableComponents*2 {
+	if len(clipped) > maxWalkableComponents*2 || !clipResultWithinLimits(clipped) {
 		return nil, errGeometryLimitExceeded
 	}
 	contours := make([]clipContour, 0, len(clipped))
-	total := 0
 	for _, contour := range clipped {
 		raw := make([]ScenePoint, len(contour))
 		for i, point := range contour {
@@ -92,10 +101,6 @@ func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
 		ring, err := normalizeRing(raw, true)
 		if err != nil {
 			return nil, err
-		}
-		total += len(ring)
-		if total > maxGeometryTotalVertices {
-			return nil, errGeometryLimitExceeded
 		}
 		contours = append(contours, clipContour{ring: ring, area: signedRingArea(ring), parent: -1})
 	}
@@ -160,6 +165,17 @@ func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
 	}
 	sort.Slice(result, func(i, j int) bool { return ringLess(result[i].Outer, result[j].Outer) })
 	return result, nil
+}
+
+func clipResultWithinLimits(clipped polyclip.Polygon) bool {
+	total := 0
+	for _, contour := range clipped {
+		if len(contour) > maxGeometryRingVertices || len(contour) > maxGeometryResultVertices-total {
+			return false
+		}
+		total += len(contour)
+	}
+	return true
 }
 
 const mathMaxFloat = 1.7976931348623157e+308

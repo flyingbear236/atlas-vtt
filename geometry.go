@@ -9,10 +9,16 @@ import (
 const (
 	// One millimetre in the existing world coordinate system is precise enough
 	// for editor geometry and keeps exact integer predicates safe at ±1e6.
-	geometryQuantum          = 0.001
-	maxGeometryRingVertices  = 10_000
-	maxGeometryTotalVertices = 50_000
-	maxWalkableComponents    = 2_048
+	geometryQuantum = 0.001
+	// Input is tighter because simple-ring validation is quadratic. Persisted
+	// results may be larger, but remain bounded for snapshots and later edits.
+	maxGeometryInputVertices          = 512
+	maxGeometryRingVertices           = 4_096
+	maxGeometryResultVertices         = 8_192
+	maxGeometryOperationInputVertices = maxGeometryResultVertices + maxGeometryInputVertices
+	maxWalkableComponents             = 512
+	maxGeometryOperationComponents    = maxWalkableComponents + 1 // stored components plus the edited rectangle
+	maxGeometryCommandBytes           = 12 << 10
 )
 
 var (
@@ -257,7 +263,7 @@ func ringsIntersect(a, b []ScenePoint) bool {
 }
 
 func normalizePolygon(input Polygon) (Polygon, error) {
-	if len(input.Outer)+ringVertexCount(input.Holes) > maxGeometryTotalVertices {
+	if _, ok := polygonVertexCountWithin(input, maxGeometryResultVertices); !ok {
 		return Polygon{}, errGeometryLimitExceeded
 	}
 	outer, err := normalizeRing(input.Outer, true)
@@ -284,6 +290,27 @@ func normalizePolygon(input Polygon) (Polygon, error) {
 	}
 	sort.Slice(holes, func(i, j int) bool { return ringLess(holes[i], holes[j]) })
 	return Polygon{Outer: outer, Holes: holes}, nil
+}
+
+func validateGeometryInputPolygon(polygon Polygon) error {
+	if _, ok := polygonVertexCountWithin(polygon, maxGeometryInputVertices); !ok {
+		return errGeometryLimitExceeded
+	}
+	return nil
+}
+
+func polygonVertexCountWithin(polygon Polygon, limit int) (int, bool) {
+	if limit < 0 || len(polygon.Outer) > limit {
+		return 0, false
+	}
+	total := len(polygon.Outer)
+	for _, ring := range polygon.Holes {
+		if len(ring) > limit-total {
+			return 0, false
+		}
+		total += len(ring)
+	}
+	return total, true
 }
 
 func ringVertexCount(rings [][]ScenePoint) int {
