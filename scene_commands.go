@@ -205,7 +205,10 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				}
 				floor.OpacityWhenViewedFromBelow = *props.OpacityWhenViewedFromBelow
 			}
-			if floor.Name != old.Name || floor.Order != old.Order || floor.Opacity != old.Opacity || floor.OpacityWhenViewedFromBelow != old.OpacityWhenViewedFromBelow {
+			if props.ShowWalkableToPlayers != nil {
+				floor.ShowWalkableToPlayers = *props.ShowWalkableToPlayers
+			}
+			if floor.Name != old.Name || floor.Order != old.Order || floor.Opacity != old.Opacity || floor.OpacityWhenViewedFromBelow != old.OpacityWhenViewedFromBelow || floor.ShowWalkableToPlayers != old.ShowWalkableToPlayers {
 				scene.Floors[floor.ID] = floor
 				changed, structural = true, true
 				restore = func() { scene.Floors[old.ID] = old }
