@@ -13,7 +13,10 @@ func movementTestScene(t *testing.T, mode string, polygons ...Polygon) (*Scene, 
 		}
 		components[i] = WalkableComponent{ID: string(rune('a' + i)), Polygon: polygon}
 	}
-	return &Scene{Floors: map[string]Floor{floorID: {ID: floorID, WalkableMode: mode, WalkableComponents: components}}}, floorID
+	return &Scene{
+		Floors: map[string]Floor{floorID: {ID: floorID, WalkableMode: mode, WalkableComponents: components}},
+		Tokens: map[string]Token{},
+	}, floorID
 }
 
 func rectangleInput(left, top, right, bottom float64) Polygon {
@@ -143,3 +146,75 @@ func TestCanMoveTokenSegmentCombinesRenderBoundsIndependently(t *testing.T) {
 }
 
 func polygonPointer(polygon Polygon) *Polygon { return &polygon }
+
+func TestCanOccupyTokenPointUsesWalkableAndRenderBounds(t *testing.T) {
+	walkable := rectangleInput(0, 0, 100, 100)
+	walkable.Holes = [][]ScenePoint{rectangleInput(40, 40, 60, 60).Outer}
+	scene, floorID := movementTestScene(t, walkableModeRestricted, walkable)
+	floor := scene.Floors[floorID]
+	renderBounds, err := normalizePolygon(rectangleInput(0, 0, 80, 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor.RenderBounds = &renderBounds
+	scene.Floors[floorID] = floor
+
+	for _, test := range []struct {
+		name  string
+		point ScenePoint
+		want  bool
+	}{
+		{name: "inside", point: ScenePoint{20, 20}, want: true},
+		{name: "walkable hole", point: ScenePoint{50, 50}, want: false},
+		{name: "outside render bounds", point: ScenePoint{90, 20}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := CanOccupyTokenPoint(scene, floorID, test.point); got != test.want {
+				t.Fatalf("got %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestMovementReusesPreparedWalkableBoundsAcrossTokenRevisions(t *testing.T) {
+	scene, floorID := movementTestScene(t, walkableModeRestricted, rectangleInput(0, 0, 100, 100))
+	token := Token{ID: "token", FloorID: floorID, LayerID: layerIDByKind(scene, floorID, layerKindTokens), X: 10, Y: 10, Size: 32}
+	scene.Tokens[token.ID] = token
+	scene.rebuildRuntime()
+	if !CanMoveTokenSegment(scene, floorID, ScenePoint{10, 10}, ScenePoint{20, 20}) {
+		t.Fatal("initial move was rejected")
+	}
+	runtime := scene.ensureRuntime()
+	prepared, ok := runtime.preparedWalkable[floorID]
+	if !ok || len(prepared.Components) != 1 {
+		t.Fatal("walkable bounds were not prepared")
+	}
+	firstBacking := &prepared.Components[0]
+
+	// Normal token updates advance Scene.Revision without changing floor geometry;
+	// applyTokenRuntimeChange keeps the runtime alive, so prepared geometry should
+	// remain reusable instead of rescanning every polygon on each pointer move.
+	next := token
+	next.X, next.Y = 20, 20
+	scene.Tokens[token.ID] = next
+	scene.Revision++
+	scene.applyTokenRuntimeChange(token, true, next, true)
+	if !CanMoveTokenSegment(scene, floorID, ScenePoint{20, 20}, ScenePoint{30, 30}) {
+		t.Fatal("second move was rejected")
+	}
+	reused := scene.ensureRuntime().preparedWalkable[floorID]
+	if len(reused.Components) != 1 || &reused.Components[0] != firstBacking {
+		t.Fatal("prepared walkable bounds were rebuilt without a geometry change")
+	}
+
+	floor := scene.Floors[floorID]
+	floor.GeometryRevision++
+	scene.Floors[floorID] = floor
+	if !CanMoveTokenSegment(scene, floorID, ScenePoint{30, 30}, ScenePoint{40, 40}) {
+		t.Fatal("move after geometry revision was rejected")
+	}
+	refreshed := scene.ensureRuntime().preparedWalkable[floorID]
+	if refreshed.Revision != floor.GeometryRevision {
+		t.Fatal("prepared walkable bounds were not refreshed for new geometry revision")
+	}
+}

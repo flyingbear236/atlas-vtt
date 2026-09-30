@@ -91,6 +91,7 @@ type sceneRuntime struct {
 	assetPublic        map[string]int
 	assetAllByFloor    map[string]map[string]int
 	assetPublicByFloor map[string]map[string]int
+	preparedWalkable   map[string]preparedWalkableGeometry
 	indexed            int
 	elementIndexed     int
 	revision           uint64
@@ -108,6 +109,7 @@ func newSceneRuntime(scene *Scene) *sceneRuntime {
 		assetPublic:        map[string]int{},
 		assetAllByFloor:    map[string]map[string]int{},
 		assetPublicByFloor: map[string]map[string]int{},
+		preparedWalkable:   map[string]preparedWalkableGeometry{},
 		revision:           scene.Revision,
 	}
 	for _, token := range scene.Tokens {
@@ -536,8 +538,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 	for layerID, layer := range scene.Layers {
 		if memberIsGM(member) {
 			layers[layerID] = layer
-		} else if _, visible := visibleFloors[layer.FloorID]; visible && layer.Kind != layerKindWalkable {
-			layer.WalkableBounds = nil
+		} else if _, visible := visibleFloors[layer.FloorID]; visible {
 			layers[layerID] = layer
 		}
 	}
@@ -547,7 +548,6 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 		// on the server, so players do not need endpoint metadata.
 		transitions = map[string]Transition{}
 	}
-	movementBounds, _ := walkableBoundsForFloor(scene, floorID)
 	snapshot := map[string]any{
 		"type":           "snapshot",
 		"id":             ss.ID,
@@ -555,7 +555,6 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 		"scene":          metadata,
 		"revision":       scene.Revision,
 		"currentFloorId": floorID,
-		"movementBounds": movementBounds,
 		"floors":         scene.Floors,
 		"layers":         layers,
 		"elements":       elements,

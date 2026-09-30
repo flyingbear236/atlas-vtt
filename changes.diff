@@ -1,531 +1,96 @@
 diff --git a/browser_scenarios_test.go b/browser_scenarios_test.go
-index d9bfcde..707c804 100644
+index f6e5073..c82ef87 100644
 --- a/browser_scenarios_test.go
 +++ b/browser_scenarios_test.go
-@@ -142,6 +142,7 @@ const browserModuleScenario = `(async()=>{
- 	clipCtx.clearRect(0,0,80,80);clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillStyle='#fff';clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(!clipCtx.getImageData(10,40,1,1).data[3]||clipCtx.getImageData(40,40,1,1).data[3])throw Error('grid/world-effect clip helper failed');const firstBuilds=clipPaths.builds;clipCtx.clearRect(0,0,80,80);clipFloor.geometryRevision=2;clipFloor.renderBounds={outer:[{x:30,y:30},{x:70,y:30},{x:70,y:70},{x:30,y:70}],holes:[]};clipPaths.syncState(clipState);if(clipPaths.entries.size)throw Error('stale render bounds path survived snapshot invalidation');clipCtx.save();clipFloorRenderBounds(clipCtx,clipState,clipFloor,clipPaths);clipCtx.fillRect(0,0,80,80);clipCtx.restore();if(clipPaths.builds!==firstBuilds+1||clipCtx.getImageData(10,10,1,1).data[3]||!clipCtx.getImageData(40,40,1,1).data[3])throw Error('render bounds path cache ignored geometry revision');clipCtx.clearRect(0,0,80,80);drawSceneStack({...clipArgs,editor:true});if(!clipCtx.getImageData(25,25,1,1).data[3])throw Error('GM editor was clipped to render bounds');
- 	const tiledAsset={id:'map',renderMode:'tiled',width:2048,height:2048,levels:3},fallbacks=tiledFallbackCandidates(tiledAsset,0,1,0);if(fallbacks[0]?.path!=='map/1_0_0.png'||fallbacks[0].cropX!==256||fallbacks[0].cropWidth!==256)throw Error('tiled fallback mapping');const drawCalls=[],fallbackCtx={globalAlpha:1,save(){},restore(){},translate(){},rotate(){},drawImage(...args){drawCalls.push(args);}},fallbackState={floors:{lower:{id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};drawSceneStack({ctx:fallbackCtx,state:fallbackState,currentFloorId:'lower',view:{left:520,top:10,right:900,bottom:400},camera:{scale:2},dpr:1,requestImage:()=>null,peekImage:path=>path==='map/1_0_0.png'?{width:128,height:128}:null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex()});if(drawCalls.length!==1||drawCalls[0].length!==9||drawCalls[0][1]!==64||drawCalls[0][3]!==64||drawCalls[0][5]!==512)throw Error('coarse LOD was not cropped into missing detailed tile');
- 	const tileCanvas=document.createElement('canvas'),tileCtx=tileCanvas.getContext('2d'),tileRequests=[],tileBounds=new FloorRenderBoundsResourceCache(32),initialTileBounds={outer:[{x:50,y:50},{x:900,y:50},{x:900,y:400},{x:400,y:400},{x:400,y:900},{x:50,y:900}],holes:[]},tileFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:initialTileBounds},tileState={scene:{id:'tile-bounds'},floors:{lower:tileFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'map',transform:{x:0,y:0,width:2048,height:2048,rotation:0}}},assets:{map:tiledAsset}};const tileArgs={ctx:tileCtx,state:tileState,currentFloorId:'lower',view:{left:0,top:0,right:2048,bottom:2048},camera:{scale:1},dpr:1,requestImage:(path,edge,priority='visible')=>{tileRequests.push({path,priority});return null;},peekImage:()=>null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:tileBounds};drawSceneStack(tileArgs);const requestedTiles=tileRequests.map(item=>item.path).sort().join(',');if(requestedTiles!=='map/0_0_0.png,map/0_0_1.png,map/0_1_0.png'||tileRequests.some(item=>item.priority==='prefetch'))throw Error('concave render bounds did not cull outside tile requests');const misses=tileBounds.misses;drawSceneStack(tileArgs);if(tileBounds.hits===0||tileBounds.misses!==misses)throw Error('tile bounds classifications were not cached');tileFloor.geometryRevision=2;tileFloor.renderBounds={outer:[{x:1100,y:1100},{x:1400,y:1100},{x:1400,y:1400},{x:1100,y:1400}],holes:[]};tileBounds.syncState(tileState);if(tileBounds.classifications.size||tileBounds.elements.size)throw Error('stale tile classification survived bounds revision');tileRequests.length=0;drawSceneStack(tileArgs);if(tileRequests.map(item=>item.path).join(',')!=='map/0_2_2.png')throw Error('tile wanted set used stale bounds');tileFloor.geometryRevision=3;tileFloor.renderBounds=initialTileBounds;tileBounds.syncState(tileState);tileRequests.length=0;drawSceneStack(tileArgs);if(tileRequests.map(item=>item.path).sort().join(',')!==requestedTiles)throw Error('tile classification did not recover after bounds restore');for(let revision=4;revision<44;revision++){tileFloor.geometryRevision=revision;tileFloor.renderBounds=revision%2?initialTileBounds:{outer:[{x:1100,y:1100},{x:1400,y:1100},{x:1400,y:1400},{x:1100,y:1400}],holes:[]};tileBounds.syncState(tileState);tileRequests.length=0;drawSceneStack(tileArgs);}if(tileBounds.classifications.size>32||tileBounds.elements.size>512||tileBounds.revisions.size!==1)throw Error('render bounds caches grew during frequent edits');
-+	const journeyAsset={id:'journey',renderMode:'tiled',width:8192,height:8192,levels:5},journeyFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:{outer:[{x:0,y:0},{x:1536,y:0},{x:1536,y:512},{x:512,y:512},{x:512,y:1536},{x:0,y:1536}],holes:[]}},journeyState={scene:{id:'tile-journey'},floors:{lower:journeyFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{map:{id:'map',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'journey',transform:{x:0,y:0,width:8192,height:8192,rotation:0}}},assets:{journey:journeyAsset}},journeyCache=new FloorRenderBoundsResourceCache(64),decodedTiles=new Set();let journeyRequests=0,journeyDecodes=0,journeyRAM=0;const journeyRender=view=>{let planned=0;drawSceneStack({ctx:tileCtx,state:journeyState,currentFloorId:'lower',view,camera:{scale:1},dpr:1,requestImage:path=>{planned++;if(!decodedTiles.has(path)){decodedTiles.add(path);journeyRequests++;journeyDecodes++;journeyRAM+=512*512*4;}return null;},peekImage:()=>null,editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:journeyCache});return planned;};const insidePlans=journeyRender({left:0,top:0,right:1024,bottom:768}),insideRequests=journeyRequests,insideDecodes=journeyDecodes,insideRAM=journeyRAM,outsidePlans=journeyRender({left:2048,top:2048,right:3072,bottom:2816});if(!insidePlans||outsidePlans||journeyRequests!==insideRequests||journeyDecodes!==insideDecodes||journeyRAM!==insideRAM)throw Error('outside camera selected large-map resources');const returnPlans=journeyRender({left:0,top:0,right:1024,bottom:768});if(!returnPlans||journeyRequests!==insideRequests||journeyDecodes!==insideDecodes||journeyRAM!==insideRAM||journeyRAM>64*1048576)throw Error('inside/outside/back reloaded or leaked tiled resources: '+JSON.stringify({returnPlans,journeyRequests,insideRequests,journeyDecodes,insideDecodes,journeyRAM,insideRAM}));
- 	const keptController=new AbortController(),staleController=new AbortController(),pendingLoads=new Map([['kept',keptController],['stale',staleController]]);if(abortUnwantedImageLoads(pendingLoads,new Set(['kept']))!==1||keptController.signal.aborted||!staleController.signal.aborted||abortUnwantedImageLoads(pendingLoads,new Set(['kept']))!==0)throw Error('stale pending preload was not cancelled');
- 	const sharedBounds=new FloorRenderBoundsResourceCache(32),sharedFloor={id:'lower',order:0,opacity:1,opacityWhenViewedFromBelow:0,geometryRevision:1,renderBounds:{outer:[{x:0,y:0},{x:60,y:0},{x:60,y:20},{x:20,y:20},{x:20,y:60},{x:0,y:60}],holes:[]}},sharedState={scene:{id:'shared-bounds'},floors:{lower:sharedFloor},layers:{visual:{id:'visual',floorId:'lower',kind:'visual',order:0,visible:true,opacity:1}},elements:{partial:{id:'partial',floorId:'lower',layerId:'visual',zOrder:0,visible:true,opacity:1,assetId:'shared',transform:{x:10,y:10,width:40,height:40,rotation:0}},outside:{id:'outside',floorId:'lower',layerId:'visual',zOrder:1,visible:true,opacity:1,assetId:'shared',transform:{x:30,y:30,width:10,height:10,rotation:0}}},assets:{shared:{id:'shared',kind:'image',renderMode:'bitmap',width:40,height:40}}},sharedRequests=[];const sharedArgs={ctx:tileCtx,state:sharedState,currentFloorId:'lower',view:{left:0,top:0,right:80,bottom:80},camera:{scale:1},dpr:1,requestImage:path=>{sharedRequests.push(path);return null;},editor:false,drawTokenLayer:()=>{},renderIndex:new SceneRenderIndex(),resourceBounds:sharedBounds};drawSceneStack(sharedArgs);if(sharedRequests.join(',')!=='shared/image.png')throw Error('shared bitmap was not culled per usage');sharedRequests.length=0;drawSceneStack({...sharedArgs,editor:true});if(sharedRequests.length!==2)throw Error('GM bitmap resource culling was enabled');
- 	const tokenArtwork=new ArtworkCache(1048576),tokenIndex=new SpatialIndex(),tokenState={partial:{id:'partial',floorId:'lower',x:25,y:25,size:12,name:'partial',color:'#fff',asset:'portrait'},outside:{id:'outside',floorId:'lower',x:40,y:40,size:10,name:'outside',color:'#fff',asset:'portrait'}};for(const token of Object.values(tokenState))tokenIndex.set(token);const tokenRequests=[];drawTokens({ctx:tileCtx,camera:{x:0,y:0,scale:1},viewport:{w:80,h:80},dpr:1,tokens:tokenState,index:tokenIndex,visuals:new Map(),moving:new Set(),drag:null,selected:null,queue:[],requestImage:path=>{tokenRequests.push(path);return null;},artwork:tokenArtwork,delta:16,floorId:'lower',resourceVisible:(x,y,radius)=>sharedBounds.intersectsCircle(sharedState,sharedFloor,x,y,radius)});if(tokenRequests.join(',')!=='portrait/token.png')throw Error('shared token artwork was not culled per usage');tokenArtwork.clear();
-diff --git a/geometry.go b/geometry.go
-index 535a40b..82980ca 100644
---- a/geometry.go
-+++ b/geometry.go
-@@ -9,10 +9,16 @@ import (
- const (
- 	// One millimetre in the existing world coordinate system is precise enough
- 	// for editor geometry and keeps exact integer predicates safe at ±1e6.
--	geometryQuantum          = 0.001
--	maxGeometryRingVertices  = 10_000
--	maxGeometryTotalVertices = 50_000
--	maxWalkableComponents    = 2_048
-+	geometryQuantum = 0.001
-+	// Input is tighter because simple-ring validation is quadratic. Persisted
-+	// results may be larger, but remain bounded for snapshots and later edits.
-+	maxGeometryInputVertices          = 512
-+	maxGeometryRingVertices           = 4_096
-+	maxGeometryResultVertices         = 8_192
-+	maxGeometryOperationInputVertices = maxGeometryResultVertices + maxGeometryInputVertices
-+	maxWalkableComponents             = 512
-+	maxGeometryOperationComponents    = maxWalkableComponents + 1 // stored components plus the edited rectangle
-+	maxGeometryCommandBytes           = 12 << 10
- )
+@@ -125,6 +125,8 @@ const browserModuleScenario = `(async()=>{
+  movementState.floors.floor={id:'floor',geometryRevision:12,walkableMode:'unrestricted',walkableComponents:[],renderBounds:{outer:[{x:0,y:0},{x:100,y:0},{x:100,y:30},{x:30,y:30},{x:30,y:100},{x:0,y:100}],holes:[]}};constrained=constrainTokenMovement(movementState,'floor',{x:15,y:80},{x:80,y:15});if(Math.hypot(constrained.x-30,constrained.y-30)>.0021||!canMoveTokenSegment(movementState,'floor',{x:15,y:80},constrained))throw Error('concave render bounds corner did not slide');
+  movementState.floors.floor={id:'floor',geometryRevision:13,walkableMode:'restricted',walkableComponents:[{id:'slope',polygon:{outer:[{x:0,y:0},{x:100,y:37},{x:100,y:100},{x:0,y:100}],holes:[]}}]};const slopeLength=Math.hypot(100,37),outward={x:37/slopeLength,y:-100/slopeLength},inward={x:-outward.x,y:-outward.y};constrained={x:10+inward.x*10,y:3.7+inward.y*10};let priorAlong=-Infinity;for(let step=2;step<=8;step++){const edgePoint={x:step*10,y:step*3.7},target={x:edgePoint.x+outward.x*20,y:edgePoint.y+outward.y*20},prior=constrained;constrained=constrainTokenMovement(movementState,'floor',prior,target);const along=(constrained.x*100+constrained.y*37)/(slopeLength*slopeLength),signedInset=(100*constrained.y-37*constrained.x)/slopeLength;if(!canMoveTokenSegment(movementState,'floor',prior,constrained)||along<=priorAlong||Math.abs(along-step/10)>.0001||signedInset<.001||signedInset>.003)throw Error('diagonal wall slide jittered: '+JSON.stringify({step,prior,constrained,along,signedInset}));priorAlong=along;}
+  movementState.floors.floor={id:'floor',geometryRevision:14,walkableMode:'unrestricted',walkableComponents:[],renderBounds:{outer:[{x:0,y:0},{x:100,y:37},{x:100,y:100},{x:0,y:100}],holes:[]}};constrained={x:10+inward.x*10,y:3.7+inward.y*10};priorAlong=-Infinity;for(let step=2;step<=8;step++){const edgePoint={x:step*10,y:step*3.7},target={x:edgePoint.x+outward.x*20,y:edgePoint.y+outward.y*20},prior=constrained;constrained=constrainTokenMovement(movementState,'floor',prior,target);const along=(constrained.x*100+constrained.y*37)/(slopeLength*slopeLength),signedInset=(100*constrained.y-37*constrained.x)/slopeLength;if(!canMoveTokenSegment(movementState,'floor',prior,constrained)||along<=priorAlong||Math.abs(along-step/10)>.0001||signedInset<.001||signedInset>.003)throw Error('diagonal render bounds slide jittered: '+JSON.stringify({step,prior,constrained,along,signedInset}));priorAlong=along;}
++ movementState.floors.floor={id:'floor',geometryRevision:15,walkableMode:'unrestricted',walkableComponents:[],renderBounds:{outer:[{x:0,y:0},{x:100,y:0},{x:100,y:30},{x:30,y:30},{x:30,y:100},{x:0,y:100}],holes:[]}};constrained={x:15,y:80};const cornerTarget={x:80,y:15};for(let step=0;step<2;step++){const prior=constrained;constrained=constrainTokenMovement(movementState,'floor',prior,cornerTarget);if(!canMoveTokenSegment(movementState,'floor',prior,constrained)||Math.hypot(constrained.x-cornerTarget.x,constrained.y-cornerTarget.y)>=Math.hypot(prior.x-cornerTarget.x,prior.y-cornerTarget.y))throw Error('single contour corner slide stuck: '+JSON.stringify({step,prior,constrained}));}if(Math.hypot(constrained.x-cornerTarget.x,constrained.y-cornerTarget.y)>.003)throw Error('single contour corner slide did not turn: '+JSON.stringify(constrained));
++ movementState.floors.floor={id:'floor',geometryRevision:16,walkableMode:'restricted',walkableComponents:[{id:'walkable',polygon:rect(0,30,100,100)}],renderBounds:{outer:[{x:0,y:50},{x:100,y:0},{x:100,y:100},{x:0,y:100}],holes:[]}};const mixedCornerFrom={x:70,y:40},mixedCornerTarget={x:10,y:10};constrained=constrainTokenMovement(movementState,'floor',mixedCornerFrom,mixedCornerTarget);if(!canMoveTokenSegment(movementState,'floor',mixedCornerFrom,constrained)||constrained.x>=35||constrained.y<=30||Math.hypot(constrained.x-mixedCornerTarget.x,constrained.y-mixedCornerTarget.y)>=Math.hypot(mixedCornerFrom.x-mixedCornerTarget.x,mixedCornerFrom.y-mixedCornerTarget.y))throw Error('walkable/render corner slide stuck: '+JSON.stringify(constrained));
+  const floorState={floors:{lower:{id:'lower',order:0,opacity:.6,opacityWhenViewedFromBelow:0},upper:{id:'upper',order:1,opacity:.8,opacityWhenViewedFromBelow:.5}}};const fromBelow=compositeFloors(floorState,'lower'),fromAbove=compositeFloors(floorState,'upper');if(fromBelow.map(v=>v.floor.id).join(',')!=='lower,upper'||fromBelow[1].alpha!==.4||fromAbove.map(v=>v.floor.id).join(',')!=='lower,upper'||fromAbove[1].alpha!==.8)throw Error('floor compositing');floorState.floors.upper.opacityWhenViewedFromBelow=0;if(compositeFloors(floorState,'lower').length!==1)throw Error('zero-alpha floor loaded');
+  const active={id:'active',floorId:'lower'};if(needsActiveTokenRequest(active,false,'active','lower',null)||!needsActiveTokenRequest(active,true,'active','lower',null)||!needsActiveTokenRequest(active,false,'other','lower',null)||!needsActiveTokenRequest(active,false,'active','upper',null)||!needsActiveTokenRequest(active,false,'active','lower',{}))throw Error('active token request fast path');
+  const transformBase={x:10,y:20,width:100,height:50,rotation:0,pointerX:60,pointerY:-8};
+diff --git a/web/movement-geometry.js b/web/movement-geometry.js
+index 8f123ec..84b1770 100644
+--- a/web/movement-geometry.js
++++ b/web/movement-geometry.js
+@@ -119,41 +119,58 @@ function movementLimit(state,floorId,from,to){
  
- var (
-@@ -257,7 +263,7 @@ func ringsIntersect(a, b []ScenePoint) bool {
+ function interpolate(from,to,parameter){return {x:from.x+(to.x-from.x)*parameter,y:from.y+(to.y-from.y)*parameter};}
+ function distanceSquared(a,b){const dx=a.x-b.x,dy=a.y-b.y;return dx*dx+dy*dy;}
+-function closestPointOnEdge(point,a,b){const dx=b.x-a.x,dy=b.y-a.y,lengthSquared=dx*dx+dy*dy;if(!lengthSquared)return {x:a.x,y:a.y};const parameter=Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/lengthSquared));return {x:a.x+dx*parameter,y:a.y+dy*parameter};}
++function closestPointOnEdge(point,a,b){const dx=b.x-a.x,dy=b.y-a.y,lengthSquared=dx*dx+dy*dy;if(!lengthSquared)return {point:{x:a.x,y:a.y},parameter:0};const parameter=Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/lengthSquared));return {point:{x:a.x+dx*parameter,y:a.y+dy*parameter},parameter};}
+ function insetPoints(point,a,b){const dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy);if(!length)return [];const nx=-dy/length*SLIDE_INSET,ny=dx/length*SLIDE_INSET;return [{x:point.x+nx,y:point.y+ny},{x:point.x-nx,y:point.y-ny}];}
+ function edgeKey(a,b){const ga=gridPoint(a),gb=gridPoint(b),left=ga.x<gb.x||ga.x===gb.x&&ga.y<=gb.y?ga:gb,right=left===ga?gb:ga;return `${left.x}:${left.y}:${right.x}:${right.y}`;}
+ function collisionEdges(from,to,parameter,polygons){
+   const found=new Map();
+-  for(const entry of polygons)for(const ring of entry.rings)for(let i=0;i<ring.length;i++){
++  for(const entry of polygons)for(let ringIndex=0;ringIndex<entry.rings.length;ringIndex++){const ring=entry.rings[ringIndex];for(let i=0;i<ring.length;i++){
+     const a=ring[i],b=ring[(i+1)%ring.length],parameters=edgeParameters(from,to,a,b);
+-    if(parameters.some(value=>Math.abs(value-parameter)<=SEGMENT_EPSILON*8))found.set(edgeKey(a,b),{a,b});
+-  }
++    if(parameters.some(value=>Math.abs(value-parameter)<=SEGMENT_EPSILON*8))found.set(edgeKey(a,b),{entry,ringIndex,edgeIndex:i,a,b});
++  }}
+   return [...found.values()];
  }
++function adjacentEdge(edge,atStart){const ring=edge.entry.rings[edge.ringIndex];if(!ring||ring.length<2)return null;const edgeIndex=atStart?(edge.edgeIndex-1+ring.length)%ring.length:(edge.edgeIndex+1)%ring.length;return {entry:edge.entry,ringIndex:edge.ringIndex,edgeIndex,a:ring[edgeIndex],b:ring[(edgeIndex+1)%ring.length]};}
++function tangentPoints(point,a,b){const dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy);if(length<=SEGMENT_EPSILON)return [];const step=Math.min(SLIDE_INSET*2,length/4),offsetX=dx*step/length,offsetY=dy*step/length;return [{x:point.x-offsetX,y:point.y-offsetY},{x:point.x+offsetX,y:point.y+offsetY}];}
+ export function canMoveTokenSegment(state,floorId,from,to){return movementLimit(state,floorId,from,to).allowed;}
  
- func normalizePolygon(input Polygon) (Polygon, error) {
--	if len(input.Outer)+ringVertexCount(input.Holes) > maxGeometryTotalVertices {
-+	if _, ok := polygonVertexCountWithin(input, maxGeometryResultVertices); !ok {
- 		return Polygon{}, errGeometryLimitExceeded
- 	}
- 	outer, err := normalizeRing(input.Outer, true)
-@@ -286,6 +292,27 @@ func normalizePolygon(input Polygon) (Polygon, error) {
- 	return Polygon{Outer: outer, Holes: holes}, nil
+-// Keep the pointer gesture responsive at a boundary. The direct segment is
+-// preferred; after its first blocked point, project the pointer onto the
+-// colliding edge and accept only candidates the server can validate as one
+-// straight segment from the current network anchor.
++// Keep the pointer gesture responsive at a boundary. A bounded local search
++// follows adjacent contour edges and edges of another active constraint, but
++// every result still has to be a server-valid straight segment from the
++// current network anchor.
+ export function constrainTokenMovement(state,floorId,from,to){
+   let limit=movementLimit(state,floorId,from,to);
+   if(limit.allowed&&!limit.endpointJunction)return {x:to.x,y:to.y};
+   if(![from?.x,from?.y,to?.x,to?.y].every(Number.isFinite))return null;
+   if(limit.allowed){const floor=state.floors[floorId];limit={allowed:false,parameter:1,polygons:prepareFloor(floor).components};}
+   const contact=interpolate(from,to,Math.max(0,Math.min(1,limit.parameter))),fromDistance=distanceSquared(from,to);
+-  const edges=collisionEdges(from,to,limit.parameter,limit.polygons).map(edge=>{
+-    const probes=insetPoints(contact,edge.a,edge.b),sides=probes.map(probe=>{const result=movementLimit(state,floorId,probe,probe);return result.allowed&&!result.endpointJunction;});
+-    return {...edge,probes,sides,point:closestPointOnEdge(to,edge.a,edge.b)};
+-  });
+-  edges.sort((left,right)=>distanceSquared(left.point,to)-distanceSquared(right.point,to));
+-  for(const edge of edges.slice(0,MAX_SLIDE_EDGES)){
+-    const candidates=insetPoints(edge.point,edge.a,edge.b).map((point,index)=>({point,index})).sort((left,right)=>distanceSquared(left.point,to)-distanceSquared(right.point,to));
+-    for(const candidate of candidates){if(!edge.sides[candidate.index])continue;const result=movementLimit(state,floorId,from,candidate.point);if(result.allowed&&!result.endpointJunction&&distanceSquared(candidate.point,to)+SEGMENT_EPSILON<fromDistance)return candidate.point;}
++  const edges=[],queued=new Set(),processed=[];
++  const enqueue=(edge,edgeContact)=>{if(!edge)return;const key=edgeKey(edge.a,edge.b);if(queued.has(key)||edges.length>=MAX_SLIDE_EDGES)return;queued.add(key);edges.push({...edge,contact:edgeContact});};
++  for(const edge of collisionEdges(from,to,limit.parameter,limit.polygons))enqueue(edge,contact);
++  let bestStable=null,bestStableDistance=fromDistance,bestTransition=null,bestTransitionDistance=fromDistance;
++  const pointAllowed=point=>{const result=movementLimit(state,floorId,point,point);return result.allowed&&!result.endpointJunction;};
++  const enqueueBlockers=(candidate,result)=>{if(result.allowed||!result.polygons?.length)return;const blockedContact=interpolate(from,candidate,Math.max(0,Math.min(1,result.parameter)));for(const edge of collisionEdges(from,candidate,result.parameter,result.polygons))enqueue(edge,blockedContact);};
++  const consider=(point,edge,requireStable)=>{
++    if(distanceSquared(point,from)<=SEGMENT_EPSILON)return;
++    const result=movementLimit(state,floorId,from,point);
++    if(!result.allowed||result.endpointJunction){enqueueBlockers(point,result);return;}
++    const targetDistance=distanceSquared(point,to);
++    if(targetDistance+SEGMENT_EPSILON>=fromDistance)return;
++    const stable=requireStable&&tangentPoints(point,edge.a,edge.b).every(pointAllowed);
++    if(stable){if(targetDistance<bestStableDistance){bestStable=point;bestStableDistance=targetDistance;}}
++    else if(targetDistance<bestTransitionDistance){bestTransition=point;bestTransitionDistance=targetDistance;}
++  };
++  for(let cursor=0;cursor<edges.length&&cursor<MAX_SLIDE_EDGES;cursor++){
++    const edge=edges[cursor],projection=closestPointOnEdge(to,edge.a,edge.b);processed.push(edge);
++    if(projection.parameter<=SEGMENT_EPSILON)enqueue(adjacentEdge(edge,true),edge.a);
++    if(projection.parameter>=1-SEGMENT_EPSILON)enqueue(adjacentEdge(edge,false),edge.b);
++    const candidates=insetPoints(projection.point,edge.a,edge.b).sort((left,right)=>distanceSquared(left,to)-distanceSquared(right,to));
++    for(const candidate of candidates)consider(candidate,edge,true);
+   }
+-  for(const edge of edges.slice(0,MAX_SLIDE_EDGES)){
+-    const candidates=edge.probes.map((point,index)=>({point,index})).sort((left,right)=>distanceSquared(left.point,to)-distanceSquared(right.point,to));
+-    for(const candidate of candidates){if(!edge.sides[candidate.index])continue;const result=movementLimit(state,floorId,from,candidate.point);if(result.allowed&&!result.endpointJunction&&distanceSquared(candidate.point,to)+SEGMENT_EPSILON<fromDistance)return candidate.point;}
++  if(bestStable)return bestStable;
++  for(const edge of processed){
++    const candidates=insetPoints(edge.contact,edge.a,edge.b).sort((left,right)=>distanceSquared(left,to)-distanceSquared(right,to));
++    for(const candidate of candidates)consider(candidate,edge,false);
+   }
+-  return {x:from.x,y:from.y};
++  return bestTransition||{x:from.x,y:from.y};
  }
- 
-+func validateGeometryInputPolygon(polygon Polygon) error {
-+	if _, ok := polygonVertexCountWithin(polygon, maxGeometryInputVertices); !ok {
-+		return errGeometryLimitExceeded
-+	}
-+	return nil
-+}
-+
-+func polygonVertexCountWithin(polygon Polygon, limit int) (int, bool) {
-+	if limit < 0 || len(polygon.Outer) > limit {
-+		return 0, false
-+	}
-+	total := len(polygon.Outer)
-+	for _, ring := range polygon.Holes {
-+		if len(ring) > limit-total {
-+			return 0, false
-+		}
-+		total += len(ring)
-+	}
-+	return total, true
-+}
-+
- func ringVertexCount(rings [][]ScenePoint) int {
- 	total := 0
- 	for _, ring := range rings {
-diff --git a/geometry_commands.go b/geometry_commands.go
-index b99d3a0..9fa23bd 100644
---- a/geometry_commands.go
-+++ b/geometry_commands.go
-@@ -4,6 +4,9 @@ func setRenderBounds(floor Floor, input *Polygon) (Floor, bool, error) {
- 	if input == nil || len(input.Holes) != 0 {
- 		return floor, false, errInvalidGeometry
- 	}
-+	if err := validateGeometryInputPolygon(*input); err != nil {
-+		return floor, false, err
-+	}
- 	polygon, err := normalizePolygon(*input)
- 	if err != nil {
- 		return floor, false, err
-diff --git a/geometry_test.go b/geometry_test.go
-index b1094b0..4bffe96 100644
---- a/geometry_test.go
-+++ b/geometry_test.go
-@@ -2,6 +2,7 @@ package main
- 
- import (
- 	"errors"
-+	"math"
- 	"testing"
- )
- 
-@@ -86,3 +87,25 @@ func TestSetRenderBoundsValidation(t *testing.T) {
- 		t.Fatalf("repeated clear must be a no-op: changed=%v err=%v", changed, err)
- 	}
- }
-+
-+func TestGeometryCoordinateAndInputVertexLimits(t *testing.T) {
-+	if value, err := quantizeCoordinate(maxSceneDimension); err != nil || value != maxSceneDimension {
-+		t.Fatalf("maximum coordinate rejected: value=%v err=%v", value, err)
-+	}
-+	for _, value := range []float64{maxSceneDimension + geometryQuantum, -maxSceneDimension - geometryQuantum, math.Inf(1), math.NaN()} {
-+		if _, err := quantizeCoordinate(value); !errors.Is(err, errInvalidGeometry) {
-+			t.Fatalf("coordinate %v was accepted: %v", value, err)
-+		}
-+	}
-+
-+	floor := Floor{ID: "floor"}
-+	tooMany := Polygon{Outer: make([]ScenePoint, maxGeometryInputVertices+1)}
-+	for index := range tooMany.Outer {
-+		angle := 2 * math.Pi * float64(index) / float64(len(tooMany.Outer))
-+		tooMany.Outer[index] = ScenePoint{X: 1000 * math.Cos(angle), Y: 1000 * math.Sin(angle)}
-+	}
-+	result, changed, err := setRenderBounds(floor, &tooMany)
-+	if !errors.Is(err, errGeometryLimitExceeded) || changed || result.RenderBounds != nil {
-+		t.Fatalf("input vertex limit was not atomic: changed=%v err=%v floor=%#v", changed, err, result)
-+	}
-+}
-diff --git a/main.go b/main.go
-index 544e12f..e91b58f 100644
---- a/main.go
-+++ b/main.go
-@@ -429,13 +429,15 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
- 
- var upgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096}
- 
-+const maxWebSocketMessageBytes = 16 << 10
-+
- func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
- 	c, e := upgrader.Upgrade(w, r, nil)
- 	if e != nil {
- 		return
- 	}
- 	defer c.Close()
--	c.SetReadLimit(16384)
-+	c.SetReadLimit(maxWebSocketMessageBytes)
- 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
- 	var hello struct {
- 		Session string
-diff --git a/polygon_clip.go b/polygon_clip.go
-index 7b9e64e..2f4570d 100644
---- a/polygon_clip.go
-+++ b/polygon_clip.go
-@@ -18,7 +18,7 @@ func differencePolygons(subject, clipping []Polygon) ([]Polygon, error) {
- }
- 
- func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon, error) {
--	if len(subject)+len(clipping) > maxWalkableComponents {
-+	if len(subject)+len(clipping) > maxGeometryOperationComponents {
- 		return nil, errGeometryLimitExceeded
- 	}
- 	subjectClip, err := atlasPolygonsToClip(subject)
-@@ -39,17 +39,15 @@ func clipPolygons(subject, clipping []Polygon, operation polyclip.Op) ([]Polygon
- }
- 
- func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
-+	if !polygonsWithinVertexLimit(polygons, maxGeometryOperationInputVertices) {
-+		return nil, errGeometryLimitExceeded
-+	}
- 	var result polyclip.Polygon
--	total := 0
- 	for _, polygon := range polygons {
- 		normalized, err := normalizePolygon(polygon)
- 		if err != nil {
- 			return nil, err
- 		}
--		total += len(normalized.Outer) + ringVertexCount(normalized.Holes)
--		if total > maxGeometryTotalVertices {
--			return nil, errGeometryLimitExceeded
--		}
- 		current := polyclip.Polygon{ringToClip(normalized.Outer)}
- 		for _, hole := range normalized.Holes {
- 			current = append(current, ringToClip(hole))
-@@ -63,6 +61,18 @@ func atlasPolygonsToClip(polygons []Polygon) (polyclip.Polygon, error) {
- 	return result, nil
- }
- 
-+func polygonsWithinVertexLimit(polygons []Polygon, limit int) bool {
-+	total := 0
-+	for _, polygon := range polygons {
-+		count, ok := polygonVertexCountWithin(polygon, limit-total)
-+		if !ok {
-+			return false
-+		}
-+		total += count
-+	}
-+	return true
-+}
-+
- func ringToClip(ring []ScenePoint) polyclip.Contour {
- 	contour := make(polyclip.Contour, len(ring))
- 	for i, point := range ring {
-@@ -79,11 +89,10 @@ type clipContour struct {
- }
- 
- func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
--	if len(clipped) > maxWalkableComponents*2 {
-+	if len(clipped) > maxWalkableComponents*2 || !clipResultWithinLimits(clipped) {
- 		return nil, errGeometryLimitExceeded
- 	}
- 	contours := make([]clipContour, 0, len(clipped))
--	total := 0
- 	for _, contour := range clipped {
- 		raw := make([]ScenePoint, len(contour))
- 		for i, point := range contour {
-@@ -93,10 +102,6 @@ func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
- 		if err != nil {
- 			return nil, err
- 		}
--		total += len(ring)
--		if total > maxGeometryTotalVertices {
--			return nil, errGeometryLimitExceeded
--		}
- 		contours = append(contours, clipContour{ring: ring, area: signedRingArea(ring), parent: -1})
- 	}
- 
-@@ -162,4 +167,15 @@ func clipPolygonToAtlas(clipped polyclip.Polygon) ([]Polygon, error) {
- 	return result, nil
- }
- 
-+func clipResultWithinLimits(clipped polyclip.Polygon) bool {
-+	total := 0
-+	for _, contour := range clipped {
-+		if len(contour) > maxGeometryRingVertices || len(contour) > maxGeometryResultVertices-total {
-+			return false
-+		}
-+		total += len(contour)
-+	}
-+	return true
-+}
-+
- const mathMaxFloat = 1.7976931348623157e+308
-diff --git a/polygon_clip_test.go b/polygon_clip_test.go
-index f7772e2..5d46832 100644
---- a/polygon_clip_test.go
-+++ b/polygon_clip_test.go
-@@ -1,6 +1,11 @@
- package main
- 
--import "testing"
-+import (
-+	"errors"
-+	"testing"
-+
-+	polyclip "github.com/ctessum/polyclip-go"
-+)
- 
- func mustRectangle(t *testing.T, minX, minY, maxX, maxY float64) Polygon {
- 	t.Helper()
-@@ -48,3 +53,22 @@ func TestPolygonClipPreservesExistingHole(t *testing.T) {
- 		t.Fatalf("existing hole was not preserved: %#v, %v", result, err)
- 	}
- }
-+
-+func TestPolygonClipRejectsResultLimitsBeforeConversion(t *testing.T) {
-+	tests := map[string]polyclip.Polygon{
-+		"ring vertices": {make(polyclip.Contour, maxGeometryRingVertices+1)},
-+		"total vertices": {
-+			make(polyclip.Contour, 3000),
-+			make(polyclip.Contour, 3000),
-+			make(polyclip.Contour, maxGeometryResultVertices-6000+1),
-+		},
-+		"components": make(polyclip.Polygon, maxWalkableComponents*2+1),
-+	}
-+	for name, clipped := range tests {
-+		t.Run(name, func(t *testing.T) {
-+			if _, err := clipPolygonToAtlas(clipped); !errors.Is(err, errGeometryLimitExceeded) {
-+				t.Fatalf("limit+1 result accepted: %v", err)
-+			}
-+		})
-+	}
-+}
-diff --git a/reliable.go b/reliable.go
-index bbc0b97..d8b6e42 100644
---- a/reliable.go
-+++ b/reliable.go
-@@ -149,6 +149,18 @@ type Command struct {
- 	DeltaX                   float64           `json:"deltaX,omitempty"`
- 	DeltaY                   float64           `json:"deltaY,omitempty"`
- 	ExpectedGeometryRevision *uint64           `json:"expectedGeometryRevision,omitempty"`
-+	wireBytes                int
-+}
-+
-+func (command *Command) UnmarshalJSON(data []byte) error {
-+	type commandWire Command
-+	var decoded commandWire
-+	if err := json.Unmarshal(data, &decoded); err != nil {
-+		return err
-+	}
-+	*command = Command(decoded)
-+	command.wireBytes = len(data)
-+	return nil
- }
- 
- func (s *Server) command(ss *Session, p *peer, c Command) {
-diff --git a/scene_commands.go b/scene_commands.go
-index 46bb72a..c9a212b 100644
---- a/scene_commands.go
-+++ b/scene_commands.go
-@@ -80,6 +80,10 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
- 	var tokenExisted, tokenExists bool
- 	var assetsBeforeMutation map[string]Asset
- 
-+	if issue == "" && geometryCommand(command.Type) && command.wireBytes > maxGeometryCommandBytes {
-+		issue = "Превышен лимит размера геометрической команды"
-+		resyncOnIssue = true
-+	}
- 	if issue == "" && !memberIsGM(peer.member) {
- 		issue = "Действие доступно ведущему"
- 	}
-@@ -588,6 +592,14 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
- 	}
- }
- 
-+func geometryCommand(commandType string) bool {
-+	switch commandType {
-+	case "addWalkableRect", "subtractWalkableRect", "moveWalkableComponent", "deleteWalkableComponent", "setWalkableMode", "setRenderBounds", "clearRenderBounds":
-+		return true
-+	}
-+	return false
-+}
-+
- func walkableCommandIssue(err error) string {
- 	if errors.Is(err, errGeometryLimitExceeded) {
- 		return "Превышен лимит геометрии"
-diff --git a/scene_content.go b/scene_content.go
-index bd3cbbd..81ceb3a 100644
---- a/scene_content.go
-+++ b/scene_content.go
-@@ -536,7 +536,7 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
- }
- 
- func validFloorGeometry(floor Floor) bool {
--	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || len(floor.WalkableComponents) > maxWalkableComponents || walkableVertexCount(floor.WalkableComponents) > maxGeometryTotalVertices {
-+	if (floor.WalkableMode != walkableModeUnrestricted && floor.WalkableMode != walkableModeRestricted) || floor.WalkableComponents == nil || !walkableGeometryWithinLimits(floor.WalkableComponents) {
- 		return false
- 	}
- 	ids := make(map[string]bool, len(floor.WalkableComponents))
-diff --git a/walkable.go b/walkable.go
-index 140eb3c..0ee899e 100644
---- a/walkable.go
-+++ b/walkable.go
-@@ -21,7 +21,7 @@ func commandWalkableAABB(bounds *WalkableBounds) (AABB, error) {
- // assumes stored components were normalized when accepted; only AABB-selected
- // candidates enter the comparatively expensive clipping operation.
- func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
--	if len(components) > maxWalkableComponents {
-+	if !walkableGeometryWithinLimits(components) {
- 		return nil, false, errGeometryLimitExceeded
- 	}
- 	added, err := rectanglePolygon(rectangle)
-@@ -79,6 +79,9 @@ func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID
- 		usedIDs[componentID] = true
- 		result = append(result, WalkableComponent{ID: componentID, Polygon: polygon})
- 	}
-+	if !walkableGeometryWithinLimits(result) {
-+		return nil, false, errGeometryLimitExceeded
-+	}
- 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
- 
- 	if walkableComponentSetsEqual(components, result) {
-@@ -91,7 +94,7 @@ func addWalkableRect(components []WalkableComponent, rectangle AABB, generateID
- // keeps the old ID on the lexicographically first normalized piece; subsequent
- // pieces receive fresh IDs. The input slice is never mutated.
- func subtractWalkableRect(components []WalkableComponent, rectangle AABB, generateID componentIDGenerator) ([]WalkableComponent, bool, error) {
--	if len(components) > maxWalkableComponents {
-+	if !walkableGeometryWithinLimits(components) {
- 		return nil, false, errGeometryLimitExceeded
- 	}
- 	cut, err := rectanglePolygon(rectangle)
-@@ -133,7 +136,7 @@ func subtractWalkableRect(components []WalkableComponent, rectangle AABB, genera
- 			result = append(result, WalkableComponent{ID: componentID, Polygon: piece})
- 		}
- 	}
--	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
-+	if !walkableGeometryWithinLimits(result) {
- 		return nil, false, errGeometryLimitExceeded
- 	}
- 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
-@@ -147,7 +150,7 @@ func subtractWalkableRect(components []WalkableComponent, rectangle AABB, genera
- // then unions it only with components near the destination. Tokens, assets and
- // transitions are deliberately outside this pure geometry operation.
- func moveWalkableComponent(components []WalkableComponent, componentID string, deltaX, deltaY float64) ([]WalkableComponent, bool, error) {
--	if len(components) > maxWalkableComponents || componentID == "" {
-+	if !walkableGeometryWithinLimits(components) || componentID == "" {
- 		return nil, false, errInvalidGeometry
- 	}
- 	ids, err := componentIDs(components)
-@@ -221,7 +224,7 @@ func moveWalkableComponent(components []WalkableComponent, componentID string, d
- 		usedIDs[resultID] = true
- 		result = append(result, WalkableComponent{ID: resultID, Polygon: polygon})
- 	}
--	if len(result) > maxWalkableComponents || walkableVertexCount(result) > maxGeometryTotalVertices {
-+	if !walkableGeometryWithinLimits(result) {
- 		return nil, false, errGeometryLimitExceeded
- 	}
- 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
-@@ -246,7 +249,7 @@ func translatePolygon(polygon Polygon, deltaX, deltaY float64) (Polygon, error)
- }
- 
- func deleteWalkableComponent(components []WalkableComponent, componentID string) ([]WalkableComponent, bool, error) {
--	if len(components) > maxWalkableComponents || componentID == "" {
-+	if !walkableGeometryWithinLimits(components) || componentID == "" {
- 		return nil, false, errInvalidGeometry
- 	}
- 	if _, err := componentIDs(components); err != nil {
-@@ -344,6 +347,21 @@ func walkableVertexCount(components []WalkableComponent) int {
- 	return total
- }
- 
-+func walkableGeometryWithinLimits(components []WalkableComponent) bool {
-+	if len(components) > maxWalkableComponents {
-+		return false
-+	}
-+	total := 0
-+	for _, component := range components {
-+		count, ok := polygonVertexCountWithin(component.Polygon, maxGeometryResultVertices-total)
-+		if !ok {
-+			return false
-+		}
-+		total += count
-+	}
-+	return true
-+}
-+
- func matchingComponentID(polygon Polygon, affected []WalkableComponent, used map[string]bool) string {
- 	for _, component := range affected {
- 		if !used[component.ID] && polygonsEqual(component.Polygon, polygon) {
-diff --git a/walkable_commands_test.go b/walkable_commands_test.go
-index b4b209d..84f4a0a 100644
---- a/walkable_commands_test.go
-+++ b/walkable_commands_test.go
-@@ -5,6 +5,8 @@ import (
- 	"net/http/httptest"
- 	"strings"
- 	"testing"
-+
-+	"github.com/gorilla/websocket"
- )
- 
- func TestWalkableCommandVersionRetryAndDigest(t *testing.T) {
-@@ -154,6 +156,54 @@ func TestWalkableCommandLimitRejectionIsAtomic(t *testing.T) {
- 	}
- }
- 
-+func TestGeometryCommandByteLimitRejectionIsAtomic(t *testing.T) {
-+	server := testServer(t, t.TempDir())
-+	host := httptest.NewServer(server.routes())
-+	defer host.Close()
-+	gm := post(t, host.URL+"/api/sessions", map[string]string{"name": "Geometry command bytes"})
-+	ws := dial(t, host.URL, gm)
-+	read(t, ws, "snapshot")
-+
-+	server.mu.Lock()
-+	scene := firstScene(server.sessions[gm["session"]])
-+	sceneID, floorID := scene.ID, firstFloorID(scene)
-+	initialSceneRevision := scene.Revision
-+	server.mu.Unlock()
-+
-+	expected := uint64(0)
-+	command := Command{Type: "setRenderBounds", Client: "geometry-bytes", Seq: 1, SceneID: sceneID, FloorID: floorID, ExpectedGeometryRevision: &expected, RenderBounds: &Polygon{Outer: rectangleInput(0, 0, 100, 100).Outer}}
-+	encoded, err := json.Marshal(command)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	prefix, suffix := string(encoded[:len(encoded)-1])+`,"padding":"`, `"}`
-+	padding := maxGeometryCommandBytes + 1 - len(prefix) - len(suffix)
-+	if padding < 1 {
-+		t.Fatal("test command unexpectedly exceeds geometry command limit")
-+	}
-+	payload := []byte(prefix + strings.Repeat("x", padding) + suffix)
-+	if len(payload) != maxGeometryCommandBytes+1 || len(payload) >= maxWebSocketMessageBytes {
-+		t.Fatalf("invalid test payload size: %d", len(payload))
-+	}
-+	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-+		t.Fatal(err)
-+	}
-+	read(t, ws, "snapshot")
-+	ack := read(t, ws, "ack")
-+	var issue string
-+	if err := json.Unmarshal(ack["error"], &issue); err != nil || !strings.Contains(issue, "размера") {
-+		t.Fatalf("oversized command was not rejected: %s", ack["error"])
-+	}
-+
-+	server.mu.Lock()
-+	floor := server.sessions[gm["session"]].Scenes[sceneID].Floors[floorID]
-+	currentSceneRevision := server.sessions[gm["session"]].Scenes[sceneID].Revision
-+	server.mu.Unlock()
-+	if floor.RenderBounds != nil || floor.GeometryRevision != 0 || currentSceneRevision != initialSceneRevision {
-+		t.Fatalf("oversized command partially changed state: floor=%#v sceneRevision=%d", floor, currentSceneRevision)
-+	}
-+}
-+
- func TestWalkablePersistenceRoundTrip(t *testing.T) {
- 	root := t.TempDir()
- 	server := testServer(t, root)
-diff --git a/walkable_test.go b/walkable_test.go
-index 74b1bbd..b5e4259 100644
---- a/walkable_test.go
-+++ b/walkable_test.go
-@@ -1,6 +1,9 @@
- package main
- 
--import "testing"
-+import (
-+	"errors"
-+	"testing"
-+)
- 
- func rectComponent(t *testing.T, componentID string, minX, minY, maxX, maxY float64) WalkableComponent {
- 	t.Helper()
-@@ -246,3 +249,11 @@ func TestSetWalkableModeIsExplicitAndPreservesGeometry(t *testing.T) {
- 		t.Fatal("invalid mode accepted")
- 	}
- }
-+
-+func TestWalkableResultVertexLimitRejectsBeforeClipping(t *testing.T) {
-+	components := []WalkableComponent{{ID: "oversized", Polygon: Polygon{Outer: make([]ScenePoint, maxGeometryResultVertices+1)}}}
-+	result, changed, err := addWalkableRect(components, AABB{MinX: 0, MinY: 0, MaxX: 10, MaxY: 10}, sequenceIDs("unused"))
-+	if !errors.Is(err, errGeometryLimitExceeded) || changed || result != nil || len(components[0].Polygon.Outer) != maxGeometryResultVertices+1 {
-+		t.Fatalf("result limit was not rejected atomically: result=%#v changed=%v err=%v", result, changed, err)
-+	}
-+}

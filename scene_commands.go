@@ -298,14 +298,6 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				}
 				layer.Opacity = *props.Opacity
 			}
-			if props.WalkableBounds != nil {
-				if layer.Kind != layerKindWalkable || !validWalkableBounds(*props.WalkableBounds) {
-					issue = "Некорректная игровая область"
-					break
-				}
-				bounds := *props.WalkableBounds
-				layer.WalkableBounds = &bounds
-			}
 			if layer != old {
 				scene.Layers[layer.ID] = layer
 				changed, structural = true, true

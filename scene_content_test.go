@@ -60,6 +60,59 @@ func TestRenderBoundsReplaceLegacySceneRectangleSemantics(t *testing.T) {
 	}
 }
 
+func TestRemoveLegacyWalkableLayerBeforeValidation(t *testing.T) {
+	scene := newScene("scene", "Legacy cleanup")
+	floorID := firstFloorID(scene)
+	legacyID := "legacy-walkable"
+	scene.Layers[legacyID] = Layer{ID: legacyID, FloorID: floorID, Name: "Игровая область", Kind: legacyLayerKindWalkable, Visible: true, Opacity: 1}
+	if validateSceneStructure(scene, map[string]Asset{}, map[string]*Member{}) {
+		t.Fatal("legacy walkable layer was accepted as part of the current model")
+	}
+	if !removeLegacyWalkableLayers(scene) {
+		t.Fatal("legacy walkable layer was not reported as migrated")
+	}
+	if _, ok := scene.Layers[legacyID]; ok {
+		t.Fatal("legacy walkable layer remained in current model")
+	}
+	if !validateSceneStructure(scene, map[string]Asset{}, map[string]*Member{}) {
+		t.Fatal("scene became invalid after removing legacy walkable layer")
+	}
+}
+
+func TestTransitionUsesCurrentPlayableGeometry(t *testing.T) {
+	scene := newScene("scene", "Transitions")
+	sourceID := firstFloorID(scene)
+	destinationID := "upper"
+	scene.Floors[destinationID] = Floor{ID: destinationID, Name: "Upper", Order: 1, Opacity: 1, WalkableMode: walkableModeRestricted, WalkableComponents: []WalkableComponent{}}
+	addFloorLayers(scene, destinationID)
+	destinationPolygon, err := normalizePolygon(rectangleInput(0, 0, 100, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := scene.Floors[destinationID]
+	destination.WalkableComponents = []WalkableComponent{{ID: "walkable", Polygon: destinationPolygon}}
+	destination.RenderBounds = polygonPointer(destinationPolygon)
+	scene.Floors[destinationID] = destination
+	transition := Transition{ID: "stairs", Name: "Stairs", EndpointA: TransitionEndpoint{FloorID: sourceID, Position: ScenePoint{X: 10, Y: 10}, Radius: 20}, EndpointB: TransitionEndpoint{FloorID: destinationID, Position: ScenePoint{X: 50, Y: 50}, Radius: 20}, Direction: "bidirectional"}
+	if !validTransition(scene, transition) {
+		t.Fatal("valid transition was rejected by playable geometry")
+	}
+	scene.Transitions[transition.ID] = transition
+
+	// Later geometry edits may invalidate an existing transition. It must stop
+	// teleporting until the GM moves the endpoint back into playable geometry.
+	destination.RenderBounds = polygonPointer(rectangleInput(0, 0, 40, 40))
+	destination.GeometryRevision++
+	scene.Floors[destinationID] = destination
+	if validTransition(scene, transition) {
+		t.Fatal("transition outside current render bounds remained valid")
+	}
+	token := Token{FloorID: sourceID, X: 40, Y: 10}
+	if _, ok := transitionForMove(scene, token, ScenePoint{X: 10, Y: 10}); ok {
+		t.Fatal("movement triggered a transition whose endpoint became invalid")
+	}
+}
+
 func TestFirstMapInitializesOnlyItsFloorRenderBounds(t *testing.T) {
 	scene := newScene("scene", "Map defaults")
 	lowerID := firstFloorID(scene)
@@ -190,8 +243,8 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 		t.Fatalf("zero-alpha or out-of-bounds floor content leaked: %#v", elements)
 	}
 	for _, layer := range layers {
-		if layer.Kind == layerKindWalkable || layer.WalkableBounds != nil {
-			t.Fatalf("walkable editor state leaked to player: %#v", layer)
+		if layer.Kind != layerKindVisual && layer.Kind != layerKindTokens {
+			t.Fatalf("legacy layer leaked to player: %#v", layer)
 		}
 	}
 	if assetVisibleTo(session, playerMember, scene.ID, "upper-asset") || assetVisibleTo(session, playerMember, scene.ID, "outside-asset") {
@@ -269,6 +322,19 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 
 	playerWS := dial(t, host.URL, player)
 	read(t, playerWS, "snapshot")
+	playerWS.WriteJSON(Command{Type: "move", SceneID: scene.ID, Token: Token{ID: "hero", X: scene.Bounds.Width + 500, Y: 50}})
+	blocked := read(t, playerWS, "error")
+	var operation, errorCode, blockedSceneID, blockedID string
+	var blockedX, blockedY float64
+	json.Unmarshal(blocked["operation"], &operation)
+	json.Unmarshal(blocked["errorCode"], &errorCode)
+	json.Unmarshal(blocked["sceneId"], &blockedSceneID)
+	json.Unmarshal(blocked["id"], &blockedID)
+	json.Unmarshal(blocked["x"], &blockedX)
+	json.Unmarshal(blocked["y"], &blockedY)
+	if operation != "move" || errorCode != movementBlockedErrorCode || blockedSceneID != scene.ID || blockedID != "hero" || blockedX != 50 || blockedY != 50 {
+		t.Fatalf("preview rejection did not return compact authoritative correction: %#v", blocked)
+	}
 	playerWS.WriteJSON(Command{Type: "final", Client: "other-floor", Seq: 1, SceneID: scene.ID, Token: Token{ID: "zz-upper", X: 100, Y: 100}})
 	ack = read(t, playerWS, "ack")
 	json.Unmarshal(ack["error"], &issue)
@@ -280,6 +346,10 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	json.Unmarshal(ack["error"], &issue)
 	if issue == "" {
 		t.Fatal("player moved token outside walkable bounds")
+	}
+	json.Unmarshal(ack["errorCode"], &errorCode)
+	if errorCode != movementBlockedErrorCode {
+		t.Fatalf("reliable movement rejection was not typed: %q", errorCode)
 	}
 	server.mu.Lock()
 	if token := scene.Tokens["hero"]; token.X != 50 || token.Y != 50 {

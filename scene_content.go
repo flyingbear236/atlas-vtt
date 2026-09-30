@@ -17,10 +17,11 @@ const (
 )
 
 const (
-	layerKindVisual   = "visual"
-	layerKindTokens   = "tokens"
-	layerKindWalkable = "walkable"
+	layerKindVisual = "visual"
+	layerKindTokens = "tokens"
 )
+
+const legacyLayerKindWalkable = "walkable"
 
 const (
 	assetKeep        = "keep"
@@ -67,15 +68,14 @@ type Floor struct {
 }
 
 type Layer struct {
-	ID             string          `json:"id"`
-	FloorID        string          `json:"floorId"`
-	Name           string          `json:"name"`
-	Kind           string          `json:"kind"`
-	Order          int             `json:"order"`
-	Visible        bool            `json:"visible"`
-	Opacity        float64         `json:"opacity"`
-	Locked         bool            `json:"locked"`
-	WalkableBounds *WalkableBounds `json:"walkableBounds,omitempty"`
+	ID      string  `json:"id"`
+	FloorID string  `json:"floorId"`
+	Name    string  `json:"name"`
+	Kind    string  `json:"kind"`
+	Order   int     `json:"order"`
+	Visible bool    `json:"visible"`
+	Opacity float64 `json:"opacity"`
+	Locked  bool    `json:"locked"`
 }
 
 type SceneElement struct {
@@ -112,10 +112,6 @@ func validSceneBounds(bounds SceneBounds) bool {
 func validWalkableBounds(bounds WalkableBounds) bool {
 	return validNumber(bounds.X) && validNumber(bounds.Y) && validNumber(bounds.Width) && validNumber(bounds.Height) &&
 		bounds.Width > 0 && bounds.Height > 0 && bounds.Width <= maxSceneDimension && bounds.Height <= maxSceneDimension
-}
-
-func defaultWalkableBounds(bounds SceneBounds) *WalkableBounds {
-	return &WalkableBounds{Width: bounds.Width, Height: bounds.Height}
 }
 
 func validTransform(transform Transform) bool {
@@ -185,19 +181,6 @@ func tokenFloorID(scene *Scene, token Token) string {
 		return token.FloorID
 	}
 	return firstFloorID(scene)
-}
-
-func walkableBoundsForFloor(scene *Scene, floorID string) (WalkableBounds, bool) {
-	layer := scene.Layers[layerIDByKind(scene, floorID, layerKindWalkable)]
-	if layer.WalkableBounds == nil || !validWalkableBounds(*layer.WalkableBounds) {
-		return WalkableBounds{}, false
-	}
-	return *layer.WalkableBounds, true
-}
-
-func positionInWalkable(scene *Scene, floorID string, x, y float64) bool {
-	bounds, ok := walkableBoundsForFloor(scene, floorID)
-	return ok && x >= bounds.X && y >= bounds.Y && x <= bounds.X+bounds.Width && y <= bounds.Y+bounds.Height
 }
 
 type floorView struct {
@@ -368,11 +351,6 @@ func addFloorLayers(scene *Scene, floorID string) {
 	if layerIDByKind(scene, floorID, layerKindTokens) == "" {
 		tokenLayerID := id()
 		scene.Layers[tokenLayerID] = Layer{ID: tokenLayerID, FloorID: floorID, Name: "Токены", Kind: layerKindTokens, Order: maxOrder + 1, Visible: true, Opacity: 1}
-		maxOrder++
-	}
-	if layerIDByKind(scene, floorID, layerKindWalkable) == "" {
-		walkableID := id()
-		scene.Layers[walkableID] = Layer{ID: walkableID, FloorID: floorID, Name: "Игровая область", Kind: layerKindWalkable, Order: maxOrder + 1, Visible: true, Opacity: 1, WalkableBounds: defaultWalkableBounds(scene.Bounds)}
 	}
 }
 
@@ -399,6 +377,20 @@ func newScene(sceneID, name string) *Scene {
 	return scene
 }
 
+func removeLegacyWalkableLayers(scene *Scene) bool {
+	if scene == nil {
+		return false
+	}
+	changed := false
+	for layerID, layer := range scene.Layers {
+		if layer.Kind == legacyLayerKindWalkable {
+			delete(scene.Layers, layerID)
+			changed = true
+		}
+	}
+	return changed
+}
+
 // ensureSceneStructure repairs optional structure only within the current model.
 // Older model versions are rejected by newServer instead of being guessed into
 // the new authoritative walkable representation.
@@ -406,7 +398,7 @@ func ensureSceneStructure(scene *Scene) bool {
 	if scene == nil || scene.ModelVersion != sceneModelVersion {
 		return false
 	}
-	changed := false
+	changed := removeLegacyWalkableLayers(scene)
 	if scene.Tokens == nil {
 		scene.Tokens = map[string]Token{}
 		changed = true
@@ -470,13 +462,6 @@ func ensureSceneStructure(scene *Scene) bool {
 		scene.Bounds = SceneBounds{Width: width, Height: height}
 		changed = true
 	}
-	for layerID, layer := range scene.Layers {
-		if layer.Kind == layerKindWalkable && (layer.WalkableBounds == nil || !validWalkableBounds(*layer.WalkableBounds)) {
-			layer.WalkableBounds = defaultWalkableBounds(scene.Bounds)
-			scene.Layers[layerID] = layer
-			changed = true
-		}
-	}
 	return changed
 }
 
@@ -488,29 +473,22 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 		if floor.ID != floorID || strings.TrimSpace(floor.Name) == "" || !validNumber(floor.Opacity) || floor.Opacity < 0 || floor.Opacity > 1 || !validNumber(floor.OpacityWhenViewedFromBelow) || floor.OpacityWhenViewedFromBelow < 0 || floor.OpacityWhenViewedFromBelow > 1 || !validFloorGeometry(floor) {
 			return false
 		}
-		if layerIDByKind(scene, floorID, layerKindTokens) == "" || layerIDByKind(scene, floorID, layerKindWalkable) == "" {
+		if layerIDByKind(scene, floorID, layerKindTokens) == "" {
 			return false
 		}
 	}
 	kindCounts := map[string]map[string]int{}
 	for layerID, layer := range scene.Layers {
-		if layer.ID != layerID || scene.Floors[layer.FloorID].ID == "" || strings.TrimSpace(layer.Name) == "" || (layer.Kind != layerKindVisual && layer.Kind != layerKindTokens && layer.Kind != layerKindWalkable) || layer.Opacity < 0 || layer.Opacity > 1 {
+		if layer.ID != layerID || scene.Floors[layer.FloorID].ID == "" || strings.TrimSpace(layer.Name) == "" || (layer.Kind != layerKindVisual && layer.Kind != layerKindTokens) || layer.Opacity < 0 || layer.Opacity > 1 {
 			return false
 		}
 		if kindCounts[layer.FloorID] == nil {
 			kindCounts[layer.FloorID] = map[string]int{}
 		}
 		kindCounts[layer.FloorID][layer.Kind]++
-		if layer.Kind == layerKindWalkable {
-			if layer.WalkableBounds == nil || !validWalkableBounds(*layer.WalkableBounds) {
-				return false
-			}
-		} else if layer.WalkableBounds != nil {
-			return false
-		}
 	}
 	for floorID := range scene.Floors {
-		if kindCounts[floorID][layerKindTokens] != 1 || kindCounts[floorID][layerKindWalkable] != 1 {
+		if kindCounts[floorID][layerKindTokens] != 1 {
 			return false
 		}
 	}
@@ -596,7 +574,7 @@ func validTransition(scene *Scene, transition Transition) bool {
 		if scene.Floors[endpoint.FloorID].ID == "" || !validNumber(endpoint.Position.X) || !validNumber(endpoint.Position.Y) || !validNumber(endpoint.Radius) || endpoint.Radius < 8 || endpoint.Radius > maxSceneDimension {
 			return false
 		}
-		if !positionInWalkable(scene, endpoint.FloorID, endpoint.Position.X, endpoint.Position.Y) {
+		if !CanOccupyTokenPoint(scene, endpoint.FloorID, endpoint.Position) {
 			return false
 		}
 	}
@@ -614,6 +592,9 @@ func transitionForMove(scene *Scene, token Token, next ScenePoint) (TransitionEn
 			candidate, matched = transition.EndpointB, true
 		} else if token.FloorID == transition.EndpointB.FloorID && transition.Direction != "AToB" && !transitionContains(transition.EndpointB, previous) && transitionContains(transition.EndpointB, next) {
 			candidate, matched = transition.EndpointA, true
+		}
+		if matched && !validTransition(scene, transition) {
+			continue
 		}
 		if matched && (matchedID == "" || transitionID < matchedID) {
 			matchedID, destination = transitionID, candidate
