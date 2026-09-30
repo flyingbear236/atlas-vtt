@@ -230,6 +230,19 @@ export function drawWalkableEditor(ctx,state,floorId,camera,{drag=null,selectedI
   if(drag?.type==='walkableRect'&&drag.floorId===floorId){const left=Math.min(drag.start.x,drag.current.x),top=Math.min(drag.start.y,drag.current.y),right=Math.max(drag.start.x,drag.current.x),bottom=Math.max(drag.start.y,drag.current.y);if(right>left&&bottom>top)drawWalkablePolygon(ctx,{outer:[{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}],holes:[]},camera,{preview:true,subtract:drag.operation==='subtractWalkableRect'});}
 }
 
+export class FloorWalkableOverlayPathCache{
+  constructor(){this.sceneId='';this.entries=new Map();this.builds=0;}
+  clear(){this.sceneId='';this.entries.clear();}
+  path(state,floor){
+    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}if(!floor?.renderBounds){this.entries.delete(floor?.id);return null;}const cached=this.entries.get(floor.id);if(cached?.revision===floor.geometryRevision)return cached;
+    const path=new Path2D(),bounds=new Path2D();traceWalkablePolygon(path,floor.renderBounds);traceWalkablePolygon(bounds,floor.renderBounds);for(const component of floor.walkableComponents||[])traceWalkablePolygon(path,component.polygon);const entry={revision:floor.geometryRevision,path,bounds};this.entries.set(floor.id,entry);this.builds++;return entry;
+  }
+}
+const defaultWalkableOverlayPaths=new FloorWalkableOverlayPathCache();
+export function drawPlayerWalkableOverlay(ctx,state,floorId,camera,paths=defaultWalkableOverlayPaths){
+  const floor=state?.floors?.[floorId];if(!floor?.showWalkableToPlayers||floor.walkableMode!=='restricted'||!floor.renderBounds)return false;const entry=paths.path(state,floor);if(!entry)return false;ctx.save();ctx.clip(entry.bounds);ctx.fillStyle='#d9606018';ctx.strokeStyle='#e77b7b88';ctx.lineWidth=1.5/camera.scale;ctx.fill(entry.path,'evenodd');ctx.stroke(entry.path);ctx.restore();return true;
+}
+
 function traceRenderBounds(ctx,points,close=true){if(!points?.length)return;ctx.moveTo(points[0].x,points[0].y);for(let i=1;i<points.length;i++)ctx.lineTo(points[i].x,points[i].y);if(close)ctx.closePath();}
 export function drawRenderBoundsEditor(ctx,state,floorId,camera,{tool='',draft=null,drag=null,selectedVertex=-1}={}){
   const authoritative=state?.floors?.[floorId]?.renderBounds,rectangle=drag?.type==='renderBoundsRect'&&drag.floorId===floorId?{outer:[drag.start,{x:drag.current.x,y:drag.start.y},drag.current,{x:drag.start.x,y:drag.current.y}],holes:[]}:null,edit=drag?.type==='renderBoundsEdit'&&drag.floorId===floorId?drag.preview:null,polygonDraft=draft?.floorId===floorId?{outer:draft.points,holes:[]}:null,preview=rectangle||edit||polygonDraft||authoritative;

@@ -306,6 +306,12 @@ func TestBrowser(t *testing.T) {
 		t.Fatalf("rejected walkable preview did not return to authoritative state: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect').slice(-3),components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
 	}
 	eval(`(async()=>{const board=document.getElementById('board'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));board.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));const mode=()=>document.querySelector('.tree-layer-walkable [title="Переключить ограничение движения"]');if(mode().textContent==='Огр.'){mode().click();for(let i=0;i<100;i++){if(mode().textContent==='Своб.'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}throw Error('walkable mode cleanup timeout')}return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>document.querySelector('.tree-layer-walkable [title="Показывать непроходимые области игрокам"]');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-layer-walkable')?.dataset.playerOverlay==='visible'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("walkable player overlay visibility was not enabled")
+	}
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>document.querySelector('.tree-layer-walkable [title="Показывать непроходимые области игрокам"]');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-layer-walkable')?.dataset.playerOverlay==='hidden'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatal("walkable player overlay visibility was not disabled")
+	}
 
 	// Stage 14: render bounds are drafted locally and committed once.
 	renderX1, renderY1 := walkable.X1+35, walkable.Y1+35

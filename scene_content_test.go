@@ -15,12 +15,13 @@ import (
 
 func TestFloorGeometryJSONRoundTrip(t *testing.T) {
 	restricted := Floor{
-		ID:                 "restricted",
-		Name:               "Restricted",
-		WalkableMode:       walkableModeRestricted,
-		WalkableComponents: []WalkableComponent{},
-		RenderBounds:       nil,
-		GeometryRevision:   4,
+		ID:                    "restricted",
+		Name:                  "Restricted",
+		WalkableMode:          walkableModeRestricted,
+		ShowWalkableToPlayers: true,
+		WalkableComponents:    []WalkableComponent{},
+		RenderBounds:          nil,
+		GeometryRevision:      4,
 	}
 	unrestricted := Floor{ID: "unrestricted", Name: "Unrestricted", WalkableMode: walkableModeUnrestricted}
 
@@ -28,7 +29,7 @@ func TestFloorGeometryJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(encoded, []byte(`"walkableComponents":[]`)) || !bytes.Contains(encoded, []byte(`"renderBounds":null`)) {
+	if !bytes.Contains(encoded, []byte(`"showWalkableToPlayers":true`)) || !bytes.Contains(encoded, []byte(`"walkableComponents":[]`)) || !bytes.Contains(encoded, []byte(`"renderBounds":null`)) {
 		t.Fatalf("geometry zero values lost in JSON: %s", encoded)
 	}
 
@@ -36,7 +37,7 @@ func TestFloorGeometryJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded[0].WalkableMode != walkableModeRestricted || decoded[0].WalkableComponents == nil || len(decoded[0].WalkableComponents) != 0 {
+	if decoded[0].WalkableMode != walkableModeRestricted || !decoded[0].ShowWalkableToPlayers || decoded[0].WalkableComponents == nil || len(decoded[0].WalkableComponents) != 0 {
 		t.Fatalf("restricted empty geometry was not preserved: %#v", decoded[0])
 	}
 	if decoded[1].WalkableMode != walkableModeUnrestricted || decoded[0].RenderBounds != nil {

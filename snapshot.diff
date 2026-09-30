@@ -163,10 +163,10 @@ index 0000000..c6b10d7
 +Не включай в эти артефакты сами `snapshot.diff`, `changes.diff`, устаревший `codex-changes.diff`, `data/`, зависимости, кэши, собранные бинарники и результаты профилирования. `codex-changes.diff` больше не создавай и не обновляй.
 diff --git a/browser_scenarios_test.go b/browser_scenarios_test.go
 new file mode 100644
-index 0000000..c82ef87
+index 0000000..8f11c60
 --- /dev/null
 +++ b/browser_scenarios_test.go
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,184 @@
 +package main
 +
 +import (
@@ -272,13 +272,14 @@ index 0000000..c82ef87
 +const browserModuleScenario = `(async()=>{
 + const {Outbox,Drafts,CacheWriteBudget,blockedMoveCorrection,imageEdge}=await import('/reliability.js');const values=new Map();const store={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)};const sent=[];
 + const {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction}=await import('/rendering.js');
-+	const {FloorRenderBoundsPathCache,FloorRenderBoundsResourceCache,SceneRenderIndex,abortUnwantedImageLoads,clipFloorRenderBounds,compositeFloors,drawSceneStack,elementHandleAt,elementIntersectsView,floorCameraBounds,hitElement,pointInPlayableArea,pointInRenderBounds,renderBoundsAABB,tileAvailable,tiledFallbackCandidates,transformedFromDrag}=await import('/scene-content.js');
++	const {FloorRenderBoundsPathCache,FloorRenderBoundsResourceCache,FloorWalkableOverlayPathCache,SceneRenderIndex,abortUnwantedImageLoads,clipFloorRenderBounds,compositeFloors,drawPlayerWalkableOverlay,drawSceneStack,elementHandleAt,elementIntersectsView,floorCameraBounds,hitElement,pointInPlayableArea,pointInRenderBounds,renderBoundsAABB,tileAvailable,tiledFallbackCandidates,transformedFromDrag}=await import('/scene-content.js');
 + const {drawTokens}=await import('/token-renderer.js');
 + const {SceneTreeRuntime}=await import('/scene-tree.js');
 + const {needsActiveTokenRequest}=await import('/scenes.js');
 + const {canMoveTokenSegment,constrainTokenMovement}=await import('/movement-geometry.js');
 +
 + const playableState={floors:{floor:{id:'floor',walkableMode:'restricted',walkableComponents:[{id:'main',polygon:{outer:[{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}],holes:[[{x:40,y:40},{x:60,y:40},{x:60,y:60},{x:40,y:60}]]}}],renderBounds:{outer:[{x:0,y:0},{x:80,y:0},{x:80,y:80},{x:0,y:80}],holes:[]}}}};if(!pointInPlayableArea(playableState,'floor',20,20)||pointInPlayableArea(playableState,'floor',50,50)||pointInPlayableArea(playableState,'floor',90,20))throw Error('playable point predicate');
++ const overlayCanvas=document.createElement('canvas');overlayCanvas.width=100;overlayCanvas.height=100;const overlayCtx=overlayCanvas.getContext('2d'),overlayPaths=new FloorWalkableOverlayPathCache(),overlayFloor={id:'floor',geometryRevision:1,showWalkableToPlayers:true,walkableMode:'restricted',renderBounds:{outer:[{x:0,y:0},{x:80,y:0},{x:80,y:80},{x:0,y:80}],holes:[]},walkableComponents:[{id:'main',polygon:{outer:[{x:10,y:10},{x:95,y:10},{x:95,y:95},{x:10,y:95}],holes:[[{x:30,y:30},{x:50,y:30},{x:50,y:50},{x:30,y:50}]]}}]},overlayState={scene:{id:'overlay'},floors:{floor:overlayFloor}};if(!drawPlayerWalkableOverlay(overlayCtx,overlayState,'floor',{scale:1},overlayPaths))throw Error('player walkable overlay was not drawn');const overlayPixel=(x,y)=>overlayCtx.getImageData(x,y,1,1).data;if(overlayPixel(5,5)[3]===0||overlayPixel(40,40)[3]===0||overlayPixel(20,20)[3]!==0||overlayPixel(90,90)[3]!==0)throw Error('player walkable overlay did not render render-bounds minus walkable geometry');drawPlayerWalkableOverlay(overlayCtx,overlayState,'floor',{scale:1},overlayPaths);if(overlayPaths.builds!==1)throw Error('player walkable overlay path was rebuilt without a geometry change');overlayFloor.geometryRevision=2;drawPlayerWalkableOverlay(overlayCtx,overlayState,'floor',{scale:1},overlayPaths);if(overlayPaths.builds!==2||drawPlayerWalkableOverlay(overlayCtx,{scene:{id:'overlay'},floors:{floor:{...overlayFloor,showWalkableToPlayers:false}}},'floor',{scale:1},overlayPaths))throw Error('player walkable overlay ignored visibility or geometry revision');
 + const rect=(left,top,right,bottom)=>({outer:[{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}],holes:[]}),movementState={floors:{floor:{id:'floor',geometryRevision:1,walkableMode:'restricted',walkableComponents:[{id:'main',polygon:{...rect(0,0,100,100),holes:[rect(40,40,60,60).outer]}}]}}};
 + if(!canMoveTokenSegment(movementState,'floor',{x:10,y:10},{x:30,y:30})||canMoveTokenSegment(movementState,'floor',{x:10,y:50},{x:90,y:50}))throw Error('client movement hole validation');
 + movementState.floors.floor={id:'floor',geometryRevision:2,walkableMode:'restricted',walkableComponents:[{id:'left',polygon:rect(0,0,40,40)},{id:'right',polygon:rect(60,0,100,40)}]};if(canMoveTokenSegment(movementState,'floor',{x:20,y:20},{x:80,y:20}))throw Error('client movement crossed separate components');
@@ -346,16 +347,16 @@ index 0000000..c82ef87
 + const writes=new CacheWriteBudget(2,10);const releaseA=writes.acquire(6);if(!releaseA||writes.acquire(5)!==null)throw Error('write byte budget');const releaseB=writes.acquire(4);if(!releaseB||writes.acquire(1)!==null)throw Error('write count budget');releaseA();const releaseC=writes.acquire(5);if(!releaseC||writes.bytes!==9)throw Error('write budget release');releaseB();releaseC();if(writes.count||writes.bytes)throw Error('write budget leaked');
 + for(const count of [1,64,65,100,1000,2000]){const edge=imageEdge(count,64*1048576);if(count*edge*edge*4>64*1048576)throw Error('image budget exceeded')}
 +	const perfLayers=Object.fromEntries(Array.from({length:4},(_,i)=>['layer'+i,{id:'layer'+i,floorId:'floor',kind:'visual',order:i,visible:true,opacity:1}])),perfElements=Object.fromEntries(Array.from({length:1000},(_,i)=>['element'+i,{id:'element'+i,name:'Element '+i,floorId:'floor',layerId:'layer'+(i%4),zOrder:i,visible:true,locked:false,opacity:1,assetId:'image',transform:{x:(i%50)*220,y:Math.floor(i/50)*220,width:100,height:100,rotation:i%7}}])),perfCatalog=Object.fromEntries(Object.entries(perfElements).map(([id,element])=>[id,{...element,assetId:''}])),perfState={you:{role:'gm',gm:true},scene:{id:'scene'},floors:{floor:{id:'floor',name:'Floor',order:0,opacity:1,opacityWhenViewedFromBelow:0}},layers:perfLayers,elements:perfElements,elementCatalog:perfCatalog,_catalogVersion:1,tokens:{},transitions:{},assets:{}};let checksum=0,start=performance.now();for(let pass=0;pass<100;pass++)for(const layer of Object.values(perfLayers)){const sorted=Object.values(perfElements).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));checksum+=sorted.length;}const legacyOrderMs=performance.now()-start,perfIndex=new SceneRenderIndex();for(const layer of Object.values(perfLayers))perfIndex.forLayer(perfState,layer.id);start=performance.now();for(let pass=0;pass<100;pass++)for(const layer of Object.values(perfLayers))checksum+=perfIndex.forLayer(perfState,layer.id).length;const cachedOrderMs=performance.now()-start;
-+	let focused='';const treeElements={tree:document.createElement('div'),addFloor:document.createElement('button'),addLayer:document.createElement('button'),addTransition:document.createElement('button'),controls:[]},treeRuntime=new SceneTreeRuntime(treeElements,{queue:()=>{},selectElement:()=>{},selectTransition:()=>{},beginTransition:()=>{},setFloor:()=>{},getFloor:()=> 'floor',focusElement:element=>{focused=element.id;}});start=performance.now();for(let pass=0;pass<20;pass++)treeRuntime.update(perfState,'','');const legacyTreeMs=performance.now()-start,treeNode=treeElements.tree.querySelector('.tree-element-row'),treeRebuilds=treeRuntime.rebuilds;start=performance.now();for(let pass=0;pass<20;pass++){const item=perfState.elements.element0;perfState.elements={...perfState.elements,element0:{...item,transform:{...item.transform,x:item.transform.x+1}}};treeRuntime.update(perfState,pass%2?'element0':'','');}const transformOnlyMs=performance.now()-start;if(treeElements.tree.querySelector('.tree-element-row')!==treeNode||treeRuntime.rebuilds!==treeRebuilds)throw Error('viewport state rebuilt persistent scene tree');treeNode.querySelector('[title="Центрировать на элементе"]').click();if(!focused)throw Error('element focus action missing');
++	let focused='',treeCommands=[];const treeElements={tree:document.createElement('div'),addFloor:document.createElement('button'),addLayer:document.createElement('button'),addTransition:document.createElement('button'),controls:[]},treeRuntime=new SceneTreeRuntime(treeElements,{queue:(type,payload)=>treeCommands.push({type,payload}),selectElement:()=>{},selectTransition:()=>{},beginTransition:()=>{},setFloor:()=>{},getFloor:()=> 'floor',focusElement:element=>{focused=element.id;}});start=performance.now();for(let pass=0;pass<20;pass++)treeRuntime.update(perfState,'','');const legacyTreeMs=performance.now()-start,treeNode=treeElements.tree.querySelector('.tree-element-row'),treeRebuilds=treeRuntime.rebuilds;start=performance.now();for(let pass=0;pass<20;pass++){const item=perfState.elements.element0;perfState.elements={...perfState.elements,element0:{...item,transform:{...item.transform,x:item.transform.x+1}}};treeRuntime.update(perfState,pass%2?'element0':'','');}const transformOnlyMs=performance.now()-start;if(treeElements.tree.querySelector('.tree-element-row')!==treeNode||treeRuntime.rebuilds!==treeRebuilds)throw Error('viewport state rebuilt persistent scene tree');treeNode.querySelector('[title="Центрировать на элементе"]').click();if(!focused)throw Error('element focus action missing');treeElements.tree.querySelector('.tree-layer-walkable [title="Показывать непроходимые области игрокам"]').click();const overlayCommand=treeCommands.at(-1);if(overlayCommand?.type!=='floorUpdate'||overlayCommand.payload?.floor?.id!=='floor'||overlayCommand.payload?.floorProperties?.showWalkableToPlayers!==true)throw Error('walkable player visibility action missing');
 + const viewport={left:0,top:0,right:1000,bottom:800},visibleBitmaps=Object.values(perfElements).filter(element=>elementIntersectsView(element,viewport)).length;window.optimizationMetrics={legacyOrderMs,cachedOrderMs,legacyTreeMs,transformOnlyMs,legacyTreeRebuilds:20,transformTreeRebuilds:0,legacyBitmapRequests:Object.keys(perfElements).length,culledBitmapRequests:visibleBitmaps,checksum};
 + return true;
 +})()`
 diff --git a/browser_test.go b/browser_test.go
 new file mode 100644
-index 0000000..fbcaa12
+index 0000000..553f11f
 --- /dev/null
 +++ b/browser_test.go
-@@ -0,0 +1,534 @@
+@@ -0,0 +1,540 @@
 +package main
 +
 +import (
@@ -664,6 +665,12 @@ index 0000000..fbcaa12
 +		t.Fatalf("rejected walkable preview did not return to authoritative state: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect').slice(-3),components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
 +	}
 +	eval(`(async()=>{const board=document.getElementById('board'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));board.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));const mode=()=>document.querySelector('.tree-layer-walkable [title="Переключить ограничение движения"]');if(mode().textContent==='Огр.'){mode().click();for(let i=0;i<100;i++){if(mode().textContent==='Своб.'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}throw Error('walkable mode cleanup timeout')}return true})()`)
++	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>document.querySelector('.tree-layer-walkable [title="Показывать непроходимые области игрокам"]');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-layer-walkable')?.dataset.playerOverlay==='visible'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
++		t.Fatal("walkable player overlay visibility was not enabled")
++	}
++	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>document.querySelector('.tree-layer-walkable [title="Показывать непроходимые области игрокам"]');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-layer-walkable')?.dataset.playerOverlay==='hidden'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
++		t.Fatal("walkable player overlay visibility was not disabled")
++	}
 +
 +	// Stage 14: render bounds are drafted locally and committed once.
 +	renderX1, renderY1 := walkable.X1+35, walkable.Y1+35
@@ -1162,11 +1169,11 @@ index 0000000..62b9710
 +	}
 +	return asset, nil
 +}
-diff --git a/docs/walkable-renderbounds-plan.md b/docs/walkable-renderbounds-plan.md
+diff --git "a/docs\\walkable-renderbounds-plan.md" "b/docs\\walkable-renderbounds-plan.md"
 new file mode 100644
 index 0000000..d06993a
 --- /dev/null
-+++ b/docs/walkable-renderbounds-plan.md
++++ "b/docs\\walkable-renderbounds-plan.md"
 @@ -0,0 +1,328 @@
 +# Walkable geometry и render bounds: индекс реализации
 +
@@ -1498,7 +1505,7 @@ index 0000000..d06993a
 +Add, hole, split, move+merge, concave bounds, move token, restart, clip/hit test, camera inside/outside/back; полный suite только если менялась общая инфраструктура.
 diff --git a/geometry.go b/geometry.go
 new file mode 100644
-index 0000000..e527530
+index 0000000..82980ca
 --- /dev/null
 +++ b/geometry.go
 @@ -0,0 +1,367 @@
@@ -1871,7 +1878,7 @@ index 0000000..e527530
 +}
 diff --git a/geometry_commands.go b/geometry_commands.go
 new file mode 100644
-index 0000000..7bd1ec4
+index 0000000..9fa23bd
 --- /dev/null
 +++ b/geometry_commands.go
 @@ -0,0 +1,27 @@
@@ -1904,7 +1911,7 @@ index 0000000..7bd1ec4
 +}
 diff --git a/geometry_test.go b/geometry_test.go
 new file mode 100644
-index 0000000..4ecda37
+index 0000000..4bffe96
 --- /dev/null
 +++ b/geometry_test.go
 @@ -0,0 +1,111 @@
@@ -4085,7 +4092,7 @@ index 0000000..dde92dd
 +}
 diff --git a/movement_geometry.go b/movement_geometry.go
 new file mode 100644
-index 0000000..2862fd5
+index 0000000..0d235f2
 --- /dev/null
 +++ b/movement_geometry.go
 @@ -0,0 +1,255 @@
@@ -4586,7 +4593,7 @@ index 0000000..362d7c2
 \ No newline at end of file
 diff --git a/polygon_clip.go b/polygon_clip.go
 new file mode 100644
-index 0000000..0abc43c
+index 0000000..2f4570d
 --- /dev/null
 +++ b/polygon_clip.go
 @@ -0,0 +1,181 @@
@@ -4773,7 +4780,7 @@ index 0000000..0abc43c
 +const mathMaxFloat = 1.7976931348623157e+308
 diff --git a/polygon_clip_test.go b/polygon_clip_test.go
 new file mode 100644
-index 0000000..f5c2e74
+index 0000000..5d46832
 --- /dev/null
 +++ b/polygon_clip_test.go
 @@ -0,0 +1,74 @@
@@ -7949,7 +7956,7 @@ index 0000000..8183996
 +}
 diff --git a/README.md b/README.md
 new file mode 100644
-index 0000000..6c2555f
+index 0000000..c826d23
 --- /dev/null
 +++ b/README.md
 @@ -0,0 +1,123 @@
@@ -8078,10 +8085,10 @@ index 0000000..6c2555f
 +Полный финальный повтор нагрузочных замеров не завершён: работа остановлена по запросу пользователя. Текущие результаты и ограничения записаны в profiling/REPORT.md.
 diff --git a/reliable.go b/reliable.go
 new file mode 100644
-index 0000000..75a476b
+index 0000000..6c2a6da
 --- /dev/null
 +++ b/reliable.go
-@@ -0,0 +1,752 @@
+@@ -0,0 +1,753 @@
 +package main
 +
 +import (
@@ -8199,6 +8206,7 @@ index 0000000..75a476b
 +	Order                      *int     `json:"order,omitempty"`
 +	Opacity                    *float64 `json:"opacity,omitempty"`
 +	OpacityWhenViewedFromBelow *float64 `json:"opacityWhenViewedFromBelow,omitempty"`
++	ShowWalkableToPlayers      *bool    `json:"showWalkableToPlayers,omitempty"`
 +}
 +type Command struct {
 +	Type                     string            `json:"type"`
@@ -10337,10 +10345,10 @@ index 0000000..13cefe9
 +}
 diff --git a/scene_commands.go b/scene_commands.go
 new file mode 100644
-index 0000000..336bcc4
+index 0000000..1804afa
 --- /dev/null
 +++ b/scene_commands.go
-@@ -0,0 +1,665 @@
+@@ -0,0 +1,668 @@
 +package main
 +
 +import (
@@ -10548,7 +10556,10 @@ index 0000000..336bcc4
 +				}
 +				floor.OpacityWhenViewedFromBelow = *props.OpacityWhenViewedFromBelow
 +			}
-+			if floor.Name != old.Name || floor.Order != old.Order || floor.Opacity != old.Opacity || floor.OpacityWhenViewedFromBelow != old.OpacityWhenViewedFromBelow {
++			if props.ShowWalkableToPlayers != nil {
++				floor.ShowWalkableToPlayers = *props.ShowWalkableToPlayers
++			}
++			if floor.Name != old.Name || floor.Order != old.Order || floor.Opacity != old.Opacity || floor.OpacityWhenViewedFromBelow != old.OpacityWhenViewedFromBelow || floor.ShowWalkableToPlayers != old.ShowWalkableToPlayers {
 +				scene.Floors[floor.ID] = floor
 +				changed, structural = true, true
 +				restore = func() { scene.Floors[old.ID] = old }
@@ -11008,10 +11019,10 @@ index 0000000..336bcc4
 +}
 diff --git a/scene_content.go b/scene_content.go
 new file mode 100644
-index 0000000..c1d8dc3
+index 0000000..e8dcc3b
 --- /dev/null
 +++ b/scene_content.go
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,667 @@
 +package main
 +
 +import (
@@ -11076,6 +11087,7 @@ index 0000000..c1d8dc3
 +	Opacity                    float64             `json:"opacity"`
 +	OpacityWhenViewedFromBelow float64             `json:"opacityWhenViewedFromBelow"`
 +	WalkableMode               string              `json:"walkableMode"`
++	ShowWalkableToPlayers      bool                `json:"showWalkableToPlayers"`
 +	WalkableComponents         []WalkableComponent `json:"walkableComponents"`
 +	RenderBounds               *Polygon            `json:"renderBounds"`
 +	GeometryRevision           uint64              `json:"geometryRevision"`
@@ -11680,10 +11692,10 @@ index 0000000..c1d8dc3
 +}
 diff --git a/scene_content_test.go b/scene_content_test.go
 new file mode 100644
-index 0000000..6fba0cb
+index 0000000..003e2e1
 --- /dev/null
 +++ b/scene_content_test.go
-@@ -0,0 +1,874 @@
+@@ -0,0 +1,875 @@
 +package main
 +
 +import (
@@ -11701,12 +11713,13 @@ index 0000000..6fba0cb
 +
 +func TestFloorGeometryJSONRoundTrip(t *testing.T) {
 +	restricted := Floor{
-+		ID:                 "restricted",
-+		Name:               "Restricted",
-+		WalkableMode:       walkableModeRestricted,
-+		WalkableComponents: []WalkableComponent{},
-+		RenderBounds:       nil,
-+		GeometryRevision:   4,
++		ID:                    "restricted",
++		Name:                  "Restricted",
++		WalkableMode:          walkableModeRestricted,
++		ShowWalkableToPlayers: true,
++		WalkableComponents:    []WalkableComponent{},
++		RenderBounds:          nil,
++		GeometryRevision:      4,
 +	}
 +	unrestricted := Floor{ID: "unrestricted", Name: "Unrestricted", WalkableMode: walkableModeUnrestricted}
 +
@@ -11714,7 +11727,7 @@ index 0000000..6fba0cb
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	if !bytes.Contains(encoded, []byte(`"walkableComponents":[]`)) || !bytes.Contains(encoded, []byte(`"renderBounds":null`)) {
++	if !bytes.Contains(encoded, []byte(`"showWalkableToPlayers":true`)) || !bytes.Contains(encoded, []byte(`"walkableComponents":[]`)) || !bytes.Contains(encoded, []byte(`"renderBounds":null`)) {
 +		t.Fatalf("geometry zero values lost in JSON: %s", encoded)
 +	}
 +
@@ -11722,7 +11735,7 @@ index 0000000..6fba0cb
 +	if err := json.Unmarshal(encoded, &decoded); err != nil {
 +		t.Fatal(err)
 +	}
-+	if decoded[0].WalkableMode != walkableModeRestricted || decoded[0].WalkableComponents == nil || len(decoded[0].WalkableComponents) != 0 {
++	if decoded[0].WalkableMode != walkableModeRestricted || !decoded[0].ShowWalkableToPlayers || decoded[0].WalkableComponents == nil || len(decoded[0].WalkableComponents) != 0 {
 +		t.Fatalf("restricted empty geometry was not preserved: %#v", decoded[0])
 +	}
 +	if decoded[1].WalkableMode != walkableModeUnrestricted || decoded[0].RenderBounds != nil {
@@ -13960,11 +13973,11 @@ index 0000000..2db6cbe
 +		t.Fatal("delete left runtime references")
 +	}
 +}
-diff --git a/scripts/install-vips.ps1 b/scripts/install-vips.ps1
+diff --git "a/scripts\\install-vips.ps1" "b/scripts\\install-vips.ps1"
 new file mode 100644
 index 0000000..a19e9bb
 --- /dev/null
-+++ b/scripts/install-vips.ps1
++++ "b/scripts\\install-vips.ps1"
 @@ -0,0 +1,25 @@
 +$ErrorActionPreference = 'Stop'
 +$project = Split-Path $PSScriptRoot -Parent
@@ -13993,7 +14006,7 @@ index 0000000..a19e9bb
 +Write-Output "Atlas will use $binary"
 diff --git a/walkable.go b/walkable.go
 new file mode 100644
-index 0000000..b1e39cd
+index 0000000..0ee899e
 --- /dev/null
 +++ b/walkable.go
 @@ -0,0 +1,436 @@
@@ -14435,7 +14448,7 @@ index 0000000..b1e39cd
 +}
 diff --git a/walkable_commands_test.go b/walkable_commands_test.go
 new file mode 100644
-index 0000000..379f7c8
+index 0000000..84f4a0a
 --- /dev/null
 +++ b/walkable_commands_test.go
 @@ -0,0 +1,353 @@
@@ -14794,7 +14807,7 @@ index 0000000..379f7c8
 +}
 diff --git a/walkable_test.go b/walkable_test.go
 new file mode 100644
-index 0000000..7be07b7
+index 0000000..b5e4259
 --- /dev/null
 +++ b/walkable_test.go
 @@ -0,0 +1,259 @@
@@ -15057,17 +15070,17 @@ index 0000000..7be07b7
 +		t.Fatalf("result limit was not rejected atomically: result=%#v changed=%v err=%v", result, changed, err)
 +	}
 +}
-diff --git a/web/app.js b/web/app.js
+diff --git "a/web\\app.js" "b/web\\app.js"
 new file mode 100644
-index 0000000..15b233e
+index 0000000..4aebbba
 --- /dev/null
-+++ b/web/app.js
++++ "b/web\\app.js"
 @@ -0,0 +1,480 @@
 +import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
 +import {drawTokens} from './token-renderer.js';
 +import {Outbox, Drafts, CacheWriteBudget,blockedMoveCorrection} from './reliability.js';
 +import {ScenesRuntime,needsActiveTokenRequest} from './scenes.js';
-+import {FloorRenderBoundsPathCache,FloorRenderBoundsResourceCache,SceneRenderIndex,abortUnwantedImageLoads,clipFloorRenderBounds,compositeFloors,drawRenderBoundsEditor,drawSceneStack,drawTransitionOverlay,drawWalkableEditor,elementHandleAt,elementsAtPoint,floorCameraBounds,hitElement,inversePoint,orderedFloors,orderedLayers,pointInPlayableArea,pointInRenderBounds,renderBoundsAABB,renderBoundsHit,transitionHit,transformedFromDrag,validRenderBounds,validRenderBoundsChange,walkableComponentAt} from './scene-content.js';
++import {FloorRenderBoundsPathCache,FloorRenderBoundsResourceCache,SceneRenderIndex,abortUnwantedImageLoads,clipFloorRenderBounds,compositeFloors,drawPlayerWalkableOverlay,drawRenderBoundsEditor,drawSceneStack,drawTransitionOverlay,drawWalkableEditor,elementHandleAt,elementsAtPoint,floorCameraBounds,hitElement,inversePoint,orderedFloors,orderedLayers,pointInPlayableArea,pointInRenderBounds,renderBoundsAABB,renderBoundsHit,transitionHit,transformedFromDrag,validRenderBounds,validRenderBoundsChange,walkableComponentAt} from './scene-content.js';
 +import {SceneTreeRuntime} from './scene-tree.js';
 +import {constrainTokenMovement} from './movement-geometry.js';
 +const $ = id => document.getElementById(id);
@@ -15538,16 +15551,16 @@ index 0000000..15b233e
 +function draw(now){const start=performance.now();dirty=false;imagePlans=new Map();fallbackWanted=new Set();const dpr=canvas.width/viewport.w;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#121c1d';ctx.fillRect(0,0,viewport.w,viewport.h);ctx.save();ctx.scale(camera.scale,camera.scale);ctx.translate(-camera.x,-camera.y);const right=camera.x+viewport.w/camera.scale,bottom=camera.y+viewport.h/camera.scale;ensureSceneRegion({left:camera.x,top:camera.y,right,bottom});let tokenAnimating=false,gm=false;
 + if(state){const floor=state.floors?.[currentFloorID],bounds=renderBoundsAABB(floor?.renderBounds),selectedSceneElement=state.elements?.[selectedElement];gm=isGM(state.you);ctx.save();ctx.fillStyle='#182322';if(bounds){clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);ctx.fillRect(bounds.left,bounds.top,bounds.width,bounds.height);}else ctx.fillRect(camera.x,camera.y,right-camera.x,bottom-camera.y);ctx.restore();drawSceneStack({ctx,state,currentFloorId:currentFloorID,view:{left:camera.x,top:camera.y,right,bottom},camera,dpr,requestImage,peekImage,selectedElement,editor:gm,renderIndex:sceneRenderIndex,renderBoundsPaths,resourceBounds:renderBoundsResources,showRotationHandle:elementRotationAllowed(selectedSceneElement),drawTokenLayer:(floorId,alpha)=>{const tokenFloor=state.floors?.[floorId],resourceVisible=!gm&&tokenFloor?.renderBounds?(x,y,radius)=>renderBoundsResources.intersectsCircle(state,tokenFloor,x,y,radius):null;const outOfBounds=gm?(x,y)=>!pointInPlayableArea(state,floorId,x,y):null;tokenAnimating=drawTokens({ctx,camera,viewport,dpr,tokens:state.tokens,index:tokenIndex,visuals,moving:movingTokens,drag,selected,queue:[...(outbox?.data.queue||[]),...(positionOutbox?.data.queue||[])],requestImage,artwork,delta:now-lastFrame,floorId,alpha,outOfBounds,resourceVisible})||tokenAnimating;}});}
 + if(grid){const step=100;const screenStep=step*camera.scale;if(screenStep>=12){ctx.save();const floor=state?.floors?.[currentFloorID];if(!gm&&floor?.renderBounds)clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);ctx.strokeStyle='#8ea18a16';ctx.lineWidth=1/camera.scale;ctx.beginPath();for(let x=Math.floor(camera.x/step)*step;x<right;x+=step){ctx.moveTo(x,camera.y);ctx.lineTo(x,bottom);}for(let y=Math.floor(camera.y/step)*step;y<bottom;y+=step){ctx.moveTo(camera.x,y);ctx.lineTo(right,y);}ctx.stroke();ctx.restore();}}
-+ if(isGM(state?.you)){drawWalkableEditor(ctx,state,currentFloorID,camera,{drag,selectedId:selectedWalkableComponent});drawRenderBoundsEditor(ctx,state,currentFloorID,camera,{tool:renderBoundsTool,draft:renderBoundsDraft,drag,selectedVertex:selectedRenderBoundsVertex});drawTransitionOverlay(ctx,state,currentFloorID,camera,{selectedId:selectedTransition,draft:transitionDraft,cursor:transitionCursor});}dirty=tokenAnimating||dirty;
++ if(gm){drawWalkableEditor(ctx,state,currentFloorID,camera,{drag,selectedId:selectedWalkableComponent});drawRenderBoundsEditor(ctx,state,currentFloorID,camera,{tool:renderBoundsTool,draft:renderBoundsDraft,drag,selectedVertex:selectedRenderBoundsVertex});drawTransitionOverlay(ctx,state,currentFloorID,camera,{selectedId:selectedTransition,draft:transitionDraft,cursor:transitionCursor});}else drawPlayerWalkableOverlay(ctx,state,currentFloorID,camera);dirty=tokenAnimating||dirty;
 + ctx.restore();scheduleImages();$('zoom').textContent=`${Math.round(camera.scale*100)}%`;frameTime=performance.now()-start;rendered++;
 +}
 +function loop(now){processTokenDrag(now);if(!$('app').hidden&&(dirty||$('continuous').checked))draw(now);lastFrame=now;requestAnimationFrame(loop);}requestAnimationFrame(loop);
 +setInterval(()=>{fps=rendered;rendered=0;trimImages();if(failures.size)dirty=true;$('diagnostics').textContent=`${fps} кадров/с · ${frameTime.toFixed(1)} мс/кадр\nRAM изображений ${((memoryBytes+artwork.bytes)/MIB).toFixed(1)} / ${memoryLimit/MIB} МБ${imageMemorySetting==='auto'?' · Auto':''}\nДиск ${(diskBytes/MIB).toFixed(1)} / ${DISK_LIMIT/MIB} МБ${diskEnabled?'':' · недоступен'} · R/W ${diskReads}/${diskWrites} · evict ${diskEvictions} · drop ${diskDrops}\nТайлы ↓ ${(tileBytes/MIB).toFixed(2)} МБ · кэш ${cacheHits} · LOD fallback ${lodFallbacks}\nDecode ${decodeCount} · ${decodeMs.toFixed(0)} мс суммарно · edge ${decodeEdge} · degrade ${imageDegradations}\nWS ↓ ${(bytesIn/1024).toFixed(1)} ↑ ${(bytesOut/1024).toFixed(1)} КБ\nЗагрузка ${activeLoads} · ошибки ${failures.size}`;},1000);
-diff --git a/web/index.html b/web/index.html
+diff --git "a/web\\index.html" "b/web\\index.html"
 new file mode 100644
-index 0000000..ddbbff3
+index 0000000..3f57d9d
 --- /dev/null
-+++ b/web/index.html
++++ "b/web\\index.html"
 @@ -0,0 +1,12 @@
 +<!doctype html>
 +<html lang="ru">
@@ -15561,11 +15574,11 @@ index 0000000..ddbbff3
 +<main id="stage"><canvas id="board" tabindex="0" aria-label="Игровая карта. Перетаскивание фона перемещает камеру, колесо меняет масштаб."></canvas><div class="scene-label"><span class="live-dot"></span><span id="sceneLabel">Сцена 01</span></div><div id="emptyMap" class="empty-map"><span>◇</span><h2>Здесь начинается приключение</h2><p>Ведущий может загрузить карту.<br>Токены можно размещать уже сейчас.</p></div><div class="canvas-tools"><button id="fit" title="Показать всю карту">⛶</button><span></span><button id="minus" title="Уменьшить">−</button><output id="zoom">100%</output><button id="plus" title="Увеличить">+</button><span></span><button id="grid" class="active" title="Сетка">▦</button></div><div class="canvas-hint">Перетаскивание — камера <i>·</i> Колесо — масштаб <i>·</i> Токен — выбрать и двигать</div><div id="diagnostics" class="diagnostics"></div></main>
 +<aside class="inspector"><div class="panel-heading">СВОЙСТВА ОБЪЕКТА</div><div id="noSelection" class="no-selection"><span>◎</span><p>Выберите токен<br>или элемент сцены</p></div><form id="properties" hidden><div id="tokenPreview" class="token-preview">◆</div><label>Название<input id="tokenName" maxlength="80"></label><div class="two"><label>Размер<input id="tokenSize" type="number" min="16" max="1024"></label><label>Цвет<input id="tokenColor" type="color"></label></div><label>Этаж<select id="tokenFloor"></select></label><label>Управление<select id="tokenOwner"></select></label><label class="check"><input type="checkbox" id="tokenHidden"> Скрыть от игроков</label><button type="submit" hidden>Сохранить свойства</button><button id="delete" class="danger wide gm" type="button">Удалить токен</button></form><form id="elementProperties" hidden><label>Название<input id="elementName" maxlength="120"></label><div class="two"><label>X<input id="elementX" type="number" step="any"></label><label>Y<input id="elementY" type="number" step="any"></label></div><div class="two"><label>Ширина<input id="elementWidth" type="number" min="1" step="any"></label><label>Высота<input id="elementHeight" type="number" min="1" step="any"></label></div><label>Поворот<input id="elementRotation" type="number" step="any"></label><label>Прозрачность<input id="elementOpacity" type="range" min="0" max="1" step="0.05"></label><label>Слой<select id="elementLayer"></select></label><label class="check"><input type="checkbox" id="elementVisible"> Видимый</label><label class="check"><input type="checkbox" id="elementLocked"> Заблокирован</label><button type="submit" hidden>Сохранить элемент</button><button id="allowElementRotation" class="subtle wide gm" type="button">Разрешить вращение</button><button id="duplicateElement" class="subtle wide gm" type="button">Дублировать</button><button id="deleteElement" class="danger wide gm" type="button">Удалить элемент</button></form><form id="transitionProperties" hidden><h2>Переход</h2><label>Направление<select id="transitionDirection"><option value="bidirectional">A ↔ B</option><option value="AToB">A → B</option><option value="BToA">A ← B</option></select></label><div class="transition-endpoint"><strong>Точка A</strong><label>Этаж<select id="transitionFloorA"></select></label><label>Радиус<input id="transitionRadiusA" type="number" min="8" step="any"></label><button id="transitionGoA" class="subtle wide" type="button">Перейти к A</button></div><div class="transition-endpoint"><strong>Точка B</strong><label>Этаж<select id="transitionFloorB"></select></label><label>Радиус<input id="transitionRadiusB" type="number" min="8" step="any"></label><button id="transitionGoB" class="subtle wide" type="button">Перейти к B</button></div><button id="transitionConfirm" class="primary wide" type="button" hidden>Подтвердить точку</button><button id="transitionCancel" class="subtle wide" type="button" hidden>Отменить создание</button><button id="transitionSave" class="primary wide gm" type="submit">Сохранить переход</button><button id="deleteTransition" class="danger wide gm" type="button">Удалить переход</button></form><div class="inspector-note"><b>Камера только ваша</b><p>Масштаб и положение карты не влияют на остальных участников.</p></div><details><summary>Диагностика</summary><label>RAM-кэш изображений<select id="imageCacheBudget"><option value="auto">Auto</option><option value="64">64 MiB</option><option value="128">128 MiB</option><option value="256">256 MiB</option><option value="512">512 MiB</option></select></label><label class="check"><input id="continuous" type="checkbox"> Постоянная отрисовка</label><button id="reconnect" class="subtle wide">Переподключиться</button><button id="clearCache" class="subtle wide">Очистить кэш изображений</button><button id="stress" class="subtle wide gm">Добавить 100 тестовых токенов</button></details></aside></div><footer id="appFooter" hidden><span>АТЛАС <b>PROTOTYPE 01</b></span><span id="revision">Ревизия 0</span><span>Canvas 2D / тайлы / этажи / слои</span></footer>
 +</div><div id="toast" role="status" hidden></div><script type="module" src="/app.js"></script></body></html>
-diff --git a/web/movement-geometry.js b/web/movement-geometry.js
+diff --git "a/web\\movement-geometry.js" "b/web\\movement-geometry.js"
 new file mode 100644
 index 0000000..84b1770
 --- /dev/null
-+++ b/web/movement-geometry.js
++++ "b/web\\movement-geometry.js"
 @@ -0,0 +1,176 @@
 +const SEGMENT_EPSILON=1e-9;
 +const GEOMETRY_QUANTUM=.001;
@@ -15743,11 +15756,11 @@ index 0000000..84b1770
 +  }
 +  return bestTransition||{x:from.x,y:from.y};
 +}
-diff --git a/web/reliability.js b/web/reliability.js
+diff --git "a/web\\reliability.js" "b/web\\reliability.js"
 new file mode 100644
 index 0000000..29f34f9
 --- /dev/null
-+++ b/web/reliability.js
++++ "b/web\\reliability.js"
 @@ -0,0 +1,60 @@
 +// Durable commands are sent one at a time. A reconnect resends the same sequence;
 +// the server's persisted receipt makes that retry idempotent.
@@ -15809,11 +15822,11 @@ index 0000000..29f34f9
 +// A fixed total budget, not fixed per-image quality. All requested images fit
 +// together; more distinct visible images means smaller decoded bitmaps.
 +export function imageEdge(count,budget){let edge=512;while(edge>1&&count*edge*edge*4>budget)edge/=2;return edge;}
-diff --git a/web/rendering.js b/web/rendering.js
+diff --git "a/web\\rendering.js" "b/web\\rendering.js"
 new file mode 100644
-index 0000000..41e9934
+index 0000000..377196a
 --- /dev/null
-+++ b/web/rendering.js
++++ "b/web\\rendering.js"
 @@ -0,0 +1,116 @@
 +export class SpatialIndex {
 +  constructor(cell=512){this.cell=cell;this.buckets=new Map();this.entries=new Map();this.order=0;}
@@ -15931,12 +15944,12 @@ index 0000000..41e9934
 +}
 +
 +export function artworkSpec(t,bitmap,diameter){const d=Math.min(512,Math.max(4,2**Math.ceil(Math.log2(Math.max(1,diameter))))),pad=6,key=JSON.stringify([bitmap?t.asset:t.name.slice(0,1),t.color,d,bitmap?.width,bitmap?.height]);return {key,d,pad,w:d+pad*2,h:d+pad*2,paint(g){const r=d/2,c=pad+r;g.fillStyle=t.color||'#c2d89b';g.shadowColor='#0009';g.shadowBlur=5;g.beginPath();g.arc(c,c,r,0,Math.PI*2);g.fill();g.shadowBlur=0;if(bitmap){g.save();g.clip();const scale=Math.max(d/bitmap.width,d/bitmap.height);g.drawImage(bitmap,c-bitmap.width*scale/2,c-bitmap.height*scale/2,bitmap.width*scale,bitmap.height*scale);g.restore();}else{g.fillStyle='#243224';g.font=`600 ${r}px system-ui`;g.textAlign='center';g.textBaseline='middle';g.fillText(t.name.slice(0,1)||'◆',c,c);}g.strokeStyle='#e2dec0';g.lineWidth=1.5;g.stroke();}};}
-diff --git a/web/scene-content.js b/web/scene-content.js
+diff --git "a/web\\scene-content.js" "b/web\\scene-content.js"
 new file mode 100644
-index 0000000..15b1f03
+index 0000000..08b7b54
 --- /dev/null
-+++ b/web/scene-content.js
-@@ -0,0 +1,288 @@
++++ "b/web\\scene-content.js"
+@@ -0,0 +1,301 @@
 +export function orderedFloors(state){return Object.values(state?.floors||{}).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id));}
 +export function orderedLayers(state,floorId){return Object.values(state?.layers||{}).filter(layer=>layer.floorId===floorId).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id));}
 +
@@ -16169,6 +16182,19 @@ index 0000000..15b1f03
 +  if(drag?.type==='walkableRect'&&drag.floorId===floorId){const left=Math.min(drag.start.x,drag.current.x),top=Math.min(drag.start.y,drag.current.y),right=Math.max(drag.start.x,drag.current.x),bottom=Math.max(drag.start.y,drag.current.y);if(right>left&&bottom>top)drawWalkablePolygon(ctx,{outer:[{x:left,y:top},{x:right,y:top},{x:right,y:bottom},{x:left,y:bottom}],holes:[]},camera,{preview:true,subtract:drag.operation==='subtractWalkableRect'});}
 +}
 +
++export class FloorWalkableOverlayPathCache{
++  constructor(){this.sceneId='';this.entries=new Map();this.builds=0;}
++  clear(){this.sceneId='';this.entries.clear();}
++  path(state,floor){
++    const sceneId=state?.scene?.id||'';if(sceneId!==this.sceneId){this.clear();this.sceneId=sceneId;}if(!floor?.renderBounds){this.entries.delete(floor?.id);return null;}const cached=this.entries.get(floor.id);if(cached?.revision===floor.geometryRevision)return cached;
++    const path=new Path2D(),bounds=new Path2D();traceWalkablePolygon(path,floor.renderBounds);traceWalkablePolygon(bounds,floor.renderBounds);for(const component of floor.walkableComponents||[])traceWalkablePolygon(path,component.polygon);const entry={revision:floor.geometryRevision,path,bounds};this.entries.set(floor.id,entry);this.builds++;return entry;
++  }
++}
++const defaultWalkableOverlayPaths=new FloorWalkableOverlayPathCache();
++export function drawPlayerWalkableOverlay(ctx,state,floorId,camera,paths=defaultWalkableOverlayPaths){
++  const floor=state?.floors?.[floorId];if(!floor?.showWalkableToPlayers||floor.walkableMode!=='restricted'||!floor.renderBounds)return false;const entry=paths.path(state,floor);if(!entry)return false;ctx.save();ctx.clip(entry.bounds);ctx.fillStyle='#d9606018';ctx.strokeStyle='#e77b7b88';ctx.lineWidth=1.5/camera.scale;ctx.fill(entry.path,'evenodd');ctx.stroke(entry.path);ctx.restore();return true;
++}
++
 +function traceRenderBounds(ctx,points,close=true){if(!points?.length)return;ctx.moveTo(points[0].x,points[0].y);for(let i=1;i<points.length;i++)ctx.lineTo(points[i].x,points[i].y);if(close)ctx.closePath();}
 +export function drawRenderBoundsEditor(ctx,state,floorId,camera,{tool='',draft=null,drag=null,selectedVertex=-1}={}){
 +  const authoritative=state?.floors?.[floorId]?.renderBounds,rectangle=drag?.type==='renderBoundsRect'&&drag.floorId===floorId?{outer:[drag.start,{x:drag.current.x,y:drag.start.y},drag.current,{x:drag.start.x,y:drag.current.y}],holes:[]}:null,edit=drag?.type==='renderBoundsEdit'&&drag.floorId===floorId?drag.preview:null,polygonDraft=draft?.floorId===floorId?{outer:draft.points,holes:[]}:null,preview=rectangle||edit||polygonDraft||authoritative;
@@ -16225,11 +16251,11 @@ index 0000000..15b1f03
 +  }
 +  ctx.restore();
 +}
-diff --git a/web/scenes.css b/web/scenes.css
+diff --git "a/web\\scenes.css" "b/web\\scenes.css"
 new file mode 100644
 index 0000000..34abe02
 --- /dev/null
-+++ b/web/scenes.css
++++ "b/web\\scenes.css"
 @@ -0,0 +1,196 @@
 +.scene-tabs {
 +  display: flex;
@@ -16427,11 +16453,11 @@ index 0000000..34abe02
 +.transition-endpoint { padding: 11px 0; border-top: 1px solid var(--border); }
 +.transition-endpoint strong { display: block; margin-bottom: 9px; font-size: 11px; color: #c5d2bd; }
 +.transition-endpoint label { margin-bottom: 9px; }
-diff --git a/web/scenes.js b/web/scenes.js
+diff --git "a/web\\scenes.js" "b/web\\scenes.js"
 new file mode 100644
 index 0000000..5725153
 --- /dev/null
-+++ b/web/scenes.js
++++ "b/web\\scenes.js"
 @@ -0,0 +1,42 @@
 +export function needsActiveTokenRequest(token,focus,confirmedTokenID,confirmedFloorID,pending){return !!focus||!!pending||token?.id!==confirmedTokenID||token?.floorId!==confirmedFloorID;}
 +
@@ -16475,12 +16501,12 @@ index 0000000..5725153
 +  showHome(){this.elements.home.hidden=false;this.elements.workspace.hidden=true;this.elements.footer.hidden=true;this.elements.back.hidden=true;this.elements.sceneTabs.hidden=true;}
 +  showScene(){this.elements.home.hidden=true;this.elements.workspace.hidden=false;this.elements.footer.hidden=false;this.elements.back.hidden=false;this.elements.sceneTabs.hidden=false;}
 +}
-diff --git a/web/scene-tree.js b/web/scene-tree.js
+diff --git "a/web\\scene-tree.js" "b/web\\scene-tree.js"
 new file mode 100644
-index 0000000..63550ad
+index 0000000..6e44881
 --- /dev/null
-+++ b/web/scene-tree.js
-@@ -0,0 +1,77 @@
++++ "b/web\\scene-tree.js"
+@@ -0,0 +1,78 @@
 +import {orderedFloors,orderedLayers} from './scene-content.js';
 +const isGM=member=>!!(member?.gm||member?.role==='gm');
 +
@@ -16495,7 +16521,7 @@ index 0000000..63550ad
 +  update(state,selectedElement,selectedTransition=''){
 +    const gm=isGM(state.you),catalog=gm?(state.elementCatalog||{}):state.elements||{};this.state={...state,elements:catalog};const floors=orderedFloors(this.state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
 +    for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
-+    const floorStructure=floors.map(floor=>[floor.id,floor.name,floor.order,floor.opacity,floor.opacityWhenViewedFromBelow,floor.walkableMode,floor.geometryRevision,floor.walkableComponents?.length||0,!!floor.renderBounds]);
++    const floorStructure=floors.map(floor=>[floor.id,floor.name,floor.order,floor.opacity,floor.opacityWhenViewedFromBelow,floor.walkableMode,!!floor.showWalkableToPlayers,floor.geometryRevision,floor.walkableComponents?.length||0,!!floor.renderBounds]);
 +    const structureKey=JSON.stringify([state.scene.id,state._catalogVersion||0,floorStructure,state.layers,state.transitions,gm,this.getWalkableTool(),this.getRenderBoundsTool()]);
 +    if(structureKey!==this.structureKey){this.structureKey=structureKey;this.rebuilds++;this.elementRows.clear();this.transitionRows.clear();this.floorSections.clear();this.elements.tree.replaceChildren();if(gm)for(const floor of [...floors].reverse())this.elements.tree.append(this.floorNode(floor,current,selectedElement));if(gm&&Object.keys(state.transitions||{}).length)this.elements.tree.append(this.transitionSection(selectedTransition));this.selectedElement=selectedElement||'';this.selectedTransition=selectedTransition||'';this.currentFloor=current;return;}
 +    if(this.selectedElement!==(selectedElement||'')){this.elementRows.get(this.selectedElement)?.classList.remove('selected');this.elementRows.get(selectedElement)?.classList.add('selected');this.selectedElement=selectedElement||'';}
@@ -16519,7 +16545,7 @@ index 0000000..63550ad
 +  }
 +
 +  walkableNode(floor){
-+    const section=document.createElement('div');section.className='tree-layer tree-layer-walkable';section.dataset.componentCount=String(floor.walkableComponents?.length||0);section.dataset.geometryRevision=String(floor.geometryRevision);const head=document.createElement('div');head.className='tree-row tree-layer-row';const label=document.createElement('span'),tool=this.getWalkableTool();label.textContent=`▧ Игровая область · ${section.dataset.componentCount}`;const mode=button(floor.walkableMode==='restricted'?'Огр.':'Своб.','Переключить ограничение движения',()=>this.editWalkable(floor)),add=button('＋','Добавить проходимую область',()=>this.setWalkableTool(tool==='add'?'':'add')),subtract=button('−','Вычесть проходимую область',()=>this.setWalkableTool(tool==='subtract'?'':'subtract')),move=button('↔','Перемещать проходимые компоненты',()=>this.setWalkableTool(tool==='move'?'':'move'));add.classList.toggle('active',tool==='add');subtract.classList.toggle('active',tool==='subtract');move.classList.toggle('active',tool==='move');head.append(label,mode,add,subtract,move);section.append(head);return section;
++    const section=document.createElement('div');section.className='tree-layer tree-layer-walkable';section.dataset.componentCount=String(floor.walkableComponents?.length||0);section.dataset.geometryRevision=String(floor.geometryRevision);section.dataset.playerOverlay=floor.showWalkableToPlayers?'visible':'hidden';const head=document.createElement('div');head.className='tree-row tree-layer-row';const label=document.createElement('span'),tool=this.getWalkableTool();label.textContent=`▧ Игровая область · ${section.dataset.componentCount}`;const mode=button(floor.walkableMode==='restricted'?'Огр.':'Своб.','Переключить ограничение движения',()=>this.editWalkable(floor)),players=button(floor.showWalkableToPlayers?'◉':'○','Показывать непроходимые области игрокам',()=>this.togglePlayerWalkable(floor)),add=button('＋','Добавить проходимую область',()=>this.setWalkableTool(tool==='add'?'':'add')),subtract=button('−','Вычесть проходимую область',()=>this.setWalkableTool(tool==='subtract'?'':'subtract')),move=button('↔','Перемещать проходимые компоненты',()=>this.setWalkableTool(tool==='move'?'':'move'));players.classList.toggle('active',!!floor.showWalkableToPlayers);add.classList.toggle('active',tool==='add');subtract.classList.toggle('active',tool==='subtract');move.classList.toggle('active',tool==='move');head.append(label,mode,players,add,subtract,move);section.append(head);return section;
 +  }
 +
 +  renderBoundsNode(floor){
@@ -16545,6 +16571,7 @@ index 0000000..63550ad
 +
 +  renameLayer(layer){const name=prompt('Название слоя',layer.name)?.trim();if(name)this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{name}});}
 +  editWalkable(floor){this.queue('setWalkableMode',{floorId:floor.id,expectedGeometryRevision:floor.geometryRevision,walkableMode:floor.walkableMode==='restricted'?'unrestricted':'restricted'});}
++  togglePlayerWalkable(floor){this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{showWalkableToPlayers:!floor.showWalkableToPlayers}});}
 +
 +  elementNode(element,selectedElement){
 +    const row=document.createElement('div');row.className='tree-row tree-element-row'+(element.id===selectedElement?' selected':'');row.draggable=true;row.dataset.elementId=element.id;this.elementRows.set(element.id,row);row.onclick=()=>{this.setFloor(element.floorId,true);this.selectElement(element.id);};row.ondragstart=event=>{event.stopPropagation();event.dataTransfer.setData('text/atlas-element',element.id);};row.ondragover=event=>event.preventDefault();row.ondrop=event=>{event.preventDefault();event.stopPropagation();const id=event.dataTransfer.getData('text/atlas-element');if(id&&id!==element.id)this.dropElement(id,element);};
@@ -16558,18 +16585,18 @@ index 0000000..63550ad
 +  shiftFloor(floor,direction){const list=orderedFloors(this.state),index=list.findIndex(item=>item.id===floor.id),other=list[index+direction];if(!other)return;this.queue('floorUpdate',{floor:{id:floor.id},floorProperties:{order:other.order}});this.queue('floorUpdate',{floor:{id:other.id},floorProperties:{order:floor.order}});}
 +  shiftLayer(layer,direction){const list=orderedLayers(this.state,layer.floorId),index=list.findIndex(item=>item.id===layer.id),other=list[index+direction];if(!other)return;this.queue('layerUpdate',{layer:{id:layer.id},layerProperties:{order:other.order}});this.queue('layerUpdate',{layer:{id:other.id},layerProperties:{order:layer.order}});}
 +}
-diff --git a/web/style.css b/web/style.css
+diff --git "a/web\\style.css" "b/web\\style.css"
 new file mode 100644
 index 0000000..4bb3a24
 --- /dev/null
-+++ b/web/style.css
++++ "b/web\\style.css"
 @@ -0,0 +1 @@
 +:root{color-scheme:dark;--bg:#111719;--panel:#192123;--border:#2c3637;--muted:#829391;--text:#e5eae1;--accent:#c2d89b}.tree-action.active{color:#edf8d5;background:#46534f;box-shadow:inset 0 0 0 1px #78916f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}button,input,select{font:inherit}button,.file-button{border:1px solid var(--border);border-radius:6px;background:#242e2f;color:var(--text);padding:10px 13px;cursor:pointer;transition:background .15s}button:hover,.file-button:hover{background:#344142}button:disabled,input:disabled,select:disabled{opacity:.45;cursor:not-allowed;color:#81908b}input,select{width:100%;padding:10px;background:#11191a;border:1px solid #354142;border-radius:5px;color:var(--text);outline:none}input:focus,select:focus{border-color:var(--accent)}input[type=color]{height:42px;padding:5px}input[type=checkbox]{width:auto;accent-color:var(--accent)}label{display:block;color:#aebbb5;font-size:12px;margin-bottom:15px}label input,label select{margin-top:6px}a{color:inherit;text-decoration:none}small,.muted{color:var(--muted);font-size:12px}.primary{background:var(--accent);border-color:var(--accent);color:#253021;font-weight:650}.primary:hover{background:#d4e7b5}.wide{width:100%;margin-top:8px}.subtle{background:transparent;font-size:12px}.danger{color:#e5a099;background:transparent}.icon{font-size:23px;padding:0 8px;line-height:28px}.badge{font-size:10px;border:1px solid #3b4945;border-radius:4px;padding:3px 7px;color:#bdcdb5;white-space:nowrap}.divider{border-top:1px solid var(--border);margin:24px 0}.panel-heading{display:flex;align-items:center;justify-content:space-between;font-size:10px;letter-spacing:1.7px;color:#9caaa3;font-weight:650;min-height:28px}h2{font-size:17px;font-weight:550;margin:8px 0 18px}header{height:78px;padding:0 26px;display:flex;gap:20px;align-items:center;border-bottom:1px solid var(--border);background:#192123}.brand{font-size:22px;color:var(--accent);letter-spacing:3px}.brand b{font-size:17px}.separator{height:30px;border-left:1px solid #3b4542}header small{font-size:9px;letter-spacing:1.7px}.header-right{margin-left:auto;display:flex;align-items:center;gap:15px}.status{font-size:11px;color:var(--muted)}.status.connected{color:var(--accent)}.workspace{display:flex;height:calc(100dvh - 110px)}.sidebar{width:250px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);padding:23px 20px;overflow:auto;display:flex;flex-direction:column}.map-card{background:linear-gradient(135deg,#344740,#253333);border:1px solid #4b5b4b;min-height:127px;display:flex;align-items:center;justify-content:center;flex-direction:column;border-radius:7px;padding:12px;text-align:center;gap:5px;margin-bottom:13px}.map-icon{font-size:29px;color:var(--accent)}.map-card strong{font-size:12px;font-weight:500}.map-card small{font-size:10px}.file-button{display:block;text-align:center;margin:0;font-size:12px;padding:9px}.token-list{margin:10px -5px;max-height:260px;overflow:auto}.token-row{width:100%;display:flex;align-items:center;gap:10px;background:transparent;border:1px solid transparent;text-align:left;padding:8px 5px;font-size:12px}.token-row.selected{background:#2b3933;border-color:#50614c}.swatch{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;color:#17221b;flex-shrink:0;font-size:11px;font-weight:bold}.row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.token-row small{margin-left:auto}.member{display:flex;align-items:center;gap:9px;font-size:12px;padding:8px 0}.member small{margin-left:auto;font-size:10px}.member-role-toggle{padding:3px 6px;font-size:9px;white-space:nowrap}#elementOffscreenNote{margin:0 0 14px;padding:8px;border:1px solid var(--border);border-radius:5px}.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#bed99b}.offline{background:#60706b}.sidebar-bottom{margin-top:auto;padding-top:28px;font-size:9px;color:#82948a;white-space:nowrap}.sidebar-bottom span{margin-right:6px}main{position:relative;flex:1;min-width:0;overflow:hidden;background:#10191b}canvas{display:block;width:100%;height:100%;touch-action:none;outline:none;cursor:grab}canvas:active{cursor:grabbing}.scene-label{position:absolute;top:22px;left:25px;padding:8px 13px;background:#1b2625db;border:1px solid #37433f;border-radius:5px;font-size:10px;color:#b5c4b9;display:flex;gap:9px;align-items:center;pointer-events:none}.canvas-tools{position:absolute;bottom:54px;left:50%;transform:translateX(-50%);display:flex;align-items:center;padding:5px;background:#202a2af5;border:1px solid #414e47;border-radius:9px;box-shadow:0 8px 30px #0004;gap:4px}.canvas-tools button{border:0;background:transparent;font-size:20px;padding:3px 9px}.canvas-tools button.active{color:var(--accent);background:#3a4738}.canvas-tools>span{height:21px;border-left:1px solid #455048;margin:0 3px}.canvas-tools output{font-size:11px;min-width:44px;text-align:center}.canvas-hint{position:absolute;bottom:23px;width:100%;text-align:center;color:#8a9c92;font-size:10px;pointer-events:none}.canvas-hint i{font-style:normal;margin:0 7px}.diagnostics{position:absolute;right:14px;top:20px;background:#121b1ae0;padding:9px 11px;border-radius:5px;color:#9fae9f;font:10px/1.7 ui-monospace,monospace;pointer-events:none;white-space:pre}.inspector{width:240px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--border);padding:23px 20px;overflow:auto;display:flex;flex-direction:column}.no-selection{text-align:center;color:#7f9087;padding:50px 0;font-size:12px}.no-selection>span{font-size:38px;color:#70846f}.token-preview{width:70px;height:70px;border-radius:50%;margin:24px auto;display:grid;place-items:center;font-size:30px;color:#1f3025;border:5px solid #ffffff20;box-shadow:0 0 0 1px #738365}.two{display:flex;gap:12px}.two label{width:50%}.check{display:flex;align-items:center;gap:9px;margin:15px 0}.check input{margin:0}.inspector-note{margin-top:auto;padding-top:25px;font-size:11px;color:#90a18f}.inspector-note b{font-weight:550;color:#c1cdbd}.inspector-note p{margin:6px 0 20px}details{border-top:1px solid var(--border);padding-top:16px;font-size:11px;color:#a9b6a4}summary{cursor:pointer}footer{height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-top:1px solid var(--border);font-size:9px;color:#7b8a81;letter-spacing:.5px}footer b{font-weight:400;margin-left:10px;color:#aebbaa}.empty-map{position:absolute;top:40%;width:100%;text-align:center;pointer-events:none;color:#94a28f}.empty-map>span{font-size:50px;color:#748a6c}.empty-map h2{font-size:20px;color:#c3cfba;margin:6px}.empty-map p{font-size:12px}#toast{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);padding:12px 22px;border:1px solid #6d7e57;border-radius:7px;background:#29372c;box-shadow:0 10px 40px #0008;z-index:10;max-width:90vw}.lobby{min-height:100dvh;display:flex;align-items:center;justify-content:center;gap:100px;padding:60px;background:radial-gradient(ellipse at 75% 40%,#2a3b2e66,transparent 60%)}.welcome{max-width:440px}.eyebrow{color:var(--accent);font-size:11px;letter-spacing:3px}h1{font:54px/1.15 Georgia,serif;letter-spacing:-1px;margin:35px 0 20px}h1 em{color:var(--accent);font-weight:400}.welcome>p{color:#a3b09f;line-height:1.8;max-width:370px}.welcome form{margin:32px 0}.welcome form button{width:100%;margin-top:14px;text-align:left;padding:14px}.welcome form button span{float:right}.welcome>small{font-size:10px}.lobby-art{position:relative;width:380px;height:470px;border:1px solid #526344;border-radius:190px 190px 10px 10px;display:grid;place-items:center;background:repeating-linear-gradient(0deg,transparent 0 47px,#839a6210 48px),repeating-linear-gradient(90deg,transparent 0 47px,#839a6210 48px);box-shadow:inset 0 0 80px #132019}.orbit{position:absolute;width:280px;height:280px;border:1px solid #697e4b;border-radius:50%;box-shadow:0 0 0 24px #657b4010,0 0 0 25px #697e4b55}.rune{font-size:210px;color:var(--accent);font-family:Georgia,serif;text-shadow:0 0 40px #b4d17e33}.art-label{position:absolute;bottom:35px;font-size:9px;letter-spacing:2.5px;color:#a9bb94}#resumeList button{margin-bottom:12px;width:100%;text-align:left;font-size:12px}[hidden]{display:none!important}@media(max-width:1100px){.sidebar{width:210px;padding:18px 14px}.inspector{width:210px;padding:18px 14px}.diagnostics{top:67px;left:15px;right:auto}.lobby{gap:50px}.lobby-art{width:300px}}@media(max-width:760px){.lobby{padding:30px}.lobby-art{display:none}h1{font-size:45px}.inspector{width:180px;padding:12px}.sidebar{width:170px;padding:12px}header{padding:0 12px;gap:10px;height:65px}.workspace{height:calc(100dvh - 97px)}.header-right{gap:6px}.header-right button{font-size:10px;padding:8px}.brand b,.separator,header small,.status,.canvas-hint,footer span:last-child{display:none}.canvas-tools{bottom:20px}.scene-label{left:10px;top:10px}.diagnostics{font-size:9px;top:52px;left:10px}}@media(max-width:560px){.sidebar{width:140px}.inspector{position:absolute;right:8px;top:80px;width:175px;max-height:65vh;border:1px solid var(--border);border-radius:8px;display:none}.inspector.has-selection{display:block}.map-card{min-height:90px}.sidebar-bottom{white-space:normal}.badge{display:none}}
-diff --git a/web/token-renderer.js b/web/token-renderer.js
+diff --git "a/web\\token-renderer.js" "b/web\\token-renderer.js"
 new file mode 100644
-index 0000000..b15aac8
+index 0000000..3a50422
 --- /dev/null
-+++ b/web/token-renderer.js
++++ "b/web\\token-renderer.js"
 @@ -0,0 +1,23 @@
 +import {artworkSpec} from './rendering.js';
 +
@@ -16594,11 +16621,11 @@ index 0000000..b15aac8
 + }
 + ctx.restore();return animating;
 +}
-diff --git a/игровая_зона.txt b/игровая_зона.txt
+diff --git "a/\320\270\320\263\321\200\320\276\320\262\320\260\321\217_\320\267\320\276\320\275\320\260.txt" "b/\320\270\320\263\321\200\320\276\320\262\320\260\321\217_\320\267\320\276\320\275\320\260.txt"
 new file mode 100644
-index 0000000..cc45ce6
+index 0000000..26e1bdb
 --- /dev/null
-+++ b/игровая_зона.txt
++++ "b/\320\270\320\263\321\200\320\276\320\262\320\260\321\217_\320\267\320\276\320\275\320\260.txt"
 @@ -0,0 +1,342 @@
 +
 +Реализовать новую модель границ перемещения и отрисовки Atlas. Приоритет — ограниченное потребление ресурсов, отсутствие лишней работы при движении камеры и минимальное изменение существующей архитектуры.

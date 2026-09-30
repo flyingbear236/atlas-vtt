@@ -115,6 +115,7 @@ type FloorProperties struct {
 	Order                      *int     `json:"order,omitempty"`
 	Opacity                    *float64 `json:"opacity,omitempty"`
 	OpacityWhenViewedFromBelow *float64 `json:"opacityWhenViewedFromBelow,omitempty"`
+	ShowWalkableToPlayers      *bool    `json:"showWalkableToPlayers,omitempty"`
 }
 type Command struct {
 	Type                     string            `json:"type"`

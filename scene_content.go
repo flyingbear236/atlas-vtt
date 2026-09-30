@@ -62,6 +62,7 @@ type Floor struct {
 	Opacity                    float64             `json:"opacity"`
 	OpacityWhenViewedFromBelow float64             `json:"opacityWhenViewedFromBelow"`
 	WalkableMode               string              `json:"walkableMode"`
+	ShowWalkableToPlayers      bool                `json:"showWalkableToPlayers"`
 	WalkableComponents         []WalkableComponent `json:"walkableComponents"`
 	RenderBounds               *Polygon            `json:"renderBounds"`
 	GeometryRevision           uint64              `json:"geometryRevision"`
