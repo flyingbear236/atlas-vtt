@@ -217,6 +217,9 @@ func newServer(root string) (*Server, error) {
 			if scene.ModelVersion != sceneModelVersion {
 				return nil, fmt.Errorf("unsupported scene model version %d in scene %s (expected %d); remove or recreate the development data", scene.ModelVersion, sceneID, sceneModelVersion)
 			}
+			if removeLegacyWalkableLayers(scene) {
+				migrated = true
+			}
 			if !validateSceneStructure(scene, ss.Assets, ss.Members) {
 				return nil, fmt.Errorf("invalid scene %s in session %s", sceneID, sessionID)
 			}
@@ -652,14 +655,10 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldAsset, hadAsset := ss.Assets[a.ID]
-	oldRevision, oldDirty, oldBounds := scene.Revision, s.dirty, scene.Bounds
+	oldRevision, oldDirty := scene.Revision, s.dirty
 	oldElements := make(map[string]SceneElement, len(scene.Elements))
 	for elementID, element := range scene.Elements {
 		oldElements[elementID] = element
-	}
-	oldLayers := make(map[string]Layer, len(scene.Layers))
-	for layerID, layer := range scene.Layers {
-		oldLayers[layerID] = layer
 	}
 	oldFloors := make(map[string]Floor, len(scene.Floors))
 	for floorID, floor := range scene.Floors {
@@ -687,14 +686,6 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		}
 		initializeFloorRenderBounds(scene, floorID, float64(a.Width), float64(a.Height))
 		scene.Elements[elementID] = SceneElement{ID: elementID, FloorID: floorID, LayerID: layerID, AssetID: a.ID, Name: name, Transform: Transform{Width: float64(a.Width), Height: float64(a.Height)}, Visible: true, Opacity: 1}
-		if len(oldElements) == 0 && len(scene.Tokens) == 0 {
-			walkableID := layerIDByKind(scene, floorID, layerKindWalkable)
-			walkable := scene.Layers[walkableID]
-			if walkable.WalkableBounds != nil && *walkable.WalkableBounds == (WalkableBounds{Width: oldBounds.Width, Height: oldBounds.Height}) {
-				walkable.WalkableBounds = defaultWalkableBounds(SceneBounds{Width: float64(a.Width), Height: float64(a.Height)})
-				scene.Layers[walkableID] = walkable
-			}
-		}
 		scene.Revision++
 		scene.rebuildRuntime()
 	}
@@ -708,7 +699,6 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		}
 		scene.Elements, scene.Revision, s.dirty = oldElements, oldRevision, oldDirty
 		scene.Floors = oldFloors
-		scene.Layers = oldLayers
 		scene.rebuildRuntime()
 		s.mu.Unlock()
 		fail(w, 500, "Ошибка сохранения")

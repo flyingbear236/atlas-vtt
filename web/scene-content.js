@@ -171,12 +171,12 @@ function drawSelection(ctx,element,camera,showRotation){
   ctx.save();ctx.globalAlpha=1;ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);ctx.strokeStyle='#edf8d5';ctx.lineWidth=2/camera.scale;ctx.strokeRect(0,0,t.width,t.height);if(showRotation){ctx.beginPath();ctx.moveTo(t.width/2,0);ctx.lineTo(t.width/2,-28/camera.scale);ctx.stroke();}ctx.fillStyle='#edf8d5';const handles=showRotation?[...points,[t.width/2,-28/camera.scale]]:points;for(const [x,y]of handles)ctx.fillRect(x-size/2,y-size/2,size,size);ctx.restore();
 }
 
-export function walkableBounds(state,floorId){return orderedLayers(state,floorId).find(layer=>layer.kind==='walkable')?.walkableBounds||(state?.currentFloorId===floorId?state.movementBounds:null)||null;}
 
 function pointOnSegment(a,b,x,y){const cross=(b.x-a.x)*(y-a.y)-(b.y-a.y)*(x-a.x);if(Math.abs(cross)>1e-7)return false;return x>=Math.min(a.x,b.x)-1e-7&&x<=Math.max(a.x,b.x)+1e-7&&y>=Math.min(a.y,b.y)-1e-7&&y<=Math.max(a.y,b.y)+1e-7;}
 function ringContains(ring,x,y){let inside=false;for(let i=0,j=ring.length-1;i<ring.length;j=i++){const a=ring[j],b=ring[i];if(pointOnSegment(a,b,x,y))return 2;if((a.y>y)!==(b.y>y)&&x<(b.x-a.x)*(y-a.y)/(b.y-a.y)+a.x)inside=!inside;}return inside?1:0;}
 export function pointInRenderBounds(state,floorId,x,y){const polygon=state?.floors?.[floorId]?.renderBounds;return !polygon||!!ringContains(polygon.outer||[],x,y);}
 export function pointInWalkablePolygon(polygon,x,y){const outer=ringContains(polygon?.outer||[],x,y);if(!outer)return false;if(outer===2)return true;for(const hole of polygon.holes||[]){const hit=ringContains(hole,x,y);if(hit===1)return false;if(hit===2)return true;}return true;}
+export function pointInPlayableArea(state,floorId,x,y){const floor=state?.floors?.[floorId];if(!floor||!pointInRenderBounds(state,floorId,x,y))return false;if(floor.walkableMode!=='restricted')return true;for(const component of floor.walkableComponents||[])if(pointInWalkablePolygon(component.polygon,x,y))return true;return false;}
 export function walkableComponentAt(state,floorId,x,y){const components=[...(state?.floors?.[floorId]?.walkableComponents||[])].sort((a,b)=>a.id.localeCompare(b.id));for(let i=components.length-1;i>=0;i--)if(pointInWalkablePolygon(components[i].polygon,x,y))return components[i];return null;}
 
 function renderBoundsSegmentsIntersect(a,b,c,d){

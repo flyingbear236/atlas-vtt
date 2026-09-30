@@ -7,14 +7,52 @@ import (
 
 const segmentParameterEpsilon = 1e-9
 
+type preparedWalkableComponent struct {
+	Polygon Polygon
+	Bounds  AABB
+}
+
+type preparedWalkableGeometry struct {
+	Revision   uint64
+	Components []preparedWalkableComponent
+}
+
+func (scene *Scene) preparedWalkableComponents(floor Floor) []preparedWalkableComponent {
+	runtime := scene.ensureRuntime()
+	if prepared, ok := runtime.preparedWalkable[floor.ID]; ok && prepared.Revision == floor.GeometryRevision {
+		return prepared.Components
+	}
+	components := make([]preparedWalkableComponent, 0, len(floor.WalkableComponents))
+	for _, component := range floor.WalkableComponents {
+		components = append(components, preparedWalkableComponent{Polygon: component.Polygon, Bounds: polygonBounds(component.Polygon)})
+	}
+	runtime.preparedWalkable[floor.ID] = preparedWalkableGeometry{Revision: floor.GeometryRevision, Components: components}
+	return components
+}
+
+// CanOccupyTokenPoint applies the authoritative floor-area restrictions to one
+// token-centre position. Transitions and GM diagnostics reuse this predicate so
+// they cannot drift away from normal Player movement semantics.
+func CanOccupyTokenPoint(scene *Scene, floorID string, point ScenePoint) bool {
+	floor, ok := scene.Floors[floorID]
+	if !ok {
+		return false
+	}
+	if !walkableAllowsPoint(floor, point) {
+		return false
+	}
+	return floor.RenderBounds == nil || pointInPolygon(*floor.RenderBounds, point)
+}
+
 // CanMoveTokenSegment validates the token centre along the complete movement
-// segment. GM-only teleports and transitions remain separate command paths.
+// segment. GM-only teleports remain a separate command path; transition
+// endpoints are validated with CanOccupyTokenPoint when they are authored.
 func CanMoveTokenSegment(scene *Scene, floorID string, from, to ScenePoint) bool {
 	floor, ok := scene.Floors[floorID]
 	if !ok {
 		return false
 	}
-	if !walkableAllowsSegment(floor, from, to) {
+	if !walkableAllowsSegment(scene, floor, from, to) {
 		return false
 	}
 	if floor.RenderBounds == nil {
@@ -23,20 +61,40 @@ func CanMoveTokenSegment(scene *Scene, floorID string, from, to ScenePoint) bool
 	return segmentContainedInPolygon(from, to, *floor.RenderBounds)
 }
 
-func walkableAllowsSegment(floor Floor, from, to ScenePoint) bool {
+func walkableAllowsPoint(floor Floor, point ScenePoint) bool {
 	if floor.WalkableMode == walkableModeUnrestricted {
 		return true
 	}
 	if floor.WalkableMode != walkableModeRestricted || len(floor.WalkableComponents) == 0 {
 		return false
 	}
-	polygons := make([]Polygon, 0, len(floor.WalkableComponents))
+	for _, component := range floor.WalkableComponents {
+		if pointInPolygon(component.Polygon, point) {
+			return true
+		}
+	}
+	return false
+}
+
+func walkableAllowsSegment(scene *Scene, floor Floor, from, to ScenePoint) bool {
+	if floor.WalkableMode == walkableModeUnrestricted {
+		return true
+	}
+	if floor.WalkableMode != walkableModeRestricted || len(floor.WalkableComponents) == 0 {
+		return false
+	}
+	prepared := scene.preparedWalkableComponents(floor)
+	candidateCapacity := len(prepared)
+	if candidateCapacity > 8 {
+		candidateCapacity = 8
+	}
+	polygons := make([]Polygon, 0, candidateCapacity)
 	segmentBounds := AABB{
 		MinX: math.Min(from.X, to.X), MinY: math.Min(from.Y, to.Y),
 		MaxX: math.Max(from.X, to.X), MaxY: math.Max(from.Y, to.Y),
 	}
-	for _, component := range floor.WalkableComponents {
-		if polygonBounds(component.Polygon).intersects(segmentBounds) {
+	for _, component := range prepared {
+		if component.Bounds.intersects(segmentBounds) {
 			polygons = append(polygons, component.Polygon)
 		}
 	}

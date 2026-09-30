@@ -27,6 +27,8 @@ const maxReceiptsPerSession = 2048
 
 const persistenceFlushInterval = 5 * time.Second
 const storageDegradedMessage = "Сервер временно не может сохранять изменения на диск. Работа продолжается, но при аварийном завершении процесса несохранённые изменения могут быть потеряны"
+const movementBlockedErrorCode = "movementBlocked"
+const movementBlockedIssue = "Токен нельзя переместить за границы игровой области"
 
 type persistenceClass uint8
 
@@ -101,12 +103,11 @@ type ElementProperties struct {
 }
 
 type LayerProperties struct {
-	Name           *string         `json:"name,omitempty"`
-	Order          *int            `json:"order,omitempty"`
-	Visible        *bool           `json:"visible,omitempty"`
-	Locked         *bool           `json:"locked,omitempty"`
-	Opacity        *float64        `json:"opacity,omitempty"`
-	WalkableBounds *WalkableBounds `json:"walkableBounds,omitempty"`
+	Name    *string  `json:"name,omitempty"`
+	Order   *int     `json:"order,omitempty"`
+	Visible *bool    `json:"visible,omitempty"`
+	Locked  *bool    `json:"locked,omitempty"`
+	Opacity *float64 `json:"opacity,omitempty"`
 }
 
 type FloorProperties struct {
@@ -197,7 +198,11 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 		if current := ss.Scenes[sceneID]; current != nil {
 			revision = current.Revision
 		}
-		s.send(p, map[string]any{"type": "ack", "client": c.Client, "seq": c.Seq, "error": r.Error, "revision": revision, "sceneId": sceneID})
+		response := map[string]any{"type": "ack", "client": c.Client, "seq": c.Seq, "error": r.Error, "revision": revision, "sceneId": sceneID}
+		if r.Error == movementBlockedIssue {
+			response["errorCode"] = movementBlockedErrorCode
+		}
+		s.send(p, response)
 	}
 	if c.Seq > 0 {
 		if !reliable || c.Client == "" || len(c.Client) > 80 {
@@ -277,7 +282,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			break
 		}
 		if !gm && !CanMoveTokenSegment(scene, old.FloorID, ScenePoint{X: old.X, Y: old.Y}, ScenePoint{X: c.Token.X, Y: c.Token.Y}) {
-			issue = "Токен нельзя переместить за границы игровой области"
+			issue = movementBlockedIssue
 			break
 		}
 		t.X = c.Token.X
@@ -427,8 +432,15 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	if issue == "" && changed {
 		s.publish(ss, sceneID, kind, old, exists, t)
 	} else if issue != "" && c.Seq == 0 {
-		s.send(p, map[string]string{"type": "error", "message": issue})
-		s.send(p, s.snapshotSceneForPeer(ss, p))
+		if issue == movementBlockedIssue && exists {
+			// Preview rejections are expected while a pointer presses against a
+			// boundary. Return only the authoritative position: a full snapshot on
+			// every pointer move is both disruptive and unnecessarily expensive.
+			s.send(p, map[string]any{"type": "error", "operation": "move", "errorCode": movementBlockedErrorCode, "sceneId": sceneID, "id": old.ID, "floorId": old.FloorID, "x": old.X, "y": old.Y})
+		} else {
+			s.send(p, map[string]string{"type": "error", "message": issue})
+			s.send(p, s.snapshotSceneForPeer(ss, p))
+		}
 	}
 	if c.Seq > 0 {
 		ack(ss.Receipts[stream])
