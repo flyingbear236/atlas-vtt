@@ -23,11 +23,15 @@ import (
 )
 
 const (
-	uploadLimit    int64 = 256 << 20
-	maxMapPixels   int64 = 150_000_000
-	maxMapSide           = 32768
-	maxTokenPixels int64 = 25_000_000
-	maxTokenSide         = 8192
+	uploadLimit         int64 = 256 << 20
+	maxMapPixels        int64 = 150_000_000
+	maxMapSide                = 32768
+	maxTokenPixels      int64 = 25_000_000
+	maxTokenSide              = 8192
+	avatarUploadLimit   int64 = 10 << 20
+	maxAvatarPixels     int64 = 25_000_000
+	maxAvatarSide             = 8192
+	maxAvatarOutputSide       = 512
 	// A bitmap may consume at most one seventh of the smallest decoded-asset
 	// budget (56 MiB after the token-artwork reserve). Larger rasters use LOD.
 	bitmapSceneDecodedBytes int64 = 8 << 20
@@ -69,6 +73,7 @@ func representationID(sourceID, kind, version, mode string) string {
 }
 
 var errUploadSize = errors.New("Максимальный размер файла: 256 МиБ")
+var errAvatarUploadSize = errors.New("Максимальный размер avatar: 10 МиБ")
 var errVipsMissing = errors.New("Не найден libvips: выполните scripts/install-vips.ps1 или задайте ATLAS_VIPS")
 
 // Tests can observe the separate worker without adding public diagnostic routes.
@@ -111,9 +116,10 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	uploadPath := f.Name()
 	defer os.Remove(uploadPath)
 	sourceHash := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(f, sourceHash), io.LimitReader(contextReader{ctx, input}, uploadLimit+1))
+	limit := uploadLimitForKind(kind)
+	n, copyErr := io.Copy(io.MultiWriter(f, sourceHash), io.LimitReader(contextReader{ctx, input}, limit+1))
 	closeErr := f.Close()
-	if err = validateUploadSize(n); err != nil {
+	if err = validateUploadSizeForKind(kind, n); err != nil {
 		return Asset{}, err
 	}
 	if copyErr != nil {
@@ -143,6 +149,10 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	if format == "jpeg" {
 		mimeType = "image/jpeg"
 		filename = "image.jpg"
+	}
+	if kind == assetKindAvatar {
+		mimeType = "image/png"
+		filename = "avatar.png"
 	}
 	renderMode := renderModeBitmap
 	if kind == assetKindScene {
@@ -197,6 +207,11 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	if err = ctx.Err(); err != nil {
 		return a, err
 	}
+	if kind == assetKindAvatar {
+		if err = os.Remove(original); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return a, err
+		}
+	}
 	metadata, _ := json.Marshal(a)
 	if err = os.WriteFile(filepath.Join(stage, "meta.json"), metadata, 0600); err != nil {
 		return a, err
@@ -238,6 +253,9 @@ func prepareRepresentationFilesWithOptions(ctx context.Context, tool, stage, ori
 		}
 		return runVips(ctx, tool, stage, "thumbnail", original, filepath.Join(stage, "token.png")+"[compression=6,keep=none]", strconv.Itoa(w), "--height="+strconv.Itoa(h), "--size=down", "--no-rotate", "--fail-on=error")
 	}
+	if asset.Kind == assetKindAvatar {
+		return runVips(ctx, tool, stage, "thumbnail", original, filepath.Join(stage, "avatar.png")+"[compression=6,keep=none]", strconv.Itoa(maxAvatarOutputSide), "--height="+strconv.Itoa(maxAvatarOutputSide), "--size=down", "--no-rotate", "--fail-on=error")
+	}
 	return runVips(ctx, tool, stage, "thumbnail", original, filepath.Join(stage, "image.png")+"[compression=6,keep=none]", strconv.Itoa(asset.Width), "--height="+strconv.Itoa(asset.Height), "--size=down", "--no-rotate", "--fail-on=error")
 }
 
@@ -248,6 +266,23 @@ func validateUploadSize(size int64) error {
 	return nil
 }
 
+func uploadLimitForKind(kind string) int64 {
+	if kind == assetKindAvatar {
+		return avatarUploadLimit
+	}
+	return uploadLimit
+}
+
+func validateUploadSizeForKind(kind string, size int64) error {
+	if kind == assetKindAvatar {
+		if size > avatarUploadLimit {
+			return errAvatarUploadSize
+		}
+		return nil
+	}
+	return validateUploadSize(size)
+}
+
 func validateImageDimensions(kind string, width, height int) error {
 	if width < 1 || height < 1 {
 		return errors.New("Пустое изображение")
@@ -256,6 +291,10 @@ func validateImageDimensions(kind string, width, height int) error {
 	case assetKindToken:
 		if width > maxTokenSide || height > maxTokenSide || int64(width)*int64(height) > maxTokenPixels {
 			return errors.New("Лимит изображения токена: 25 млн пикселей, сторона до 8192 px")
+		}
+	case assetKindAvatar:
+		if width > maxAvatarSide || height > maxAvatarSide || int64(width)*int64(height) > maxAvatarPixels {
+			return errors.New("Лимит avatar: 25 млн пикселей, сторона до 8192 px")
 		}
 	case assetKindScene, assetKindLegacyMap:
 		if width > maxMapSide || height > maxMapSide || int64(width)*int64(height) > maxMapPixels {

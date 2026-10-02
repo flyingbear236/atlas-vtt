@@ -8,16 +8,16 @@ type characterPermissions struct {
 }
 
 type characterSnapshot struct {
-	Type            string                              `json:"type"`
-	CharacterWatch  uint64                              `json:"characterWatch"`
-	CharacterID     string                              `json:"characterId"`
-	Revision        uint64                              `json:"revision"`
-	Instance        CharacterInstance                   `json:"instance"`
-	Preset          *CharacterPresetDefinition          `json:"preset,omitempty"`
-	Effective       EffectiveCharacter                  `json:"effective"`
-	StatDefinitions map[string]StatDefinition           `json:"statDefinitions"`
-	Actions         map[string]ActionDefinition         `json:"actions"`
-	Permissions     characterPermissions                `json:"permissions"`
+	Type            string                      `json:"type"`
+	CharacterWatch  uint64                      `json:"characterWatch"`
+	CharacterID     string                      `json:"characterId"`
+	Revision        uint64                      `json:"revision"`
+	Instance        CharacterInstance           `json:"instance"`
+	Preset          *CharacterPresetDefinition  `json:"preset,omitempty"`
+	Effective       EffectiveCharacter          `json:"effective"`
+	StatDefinitions map[string]StatDefinition   `json:"statDefinitions"`
+	Actions         map[string]ActionDefinition `json:"actions"`
+	Permissions     characterPermissions        `json:"permissions"`
 }
 
 func characterSnapshotForMember(session *Session, member *Member, characterID string, watch uint64) (characterSnapshot, error) {
@@ -45,6 +45,11 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	for _, actionID := range effective.ActionIDs {
 		if definition, ok := registry.Actions[actionID]; ok {
 			actions[actionID] = cloneActionDefinition(definition)
+			for _, roll := range definition.Rolls {
+				if stat, exists := registry.Stats[roll.ModifierStat]; roll.ModifierStat != "" && exists {
+					stats[roll.ModifierStat] = cloneStatDefinition(stat)
+				}
+			}
 		}
 	}
 	return characterSnapshot{

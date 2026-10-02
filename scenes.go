@@ -676,8 +676,12 @@ func assetVisibleTo(ss *Session, member *Member, sceneID, assetID string) bool {
 }
 
 func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, activeTokenID string) bool {
-	if _, ok := ss.Assets[assetID]; !ok {
+	asset, ok := ss.Assets[assetID]
+	if !ok {
 		return false
+	}
+	if asset.Kind == assetKindAvatar {
+		return avatarAssetVisibleTo(ss, member, assetID)
 	}
 	scene := ss.Scenes[sceneID]
 	if !sceneVisible(scene, member) {

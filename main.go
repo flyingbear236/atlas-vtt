@@ -32,6 +32,7 @@ const (
 	assetKindScene     = "scene"
 	assetKindLegacyMap = "map"
 	assetKindToken     = "token"
+	assetKindAvatar    = "avatar"
 	renderModeBitmap   = "bitmap"
 	renderModeTiled    = "tiled"
 )
@@ -42,6 +43,8 @@ func canonicalAssetKind(kind string) (string, bool) {
 		return assetKindScene, true
 	case assetKindToken:
 		return assetKindToken, true
+	case assetKindAvatar:
+		return assetKindAvatar, true
 	default:
 		return "", false
 	}
@@ -118,16 +121,16 @@ type Session struct {
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
 }
 type peer struct {
-	conn          *websocket.Conn
-	member        *Member
-	session       string
-	out           chan any
-	sceneID       string
-	floorID       string
-	activeTokenID string
-	region        *SceneRegion
-	delivery      uint64
-	characterID   string
+	conn           *websocket.Conn
+	member         *Member
+	session        string
+	out            chan any
+	sceneID        string
+	floorID        string
+	activeTokenID  string
+	region         *SceneRegion
+	delivery       uint64
+	characterID    string
 	characterWatch uint64
 }
 type Server struct {
@@ -215,7 +218,7 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 				asset.RepresentationVersion = "legacy"
 				migrated = true
 			}
-			if asset.ID != assetID || asset.Width <= 0 || asset.Height <= 0 || (!isSceneRasterKind(asset.Kind) && asset.Kind != assetKindToken) || (asset.RenderMode != renderModeBitmap && asset.RenderMode != renderModeTiled) || (asset.RenderMode == renderModeTiled && (!isSceneRasterKind(asset.Kind) || asset.Levels < 1)) || !validTilePresence(asset) {
+			if asset.ID != assetID || asset.Width <= 0 || asset.Height <= 0 || (!isSceneRasterKind(asset.Kind) && asset.Kind != assetKindToken && asset.Kind != assetKindAvatar) || (asset.RenderMode != renderModeBitmap && asset.RenderMode != renderModeTiled) || (asset.RenderMode == renderModeTiled && (!isSceneRasterKind(asset.Kind) || asset.Levels < 1)) || !validTilePresence(asset) {
 				return nil, fmt.Errorf("invalid asset in session %s", sessionID)
 			}
 			if asset.RetentionPolicy == "" {
@@ -653,6 +656,10 @@ func validNumber(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && math.Abs(v) <= 1000000
 }
 func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("kind") == assetKindAvatar {
+		s.uploadAvatar(w, r)
+		return
+	}
 	s.mu.Lock()
 	ss, m := s.auth(r)
 	sceneID := r.URL.Query().Get("scene")

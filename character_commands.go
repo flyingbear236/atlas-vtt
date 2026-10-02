@@ -34,27 +34,27 @@ type characterTokenMutation struct {
 }
 
 type characterMutation struct {
-	session             *Session
-	oldCampaign         CampaignRegistry
-	oldRegistryRevision uint64
+	session              *Session
+	oldCampaign          CampaignRegistry
+	oldRegistryRevision  uint64
 	oldCharacterRevision uint64
-	campaignTouched     bool
-	instances           map[string]characterInstanceBackup
-	token               *characterTokenMutation
-	oldAssets           map[string]Asset
-	changedCharacters   map[string]bool
-	registryChanged     bool
-	resultCharacterID   string
+	campaignTouched      bool
+	instances            map[string]characterInstanceBackup
+	token                *characterTokenMutation
+	oldAssets            map[string]Asset
+	changedCharacters    map[string]bool
+	registryChanged      bool
+	resultCharacterID    string
 }
 
 func newCharacterMutation(session *Session) *characterMutation {
 	return &characterMutation{
-		session:             session,
-		oldCampaign:         session.CampaignDefinitions,
-		oldRegistryRevision: session.RegistryRevision,
+		session:              session,
+		oldCampaign:          session.CampaignDefinitions,
+		oldRegistryRevision:  session.RegistryRevision,
 		oldCharacterRevision: session.CharacterRevision,
-		instances:           map[string]characterInstanceBackup{},
-		changedCharacters:   map[string]bool{},
+		instances:            map[string]characterInstanceBackup{},
+		changedCharacters:    map[string]bool{},
 	}
 }
 
@@ -303,7 +303,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if !memberCanAccessCharacter(session, member, command.CharacterID) {
 			return errors.New("character access denied")
 		}
-		if *command.AvatarAssetID != "" && session.Assets[*command.AvatarAssetID].ID == "" {
+		if *command.AvatarAssetID != "" && (session.Assets[*command.AvatarAssetID].ID == "" || session.Assets[*command.AvatarAssetID].Kind != assetKindAvatar) {
 			return errors.New("avatar asset not found")
 		}
 		instance := session.CharacterInstances[command.CharacterID]

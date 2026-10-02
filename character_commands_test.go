@@ -66,7 +66,7 @@ func newCharacterCommandFixture(t *testing.T) characterCommandFixture {
 		Stats: map[string]StatValue{"hp": IntegerStatValue(11), "dexterity": IntegerStatValue(15)}, ActionIDs: []string{"bite"},
 	}
 	session.RegistryRevision++
-	session.Assets["avatar"] = Asset{ID: "avatar", RetentionPolicy: assetReclaimable}
+	session.Assets["avatar"] = Asset{ID: "avatar", Kind: assetKindAvatar, RetentionPolicy: assetReclaimable}
 
 	aliceID, bobID := session.Keys[alice["key"]], session.Keys[bob["key"]]
 	tokens := map[string]string{}
@@ -136,15 +136,18 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 		}
 		seen[characterID] = true
 	}
-	// Bob owns only wolf #1 and receives its creation notification; drain it so
-	// the next event proves live propagation of Alice's stat patch.
-	read(t, bobWS, "characterChanged")
+	// Stage 08 exposes character changes only through an explicit, single-slot
+	// watch instead of broadcasting campaign character IDs.
+	if err := bobWS.WriteJSON(Command{Type: "characterWatch", CharacterID: wolves[0], CharacterWatch: 1}); err != nil {
+		t.Fatal(err)
+	}
+	read(t, bobWS, "characterSnapshot")
 
 	writeCharacterCommand(t, aliceWS, Command{Type: "characterStatSet", Client: "alice-stats", Seq: 1, CharacterID: wolves[0], StatID: "hp", StatValue: statValuePointer(IntegerStatValue(4))})
 	if issue := ackError(t, read(t, aliceWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}
-	changedForBob := read(t, bobWS, "characterChanged")
+	changedForBob := read(t, bobWS, "characterSnapshot")
 	var changedCharacterID string
 	if err := json.Unmarshal(changedForBob["characterId"], &changedCharacterID); err != nil || changedCharacterID != wolves[0] {
 		t.Fatalf("co-owner did not receive character change: %v %q", err, changedCharacterID)

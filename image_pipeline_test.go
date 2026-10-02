@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"os/exec"
@@ -50,7 +51,7 @@ func TestStreamingPipelineAlphaAndTokenSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := map[string]Asset{}
-	for _, kind := range []string{"map", "token"} {
+	for _, kind := range []string{"map", "token", "avatar"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
 			a, err := prepare(root, data, kind)
@@ -73,6 +74,9 @@ func TestStreamingPipelineAlphaAndTokenSize(t *testing.T) {
 			}
 			if kind == "token" {
 				name = "token.png"
+			}
+			if kind == "avatar" {
+				name = "avatar.png"
 			}
 			f, err := os.Open(filepath.Join(root, "assets", a.ID, name))
 			if err != nil {
@@ -97,6 +101,51 @@ func TestStreamingPipelineAlphaAndTokenSize(t *testing.T) {
 	}
 	if prepared["map"].SourceID != prepared["token"].SourceID || prepared["map"].ID == prepared["token"].ID {
 		t.Fatal("source and prepared representation identities were not separated")
+	}
+}
+
+func TestAvatarPipelinePNGJPEGLargeAndNoOriginal(t *testing.T) {
+	inputs := map[string][]byte{"png": pipelinePNG(t, 48, 32)}
+	large := image.NewGray(image.Rect(0, 0, 5000, 4000))
+	var jpegBody bytes.Buffer
+	if err := jpeg.Encode(&jpegBody, large, &jpeg.Options{Quality: 70}); err != nil {
+		t.Fatal(err)
+	}
+	inputs["large-jpeg"] = jpegBody.Bytes()
+	for name, input := range inputs {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			asset, err := prepare(root, input, assetKindAvatar)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if asset.Kind != assetKindAvatar || asset.RenderMode != renderModeBitmap || asset.MimeType != "image/png" {
+				t.Fatalf("unexpected avatar metadata: %#v", asset)
+			}
+			path := filepath.Join(root, "assets", asset.ID)
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 2 {
+				t.Fatalf("avatar representation retained extra files: %v", entries)
+			}
+			file, err := os.Open(filepath.Join(path, "avatar.png"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := png.Decode(file)
+			file.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Bounds().Dx() > maxAvatarOutputSide || decoded.Bounds().Dy() > maxAvatarOutputSide {
+				t.Fatalf("avatar output exceeds %d: %v", maxAvatarOutputSide, decoded.Bounds())
+			}
+			if _, err := os.Stat(filepath.Join(path, "original")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("avatar original was retained: %v", err)
+			}
+		})
 	}
 }
 
@@ -215,6 +264,41 @@ func TestUploadSizeLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAvatarInputLimitsBeforeWorker(t *testing.T) {
+	if avatarUploadLimit != 10<<20 || maxAvatarPixels != 25_000_000 || maxAvatarSide != 8192 || maxAvatarOutputSide != 512 {
+		t.Fatal("avatar limits diverged from A5")
+	}
+	if validateUploadSizeForKind(assetKindAvatar, avatarUploadLimit) != nil || !errors.Is(validateUploadSizeForKind(assetKindAvatar, avatarUploadLimit+1), errAvatarUploadSize) {
+		t.Fatal("avatar byte limit is not inclusive")
+	}
+	for _, size := range [][2]uint32{{8193, 1}, {5001, 5000}} {
+		root := t.TempDir()
+		data := pipelinePNG(t, 2, 2)
+		binary.BigEndian.PutUint32(data[16:20], size[0])
+		binary.BigEndian.PutUint32(data[20:24], size[1])
+		binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+		if _, err := prepare(root, data, assetKindAvatar); err == nil {
+			t.Fatalf("avatar dimensions %dx%d accepted", size[0], size[1])
+		}
+		assertNoPartialAssets(t, root)
+	}
+}
+
+func TestAvatarPipelineCancellationCleanup(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	observed := false
+	imageWorkerObserver = func(cmd *exec.Cmd) func() { cancel(); return func() { observed = cmd.ProcessState != nil } }
+	defer func() { imageWorkerObserver = nil }()
+	if _, err := prepareReader(ctx, root, bytes.NewReader(pipelinePNG(t, 64, 64)), assetKindAvatar); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel avatar: %v", err)
+	}
+	if !observed {
+		t.Fatal("avatar worker was not reaped")
+	}
+	assertNoPartialAssets(t, root)
 }
 
 func TestMapDimensionLimitsIncludeLargeBattlemapCornerCase(t *testing.T) {

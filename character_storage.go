@@ -249,14 +249,14 @@ func validateSessionCharacterState(session *Session) error {
 			return fmt.Errorf("character instance %q: %w", id, err)
 		}
 		if instance.AvatarAssetID != nil && *instance.AvatarAssetID != "" {
-			if _, exists := session.Assets[*instance.AvatarAssetID]; !exists {
+			if asset, exists := session.Assets[*instance.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
 				return fmt.Errorf("character instance %q references unknown avatar asset %q", id, *instance.AvatarAssetID)
 			}
 		}
 	}
 	for id, preset := range session.CampaignDefinitions.Presets {
 		if preset.AvatarAssetID != "" {
-			if _, exists := session.Assets[preset.AvatarAssetID]; !exists {
+			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
 				return fmt.Errorf("campaign preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
 			}
 		}
