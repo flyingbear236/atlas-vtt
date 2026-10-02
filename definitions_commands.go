@@ -80,7 +80,7 @@ func validateDefinitionState(session *Session, ruleset RulesetSnapshot, campaign
 	}
 	for id, preset := range campaign.Presets {
 		if preset.AvatarAssetID != "" {
-			if _, exists := session.Assets[preset.AvatarAssetID]; !exists {
+			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
 				return fmt.Errorf("campaign preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
 			}
 		}

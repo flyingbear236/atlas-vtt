@@ -186,6 +186,24 @@ Atlas должен собираться и запускаться после к�
 - `refreshAssetOrphans` теперь учитывает campaign preset и instance avatar references; definition/character mutations обновляют orphan state только после итоговой модели и откатывают его при ошибке записи.
 - `character_commands_test.go` покрывает сценарии A–F, двух владельцев/Charlie, независимые wolves, preset inheritance, unknown stat, avatar/actions/reset, cross-scene GC, relink, persistent без ссылок, scene delete и disk failure. `gofmt`, связанные и полные тесты, `go build ./...`, `go vet ./...`, `git diff --check` — успешно. Следующий этап: 08.
 
+### Этап 08 — завершён
+
+- Добавлена независимая от scene/viewport delivery подписка на одного персонажа на peer: `characterWatch` заменяет предыдущую подписку, `characterUnwatch` освобождает её, а snapshot содержит только выбранный instance, его effective state, preset и реально используемые stat/action definitions.
+- Доступ проверяется через campaign-wide character references при открытии watch и заново перед каждой mutation/рассылкой. Revoke ownership, hidden token, unpublish/delete scene и GC instance закрывают watch без раскрытия sheet постороннему.
+- Character revision сохраняется вместе с данными и откатывается при save failure. Изменения instance, preset/registry и доступа публикуются только после успешного save владельцам во всех сценах и вне viewport; spatial delivery при этом не используется и не нарушается.
+- Клиентское состояние вынесено в `web/characters.js`: request generation и revision отбрасывают поздние ответы, disconnect очищает snapshot/pending state, reconnect повторяет ровно одну актуальную подписку, revocation очищает локальные данные. Отрисовка sheet намеренно не добавлялась.
+- Серверные тесты покрывают двух владельцев через разные сцены, stat/preset refresh, ограниченный набор metadata, запрет Charlie, revoke и повторную проверку mutation, reconnect, отсутствие накопления подписок, unpublish и удаление transient character. Browser module scenario покрывает поздние ответы, revision ordering, reconnect и очистку при revoke.
+- `gofmt`, `git diff --check`, полный `go test ./...`, `go build ./...`, `go vet ./...` и browser-проверка — успешны. Следующий этап: 09.
+
+### Этап 09 — завершён
+
+- В существующий image pipeline добавлен immutable `avatar` representation: streaming input ограничен 10 МиБ, вход — PNG/JPEG до 25 млн пикселей и стороны 8192, libvips создаёт только PNG до 512×512; avatar-only original перед публикацией удаляется.
+- `/api/upload?kind=avatar` атомарно назначает результат указанному `characterId` либо GM-only `presetId`; ruleset preset получает campaign overlay. Права на instance/preset повторно проверяются после worker, поэтому delete/revoke во время обработки не регистрирует asset и не меняет target.
+- Assignment, asset registry, registry/character revisions и orphan state сохраняются одной транзакцией; validation/save failure откатывает их и удаляет незарегистрированную representation. Общий content-addressed avatar переиспользуется между персонажами.
+- Startup и definition/character validation знают новый asset kind и запрещают avatar references на scene/token assets. `refreshAssetOrphans` сохраняет instance, persistent и preset/inherited references; token artwork при avatar mutation не меняется.
+- Read authorization для avatar отделён от scene assets: владелец читает effective avatar доступного character без зависимости от viewport/current scene, GM также читает preset и persistent roster avatars без открытой сцены; чужие sheets/assets не раскрываются.
+- `image_pipeline_test.go` и `avatar_upload_test.go` покрывают PNG/JPEG, большой вход, byte/pixel/side limits, cancellation, отсутствие original/temp, revoke во время worker, preset overlay, persistent без token, shared avatar, restart validation и rollback save failure. `gofmt`, полный `go test ./...`, `go build ./...`, `go vet ./...` и `git diff --check` — успешны. Следующий этап: 10.
+
 ## D. Промпты
 
 ### 01. Доменная модель и чистая логика
