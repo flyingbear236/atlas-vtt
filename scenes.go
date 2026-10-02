@@ -453,7 +453,7 @@ func sceneEntryPoint(scene *Scene, member *Member) *ScenePoint {
 		return nil
 	}
 	for _, token := range scene.Tokens {
-		if token.Owner == member.ID && (memberIsGM(member) || !token.Hidden) {
+		if tokenOwnedBy(token, member.ID) && (memberIsGM(member) || !token.Hidden) {
 			return &ScenePoint{X: token.X, Y: token.Y}
 		}
 	}
@@ -466,7 +466,7 @@ func ownedTokenLocators(scene *Scene, member *Member) map[string]Token {
 		return owned
 	}
 	for tokenID, token := range scene.Tokens {
-		if token.Owner != member.ID || token.Hidden {
+		if !tokenOwnedBy(token, member.ID) || token.Hidden {
 			continue
 		}
 		// Navigation needs identity, floor and geometry, but an unopened Floor

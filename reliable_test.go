@@ -25,7 +25,7 @@ func TestMoveRenameReconnectRestart(t *testing.T) {
 	snap := read(t, pc, "snapshot")
 	var who Member
 	json.Unmarshal(snap["you"], &who)
-	gc.WriteJSON(Command{Type: "create", Client: "gm", Seq: 1, Token: Token{Name: "Old", X: 10, Y: 20, Size: 80, Color: "#ffffff", Owner: who.ID}})
+	gc.WriteJSON(Command{Type: "create", Client: "gm", Seq: 1, Token: Token{Name: "Old", X: 10, Y: 20, Size: 80, Color: "#ffffff", OwnerIDs: []string{who.ID}}})
 	token := tokenFrom(t, read(t, gc, "upsert"))
 	read(t, gc, "ack")
 	read(t, pc, "upsert")
@@ -291,7 +291,7 @@ func TestUnavailableSceneAcknowledgesDurableCommandAndUnblocksStream(t *testing.
 			json.Unmarshal(playerSnapshot["you"], &who)
 			for _, sceneID := range []string{firstID, secondID} {
 				subscribeSceneLoaded(t, gc, sceneID)
-				gc.WriteJSON(Command{Type: "create", Token: Token{Name: sceneID, Size: 80, Owner: who.ID}})
+				gc.WriteJSON(Command{Type: "create", Token: Token{Name: sceneID, Size: 80, OwnerIDs: []string{who.ID}}})
 				read(t, gc, "upsert")
 			}
 

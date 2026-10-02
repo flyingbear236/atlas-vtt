@@ -150,8 +150,8 @@ func TestSessionPermissionsSyncAndPersistence(t *testing.T) {
 	if tokens[tok.ID].X != 10 {
 		t.Fatal("unauthorized movement applied")
 	}
-	owner := you.ID
-	gc.WriteJSON(Command{Type: "properties", Token: Token{ID: tok.ID}, Properties: Properties{Owner: &owner}})
+	owners := []string{you.ID}
+	gc.WriteJSON(Command{Type: "properties", Token: Token{ID: tok.ID}, Properties: Properties{OwnerIDs: &owners}})
 	read(t, gc, "upsert")
 	read(t, pc, "upsert")
 	pc.WriteJSON(map[string]any{"type": "move", "token": Token{ID: tok.ID, X: 300, Y: 400}})
@@ -299,7 +299,7 @@ func TestCurrentProtocolUsesCompactMoveAndPresence(t *testing.T) {
 	if e := json.Unmarshal(snap["you"], &who); e != nil {
 		t.Fatal(e)
 	}
-	gc.WriteJSON(Command{Type: "create", Token: Token{Name: "Hero", X: 10, Y: 20, Size: 80, Color: "#abcdef", Owner: who.ID}})
+	gc.WriteJSON(Command{Type: "create", Token: Token{Name: "Hero", X: 10, Y: 20, Size: 80, Color: "#abcdef", OwnerIDs: []string{who.ID}}})
 	tok := tokenFrom(t, read(t, gc, "upsert"))
 	read(t, pc, "upsert")
 

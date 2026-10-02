@@ -70,18 +70,21 @@ type Asset struct {
 	OrphanSince           *int64           `json:"orphanSince,omitempty"`
 }
 type Token struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	FloorID  string  `json:"floorId"`
-	LayerID  string  `json:"layerId"`
-	X        float64 `json:"x"`
-	Y        float64 `json:"y"`
-	Size     float64 `json:"size"`
-	Rotation float64 `json:"rotation"`
-	Color    string  `json:"color"`
-	Owner    string  `json:"owner"`
-	Hidden   bool    `json:"hidden"`
-	Asset    string  `json:"asset"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	FloorID             string   `json:"floorId"`
+	LayerID             string   `json:"layerId"`
+	X                   float64  `json:"x"`
+	Y                   float64  `json:"y"`
+	Size                float64  `json:"size"`
+	Rotation            float64  `json:"rotation"`
+	Color               string   `json:"color"`
+	OwnerIDs            []string `json:"ownerIds"`
+	Hidden              bool     `json:"hidden"`
+	Asset               string   `json:"asset"`
+	CharacterInstanceID string   `json:"characterInstanceId,omitempty"`
+
+	legacyOwnerField bool
 }
 type Member struct {
 	ID     string `json:"id"`
@@ -96,15 +99,20 @@ func memberIsGM(member *Member) bool {
 }
 
 type Session struct {
-	ID               string             `json:"id"`
-	Name             string             `json:"name"`
-	Invite           string             `json:"invite"`
-	Members          map[string]*Member `json:"members"`
-	Assets           map[string]Asset   `json:"assets"`
-	Keys             map[string]string  `json:"keys"`
-	Receipts         map[string]Receipt `json:"receipts,omitempty"`
-	CampaignRevision uint64             `json:"campaignRevision"`
-	Scenes           map[string]*Scene  `json:"scenes"`
+	ID                  string                       `json:"id"`
+	Name                string                       `json:"name"`
+	Invite              string                       `json:"invite"`
+	Members             map[string]*Member           `json:"members"`
+	Assets              map[string]Asset             `json:"assets"`
+	Keys                map[string]string            `json:"keys"`
+	Receipts            map[string]Receipt           `json:"receipts,omitempty"`
+	CampaignRevision    uint64                       `json:"campaignRevision"`
+	Scenes              map[string]*Scene            `json:"scenes"`
+	Ruleset             RulesetSnapshot              `json:"rulesetSnapshot"`
+	CampaignDefinitions CampaignRegistry             `json:"campaignDefinitions"`
+	CharacterInstances  map[string]CharacterInstance `json:"characterInstances"`
+
+	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
 }
 type peer struct {
 	conn          *websocket.Conn
@@ -132,6 +140,7 @@ type Server struct {
 	rotationJobs    map[string]*rotationJob
 	stopping        bool
 	storageDegraded bool
+	defaultRuleset  RulesetSnapshot
 }
 
 func id() string {
@@ -141,14 +150,27 @@ func id() string {
 	}
 	return hex.EncodeToString(b)
 }
-func newServer(root string) (*Server, error) {
+func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error) {
+	if len(rulesetDefaults) > 1 {
+		return nil, errors.New("only one default ruleset may be configured")
+	}
+	defaultRuleset := RulesetSnapshot{Registry: emptyRulesetRegistry()}
+	if len(rulesetDefaults) == 1 {
+		defaultRuleset = cloneRulesetSnapshot(rulesetDefaults[0])
+	}
+	if err := ValidateRulesetSnapshot(defaultRuleset); err != nil {
+		return nil, fmt.Errorf("invalid default ruleset: %w", err)
+	}
 	jobContext, jobCancel := context.WithCancel(context.Background())
-	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, imageJobs: make(chan struct{}, 1), jobContext: jobContext, jobCancel: jobCancel, rotationJobs: map[string]*rotationJob{}}
+	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, imageJobs: make(chan struct{}, 1), jobContext: jobContext, jobCancel: jobCancel, rotationJobs: map[string]*rotationJob{}, defaultRuleset: defaultRuleset}
 	if err := os.MkdirAll(filepath.Join(root, "assets"), 0755); err != nil {
 		return nil, fmt.Errorf("storage directory: %w", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "sessions.json"))
 	if err == nil {
+		if err = rejectDuplicateJSONKeys(b); err != nil {
+			return nil, fmt.Errorf("invalid saved sessions: %w", err)
+		}
 		if err = json.Unmarshal(b, &s.sessions); err != nil {
 			return nil, fmt.Errorf("invalid saved sessions: %w", err)
 		}
@@ -167,6 +189,9 @@ func newServer(root string) (*Server, error) {
 		}
 		if ss.Receipts == nil {
 			ss.Receipts = map[string]Receipt{}
+		}
+		if initializeSessionCharacterCollections(ss) {
+			migrated = true
 		}
 		for assetID, asset := range ss.Assets {
 			if asset.RenderMode == "" {
@@ -220,6 +245,9 @@ func newServer(root string) (*Server, error) {
 			if removeLegacyWalkableLayers(scene) {
 				migrated = true
 			}
+			if migrateTokenOwnership(scene) {
+				migrated = true
+			}
 			if !validateSceneStructure(scene, ss.Assets, ss.Members) {
 				return nil, fmt.Errorf("invalid scene %s in session %s", sceneID, sessionID)
 			}
@@ -251,6 +279,10 @@ func newServer(root string) (*Server, error) {
 				return nil, fmt.Errorf("invalid member key in session %s", sessionID)
 			}
 		}
+		if err := validateSessionCharacterState(ss); err != nil {
+			return nil, fmt.Errorf("invalid character state in session %s: %w", sessionID, err)
+		}
+		rebuildCharacterReferences(ss)
 		if refreshAssetOrphans(ss, time.Now()) {
 			migrated = true
 		}
@@ -271,6 +303,11 @@ func (s *Server) save() error {
 func (s *Server) saveLocked() error {
 	if !s.dirty {
 		return nil
+	}
+	for sessionID, session := range s.sessions {
+		if err := validateSessionCharacterState(session); err != nil {
+			return fmt.Errorf("refuse to save invalid character state in session %s: %w", sessionID, err)
+		}
 	}
 	b, e := json.Marshal(s.sessions)
 	if e != nil {
@@ -373,7 +410,12 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	sceneID := id()
 	scene := newScene(sceneID, "Сцена 1")
 	scene.Published = true
-	ss := &Session{ID: id(), Name: req.Name, Invite: id(), Members: map[string]*Member{m.ID: m}, Keys: map[string]string{m.Secret: m.ID}, Assets: map[string]Asset{}, CampaignRevision: 1, Scenes: map[string]*Scene{sceneID: scene}}
+	ss := &Session{
+		ID: id(), Name: req.Name, Invite: id(), Members: map[string]*Member{m.ID: m}, Keys: map[string]string{m.Secret: m.ID},
+		Assets: map[string]Asset{}, CampaignRevision: 1, Scenes: map[string]*Scene{sceneID: scene},
+		Ruleset: cloneRulesetSnapshot(s.defaultRuleset), CampaignDefinitions: emptyCampaignRegistry(),
+		CharacterInstances: map[string]CharacterInstance{}, characterReferences: map[string]map[CharacterTokenReference]struct{}{},
+	}
 	if ss.Name == "" {
 		ss.Name = "Новая история"
 	}
@@ -735,8 +777,17 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	root := flag.String("data", "data", "persistent storage directory")
+	rulesetPath := flag.String("ruleset", "", "default ruleset TOML for new sessions")
 	flag.Parse()
-	s, err := newServer(*root)
+	defaultRuleset := RulesetSnapshot{Registry: emptyRulesetRegistry()}
+	var err error
+	if *rulesetPath != "" {
+		defaultRuleset, err = loadRulesetSnapshotFile(*rulesetPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	s, err := newServer(*root, defaultRuleset)
 	if err != nil {
 		log.Fatal(err)
 	}

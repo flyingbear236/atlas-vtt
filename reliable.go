@@ -83,13 +83,13 @@ func pruneReceipts(ss *Session, keep string) bool {
 }
 
 type Properties struct {
-	Name    *string  `json:"name,omitempty"`
-	Size    *float64 `json:"size,omitempty"`
-	Color   *string  `json:"color,omitempty"`
-	Owner   *string  `json:"owner,omitempty"`
-	Hidden  *bool    `json:"hidden,omitempty"`
-	Asset   *string  `json:"asset,omitempty"`
-	FloorID *string  `json:"floorId,omitempty"`
+	Name     *string   `json:"name,omitempty"`
+	Size     *float64  `json:"size,omitempty"`
+	Color    *string   `json:"color,omitempty"`
+	OwnerIDs *[]string `json:"ownerIds,omitempty"`
+	Hidden   *bool     `json:"hidden,omitempty"`
+	Asset    *string   `json:"asset,omitempty"`
+	FloorID  *string   `json:"floorId,omitempty"`
 }
 
 type ElementProperties struct {
@@ -255,7 +255,8 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 		return
 	}
 	old, exists := scene.Tokens[c.Token.ID]
-	t := old
+	old = cloneToken(old)
+	t := cloneToken(old)
 	gm := memberIsGM(p.member)
 	kind := "upsert"
 	var issue string
@@ -264,7 +265,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 		if c.Type == "move" {
 			kind = "move"
 		}
-		if !exists || (!gm && (old.Owner != p.member.ID || old.Hidden)) {
+		if !exists || !memberCanControlToken(p.member, old) {
 			issue = "Нет права перемещать этот токен"
 			break
 		}
@@ -306,6 +307,14 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			}
 			t = c.Token
 			t.ID = id()
+			if t.legacyOwnerField {
+				t.OwnerIDs = []string{}
+			}
+			t.OwnerIDs, _ = normalizeOwnerIDs(t.OwnerIDs)
+			t.legacyOwnerField = false
+			// Character assignment has its own validated commands in a later
+			// stage; generic token creation must not smuggle in a relationship.
+			t.CharacterInstanceID = ""
 			if t.FloorID == "" {
 				t.FloorID = firstFloorID(scene)
 			}
@@ -325,8 +334,8 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			if v.Color != nil {
 				t.Color = *v.Color
 			}
-			if v.Owner != nil {
-				t.Owner = *v.Owner
+			if v.OwnerIDs != nil {
+				t.OwnerIDs, _ = normalizeOwnerIDs(*v.OwnerIDs)
 			}
 			if v.Hidden != nil {
 				t.Hidden = *v.Hidden
@@ -344,7 +353,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			issue = "Некорректные свойства токена"
 			break
 		}
-		if t.Owner != "" && ss.Members[t.Owner] == nil {
+		if !validateTokenOwners(t, ss.Members) {
 			issue = "Игрок не найден"
 			break
 		}
@@ -372,7 +381,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 		if kind == "delete" {
 			delete(scene.Tokens, t.ID)
 			changed = true
-		} else if !exists || t != old {
+		} else if !exists || !tokensEqual(t, old) {
 			scene.Tokens[t.ID] = t
 			changed = true
 		}
@@ -380,6 +389,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			scene.Revision++
 			s.dirty = true
 			scene.applyTokenRuntimeChange(old, exists, t, kind != "delete")
+			updateCharacterReference(ss, sceneID, old, exists, t, kind != "delete")
 			if c.Type == "create" || c.Type == "delete" || old.Asset != t.Asset {
 				assetsBeforeReferences = make(map[string]Asset, len(ss.Assets))
 				for assetID, asset := range ss.Assets {
@@ -412,6 +422,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			}
 			scene.Revision = revision
 			scene.rebuildRuntime()
+			rebuildCharacterReferences(ss)
 			s.dirty = dirty
 			if receipt.Seq == 0 {
 				delete(ss.Receipts, stream)
@@ -549,12 +560,20 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 			break
 		}
 		delete(ss.Scenes, c.SceneID)
+		for _, token := range scene.Tokens {
+			updateCharacterReference(ss, scene.ID, token, true, Token{}, false)
+		}
 		oldAssets = make(map[string]Asset, len(ss.Assets))
 		for assetID, asset := range ss.Assets {
 			oldAssets[assetID] = asset
 		}
 		refreshAssetOrphans(ss, time.Now())
-		restore = func() { ss.Scenes[c.SceneID] = scene }
+		restore = func() {
+			ss.Scenes[c.SceneID] = scene
+			for _, token := range scene.Tokens {
+				updateCharacterReference(ss, scene.ID, Token{}, false, token, true)
+			}
+		}
 		changedSceneID = c.SceneID
 	}
 	if issue == "" {
