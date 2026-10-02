@@ -24,11 +24,16 @@ export class Outbox {
   hasQueuedBehindInflight(){return this.inflight&&this.data.queue.length>1;}
 }
 
+export function sameValue(a,b){
+  if(Array.isArray(a)&&Array.isArray(b))return a.length===b.length&&a.every((value,index)=>Object.is(value,b[index]));
+  return Object.is(a,b);
+}
+
 export class Drafts {
   constructor(){this.items=new Map();}
   set(id,field,value){this.items.set(id,{...this.items.get(id),[field]:value});}
   get(id){return this.items.get(id)||{};}
-  confirm(id,patch){const draft={...this.get(id)};for(const [k,v]of Object.entries(patch))if(draft[k]===v)delete draft[k];if(Object.keys(draft).length)this.items.set(id,draft);else this.items.delete(id);}
+  confirm(id,patch){const draft={...this.get(id)};for(const [k,v]of Object.entries(patch))if(sameValue(draft[k],v))delete draft[k];if(Object.keys(draft).length)this.items.set(id,draft);else this.items.delete(id);}
 }
 
 // Movement limits are normal drag feedback, not a failed interaction. Keep the

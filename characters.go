@@ -236,20 +236,20 @@ type DefinitionRegistries struct {
 }
 
 type EffectiveRegistry struct {
-	Stats   map[string]StatDefinition
-	Actions map[string]ActionDefinition
-	Presets map[string]CharacterPresetDefinition
+	Stats   map[string]StatDefinition            `json:"stats"`
+	Actions map[string]ActionDefinition          `json:"actions"`
+	Presets map[string]CharacterPresetDefinition `json:"presets"`
 }
 
 type EffectiveCharacter struct {
-	ID            string
-	PresetID      string
-	Name          string
-	AvatarAssetID string
-	HasAvatar     bool
-	Stats         map[string]StatValue
-	ActionIDs     []string
-	Persistent    bool
+	ID            string               `json:"id"`
+	PresetID      string               `json:"presetId,omitempty"`
+	Name          string               `json:"name"`
+	AvatarAssetID string               `json:"avatarAssetId,omitempty"`
+	HasAvatar     bool                 `json:"hasAvatar"`
+	Stats         map[string]StatValue `json:"stats"`
+	ActionIDs     []string             `json:"actionIds"`
+	Persistent    bool                 `json:"persistent"`
 }
 
 func NewCharacterInstance(instanceID string, preset *CharacterPresetDefinition) CharacterInstance {

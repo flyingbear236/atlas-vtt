@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,10 +18,11 @@ import (
 // One outstanding reliable command per browser stream. Business receipts are
 // persisted before ACK; coalesced transform receipts persist on the next flush.
 type Receipt struct {
-	Seq     uint64 `json:"seq"`
-	Error   string `json:"error,omitempty"`
-	Digest  string `json:"digest"`
-	Updated int64  `json:"updated,omitempty"`
+	Seq         uint64 `json:"seq"`
+	Error       string `json:"error,omitempty"`
+	Digest      string `json:"digest"`
+	Updated     int64  `json:"updated,omitempty"`
+	CharacterID string `json:"characterId,omitempty"`
 }
 
 const maxReceiptsPerSession = 2048
@@ -118,39 +120,56 @@ type FloorProperties struct {
 	ShowWalkableToPlayers      *bool    `json:"showWalkableToPlayers,omitempty"`
 }
 type Command struct {
-	Type                     string            `json:"type"`
-	Token                    Token             `json:"token"`
-	Properties               Properties        `json:"properties"`
-	Client                   string            `json:"client"`
-	Seq                      uint64            `json:"seq"`
-	After                    uint64            `json:"after"`
-	SceneID                  string            `json:"sceneId,omitempty"`
-	SceneName                string            `json:"sceneName,omitempty"`
-	Published                *bool             `json:"published,omitempty"`
-	Region                   *SceneRegion      `json:"region,omitempty"`
-	ViewFloorID              string            `json:"viewFloorId,omitempty"`
-	ActiveTokenID            string            `json:"activeTokenId,omitempty"`
-	Focus                    bool              `json:"focus,omitempty"`
-	Bounds                   *SceneBounds      `json:"bounds,omitempty"`
-	Floor                    Floor             `json:"floor,omitempty"`
-	FloorProperties          FloorProperties   `json:"floorProperties,omitempty"`
-	Layer                    Layer             `json:"layer,omitempty"`
-	LayerProperties          LayerProperties   `json:"layerProperties,omitempty"`
-	Element                  SceneElement      `json:"element,omitempty"`
-	ElementProperties        ElementProperties `json:"elementProperties,omitempty"`
-	Transition               Transition        `json:"transition,omitempty"`
-	AssetID                  string            `json:"assetId,omitempty"`
-	RetentionPolicy          string            `json:"retentionPolicy,omitempty"`
-	MemberID                 string            `json:"memberId,omitempty"`
-	GM                       *bool             `json:"gm,omitempty"`
-	FloorID                  string            `json:"floorId,omitempty"`
-	ComponentID              string            `json:"componentId,omitempty"`
-	WalkableBounds           *WalkableBounds   `json:"walkableBounds,omitempty"`
-	RenderBounds             *Polygon          `json:"renderBounds,omitempty"`
-	WalkableMode             string            `json:"walkableMode,omitempty"`
-	DeltaX                   float64           `json:"deltaX,omitempty"`
-	DeltaY                   float64           `json:"deltaY,omitempty"`
-	ExpectedGeometryRevision *uint64           `json:"expectedGeometryRevision,omitempty"`
+	Type                     string                     `json:"type"`
+	Token                    Token                      `json:"token"`
+	Properties               Properties                 `json:"properties"`
+	Client                   string                     `json:"client"`
+	Seq                      uint64                     `json:"seq"`
+	After                    uint64                     `json:"after"`
+	SceneID                  string                     `json:"sceneId,omitempty"`
+	SceneName                string                     `json:"sceneName,omitempty"`
+	Published                *bool                      `json:"published,omitempty"`
+	Region                   *SceneRegion               `json:"region,omitempty"`
+	ViewFloorID              string                     `json:"viewFloorId,omitempty"`
+	ActiveTokenID            string                     `json:"activeTokenId,omitempty"`
+	Focus                    bool                       `json:"focus,omitempty"`
+	Bounds                   *SceneBounds               `json:"bounds,omitempty"`
+	Floor                    Floor                      `json:"floor,omitempty"`
+	FloorProperties          FloorProperties            `json:"floorProperties,omitempty"`
+	Layer                    Layer                      `json:"layer,omitempty"`
+	LayerProperties          LayerProperties            `json:"layerProperties,omitempty"`
+	Element                  SceneElement               `json:"element,omitempty"`
+	ElementProperties        ElementProperties          `json:"elementProperties,omitempty"`
+	Transition               Transition                 `json:"transition,omitempty"`
+	AssetID                  string                     `json:"assetId,omitempty"`
+	RetentionPolicy          string                     `json:"retentionPolicy,omitempty"`
+	MemberID                 string                     `json:"memberId,omitempty"`
+	GM                       *bool                      `json:"gm,omitempty"`
+	FloorID                  string                     `json:"floorId,omitempty"`
+	ComponentID              string                     `json:"componentId,omitempty"`
+	WalkableBounds           *WalkableBounds            `json:"walkableBounds,omitempty"`
+	RenderBounds             *Polygon                   `json:"renderBounds,omitempty"`
+	WalkableMode             string                     `json:"walkableMode,omitempty"`
+	DeltaX                   float64                    `json:"deltaX,omitempty"`
+	DeltaY                   float64                    `json:"deltaY,omitempty"`
+	ExpectedGeometryRevision *uint64                    `json:"expectedGeometryRevision,omitempty"`
+	DefinitionKind           string                     `json:"definitionKind,omitempty"`
+	DefinitionID             string                     `json:"definitionId,omitempty"`
+	DuplicateDefinitionID    string                     `json:"duplicateDefinitionId,omitempty"`
+	StatDefinition           *StatDefinition            `json:"statDefinition,omitempty"`
+	ActionDefinition         *ActionDefinition          `json:"actionDefinition,omitempty"`
+	PresetDefinition         *CharacterPresetDefinition `json:"presetDefinition,omitempty"`
+	ExpectedRegistryRevision *uint64                    `json:"expectedRegistryRevision,omitempty"`
+	CharacterID              string                     `json:"characterId,omitempty"`
+	CharacterWatch           uint64                     `json:"characterWatch,omitempty"`
+	CharacterName            string                     `json:"characterName,omitempty"`
+	PresetID                 string                     `json:"presetId,omitempty"`
+	TokenID                  string                     `json:"tokenId,omitempty"`
+	StatID                   string                     `json:"statId,omitempty"`
+	StatValue                *StatValue                 `json:"statValue,omitempty"`
+	ActionID                 string                     `json:"actionId,omitempty"`
+	Persistent               *bool                      `json:"persistent,omitempty"`
+	AvatarAssetID            *string                    `json:"avatarAssetId,omitempty"`
 	wireBytes                int
 }
 
@@ -166,6 +185,14 @@ func (command *Command) UnmarshalJSON(data []byte) error {
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {
+	if characterCommandType(c.Type) {
+		s.characterCommand(ss, p, c)
+		return
+	}
+	if definitionCommandType(c.Type) {
+		s.definitionCommand(ss, p, c)
+		return
+	}
 	if c.Type == "sceneCreate" || c.Type == "sceneUpdate" || c.Type == "sceneDelete" || c.Type == "memberUpdate" {
 		s.sceneCommand(ss, p, c)
 		return
@@ -374,9 +401,12 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	default:
 		issue = "Неизвестное событие"
 	}
-	revision, dirty := scene.Revision, s.dirty
+	revision, characterRevision, dirty := scene.Revision, ss.CharacterRevision, s.dirty
 	changed := false
+	characterWatchChanged := false
 	var assetsBeforeReferences map[string]Asset
+	var collectedCharacter CharacterInstance
+	collectedCharacterExists := false
 	if issue == "" {
 		if kind == "delete" {
 			delete(scene.Tokens, t.ID)
@@ -390,6 +420,13 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			s.dirty = true
 			scene.applyTokenRuntimeChange(old, exists, t, kind != "delete")
 			updateCharacterReference(ss, sceneID, old, exists, t, kind != "delete")
+			characterWatchChanged = old.CharacterInstanceID != "" && (kind == "delete" || old.Hidden != t.Hidden || !slices.Equal(old.OwnerIDs, t.OwnerIDs))
+			if characterWatchChanged {
+				ss.CharacterRevision++
+			}
+			if kind == "delete" && old.CharacterInstanceID != "" {
+				collectedCharacter, collectedCharacterExists = gcCharacterIfUnreferenced(ss, old.CharacterInstanceID)
+			}
 			if c.Type == "create" || c.Type == "delete" || old.Asset != t.Asset {
 				assetsBeforeReferences = make(map[string]Asset, len(ss.Assets))
 				for assetID, asset := range ss.Assets {
@@ -409,6 +446,9 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	if immediateSave {
 		if err := s.saveLocked(); err != nil {
 			if issue == "" && changed {
+				if collectedCharacterExists {
+					ss.CharacterInstances[collectedCharacter.ID] = collectedCharacter
+				}
 				if c.Type == "create" {
 					delete(scene.Tokens, t.ID)
 				} else if exists {
@@ -421,6 +461,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 				ss.Assets = assetsBeforeReferences
 			}
 			scene.Revision = revision
+			ss.CharacterRevision = characterRevision
 			scene.rebuildRuntime()
 			rebuildCharacterReferences(ss)
 			s.dirty = dirty
@@ -443,6 +484,9 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	}
 	if issue == "" && changed {
 		s.publish(ss, sceneID, kind, old, exists, t)
+		if characterWatchChanged {
+			s.refreshCharacterWatches(ss, nil, true)
+		}
 	} else if issue != "" && c.Seq == 0 {
 		if issue == movementBlockedIssue && exists {
 			// Preview rejections are expected while a pointer presses against a
@@ -487,9 +531,11 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 		}
 	}
 
-	oldRevision, oldDirty := ss.CampaignRevision, s.dirty
+	oldRevision, oldCharacterRevision, oldDirty := ss.CampaignRevision, ss.CharacterRevision, s.dirty
 	var oldAssets map[string]Asset
+	var collectedCharacters map[string]CharacterInstance
 	var issue, changedSceneID, changedMemberID string
+	characterAccessChanged := false
 	if !memberIsGM(p.member) {
 		issue = "Действие доступно ведущему"
 	}
@@ -522,6 +568,7 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 			member.Role = "player"
 		}
 		changedMemberID = member.ID
+		characterAccessChanged = oldRole != member.Role || oldGM != member.GM
 		restore = func() { member.Role, member.GM = oldRole, oldGM }
 	case c.Type == "sceneCreate":
 		name := strings.TrimSpace(c.SceneName)
@@ -551,6 +598,7 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 		}
 		if c.Published != nil {
 			scene.Published = *c.Published
+			characterAccessChanged = oldPublished != scene.Published
 		}
 		changedSceneID = scene.ID
 	case c.Type == "sceneDelete":
@@ -559,9 +607,21 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 			issue = "Нельзя удалить эту сцену"
 			break
 		}
+		gcCandidates := map[string]struct{}{}
+		for _, token := range scene.Tokens {
+			if token.CharacterInstanceID != "" {
+				gcCandidates[token.CharacterInstanceID] = struct{}{}
+			}
+		}
 		delete(ss.Scenes, c.SceneID)
 		for _, token := range scene.Tokens {
 			updateCharacterReference(ss, scene.ID, token, true, Token{}, false)
+		}
+		collectedCharacters = map[string]CharacterInstance{}
+		for characterID := range gcCandidates {
+			if instance, collected := gcCharacterIfUnreferenced(ss, characterID); collected {
+				collectedCharacters[characterID] = instance
+			}
 		}
 		oldAssets = make(map[string]Asset, len(ss.Assets))
 		for assetID, asset := range ss.Assets {
@@ -570,14 +630,19 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 		refreshAssetOrphans(ss, time.Now())
 		restore = func() {
 			ss.Scenes[c.SceneID] = scene
-			for _, token := range scene.Tokens {
-				updateCharacterReference(ss, scene.ID, Token{}, false, token, true)
+			for characterID, instance := range collectedCharacters {
+				ss.CharacterInstances[characterID] = instance
 			}
+			rebuildCharacterReferences(ss)
 		}
 		changedSceneID = c.SceneID
+		characterAccessChanged = true
 	}
 	if issue == "" {
 		ss.CampaignRevision++
+		if characterAccessChanged {
+			ss.CharacterRevision++
+		}
 		s.dirty = true
 	}
 	if c.Seq > 0 {
@@ -591,7 +656,7 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 		if oldAssets != nil {
 			ss.Assets = oldAssets
 		}
-		ss.CampaignRevision, s.dirty = oldRevision, oldDirty
+		ss.CampaignRevision, ss.CharacterRevision, s.dirty = oldRevision, oldCharacterRevision, oldDirty
 		if previousReceipt.Seq == 0 {
 			delete(ss.Receipts, stream)
 		} else {
@@ -613,6 +678,9 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 			}
 		}
 		s.publishCampaign(ss)
+		if characterAccessChanged {
+			s.refreshCharacterWatches(ss, nil, true)
+		}
 		if changedMemberID != "" {
 			for peer := range s.peers {
 				if peer.session != ss.ID || peer.sceneID == "" {
@@ -656,6 +724,27 @@ func tokenLoadedForPeer(p *peer, scene *Scene, token Token) bool {
 	return p.region != nil && tokenIntersectsRegion(token, *p.region)
 }
 
+func (s *Server) publishTokenLocator(p *peer, sceneID, kind string, old Token, existed bool, token Token, revision uint64) {
+	oldListed := existed && tokenHasLocator(old, p.member)
+	newListed := kind != "delete" && tokenHasLocator(token, p.member)
+	if !oldListed && !newListed {
+		return
+	}
+	message := map[string]any{"sceneId": sceneID, "revision": revision, "id": token.ID}
+	switch {
+	case !newListed:
+		message["type"] = "tokenLocatorDelete"
+	case kind == "move" && oldListed:
+		message["type"] = "tokenLocatorMove"
+		message["x"] = token.X
+		message["y"] = token.Y
+	default:
+		message["type"] = "tokenLocatorUpsert"
+		message["locator"] = tokenLocator(token)
+	}
+	s.send(p, message)
+}
+
 func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed bool, t Token) {
 	for p := range s.peers {
 		if p.session != ss.ID || p.sceneID != sceneID {
@@ -665,6 +754,7 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 		if scene == nil {
 			continue
 		}
+		s.publishTokenLocator(p, sceneID, kind, old, existed, t, scene.Revision)
 
 		previousFloor, previousActive := p.floorID, p.activeTokenID
 		p.floorID = currentFloorForPeer(p, scene)

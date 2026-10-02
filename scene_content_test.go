@@ -693,13 +693,17 @@ func TestPlayerActiveTokenControlsFloorAndNavigation(t *testing.T) {
 	if currentFloor != upperFloor || activeToken != upper.ID {
 		t.Fatalf("saved active token was not accepted: floor=%s token=%s", currentFloor, activeToken)
 	}
-	var owned map[string]Token
+	var owned map[string]TokenLocator
 	json.Unmarshal(initial["ownedTokens"], &owned)
 	if len(owned) != 2 || owned[lower.ID].ID == "" || owned[upper.ID].ID == "" || owned[foreign.ID].ID != "" {
 		t.Fatalf("wrong navigation token set: %+v", owned)
 	}
-	if owned[lower.ID].Asset != "" || owned[upper.ID].Asset != "" {
-		t.Fatal("navigation list disclosed assets from an unopened floor")
+	encodedOwned, err := json.Marshal(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedOwned), "asset") || strings.Contains(string(encodedOwned), "characterInstanceId") {
+		t.Fatal("navigation list disclosed artwork or character data")
 	}
 
 	region := SceneRegion{Left: 0, Top: 0, Right: 800, Bottom: 600}

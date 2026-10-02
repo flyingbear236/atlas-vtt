@@ -173,6 +173,18 @@ func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
 // It initializes absent fields but never creates character instances.
 func initializeSessionCharacterCollections(session *Session) bool {
 	changed := false
+	if session.RegistryRevision == 0 {
+		session.RegistryRevision = 1
+		changed = true
+	}
+	if session.CharacterRevision == 0 {
+		session.CharacterRevision = 1
+		changed = true
+	}
+	if session.DefinitionOperations == nil {
+		session.DefinitionOperations = map[string]DefinitionOperationReceipt{}
+		changed = true
+	}
 	if session.Ruleset.Registry.Stats == nil {
 		session.Ruleset.Registry.Stats = map[string]StatDefinition{}
 		changed = true
@@ -209,6 +221,15 @@ func validateSessionCharacterState(session *Session) error {
 		return errors.New("session is nil")
 	}
 	if err := ValidateRulesetSnapshot(session.Ruleset); err != nil {
+		return err
+	}
+	if session.RegistryRevision == 0 {
+		return errors.New("registry revision must be positive")
+	}
+	if session.CharacterRevision == 0 {
+		return errors.New("character revision must be positive")
+	}
+	if err := validateDefinitionOperationReceipts(session.DefinitionOperations); err != nil {
 		return err
 	}
 	registry, err := MergeDefinitionRegistries(DefinitionRegistries{

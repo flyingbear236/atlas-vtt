@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestCampaignScenesVisibilityAndIndependentRevision(t *testing.T) {
@@ -534,6 +538,132 @@ func TestRegionRealtimeTracksObjectsEnteringAndLeavingLoadedArea(t *testing.T) {
 	if delivery != 3 || tokenFrom(t, reentered).ID != tok.ID {
 		t.Fatalf("re-entering region was not full upsert: %#v", reentered)
 	}
+}
+
+func TestOwnedTokenLocatorsUpdateOutsideSpatialRegion(t *testing.T) {
+	s := testServer(t, t.TempDir())
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+	gm := post(t, ts.URL+"/api/sessions", map[string]string{"name": "Locator updates"})
+	firstPlayer := post(t, ts.URL+"/api/join", map[string]string{"session": gm["session"], "invite": gm["invite"], "name": "Alice"})
+	secondPlayer := post(t, ts.URL+"/api/join", map[string]string{"session": gm["session"], "invite": gm["invite"], "name": "Bob"})
+
+	s.mu.Lock()
+	ss := s.sessions[gm["session"]]
+	scene := firstScene(ss)
+	floorID := firstFloorID(scene)
+	firstMemberID := ss.Keys[firstPlayer["key"]]
+	secondMemberID := ss.Keys[secondPlayer["key"]]
+	asset := Asset{ID: "far-artwork", Width: 64, Height: 64, Levels: 1, Kind: "token"}
+	token := Token{ID: "far-owned", Name: "Far companion", FloorID: floorID, LayerID: layerIDByKind(scene, floorID, layerKindTokens), X: 50000, Y: 50000, Size: 80, Color: "#c2d89b", OwnerIDs: []string{}, Asset: asset.ID}
+	ss.Assets[asset.ID] = asset
+	scene.Tokens[token.ID] = token
+	scene.Revision++
+	scene.rebuildRuntime()
+	s.mu.Unlock()
+
+	openPlayer := func(credentials map[string]string) *websocket.Conn {
+		ws := dialRaw(t, ts.URL, credentials)
+		read(t, ws, "campaignSnapshot")
+		if err := ws.WriteJSON(Command{Type: "subscribe", SceneID: scene.ID}); err != nil {
+			t.Fatal(err)
+		}
+		initial := read(t, ws, "snapshot")
+		var locators map[string]TokenLocator
+		if err := json.Unmarshal(initial["ownedTokens"], &locators); err != nil || len(locators) != 0 {
+			t.Fatalf("unexpected initial locators: %v %#v", err, locators)
+		}
+		region := SceneRegion{Left: -500, Top: -500, Right: 500, Bottom: 500}
+		if err := ws.WriteJSON(Command{Type: "view", SceneID: scene.ID, Region: &region}); err != nil {
+			t.Fatal(err)
+		}
+		spatial := read(t, ws, "snapshot")
+		if string(spatial["tokens"]) != "{}" || string(spatial["assets"]) != "{}" {
+			t.Fatalf("far token artwork entered the initial region: tokens=%s assets=%s", spatial["tokens"], spatial["assets"])
+		}
+		return ws
+	}
+	firstWS := openPlayer(firstPlayer)
+	secondWS := openPlayer(secondPlayer)
+	gmWS := dialRaw(t, ts.URL, gm)
+	read(t, gmWS, "campaignSnapshot")
+	gmWS.WriteJSON(Command{Type: "subscribe", SceneID: scene.ID})
+	read(t, gmWS, "snapshot")
+
+	owners := []string{firstMemberID, secondMemberID}
+	gmWS.WriteJSON(Command{Type: "properties", Client: "locators", Seq: 1, SceneID: scene.ID, Token: Token{ID: token.ID}, Properties: Properties{OwnerIDs: &owners}})
+	firstUpsert := read(t, firstWS, "tokenLocatorUpsert")
+	secondUpsert := read(t, secondWS, "tokenLocatorUpsert")
+	for _, event := range []map[string]json.RawMessage{firstUpsert, secondUpsert} {
+		if bytes.Contains(event["locator"], []byte("asset")) || bytes.Contains(event["locator"], []byte("characterInstanceId")) {
+			t.Fatalf("locator disclosed artwork or character sheet data: %s", event["locator"])
+		}
+		var locator TokenLocator
+		if err := json.Unmarshal(event["locator"], &locator); err != nil || !slices.Equal(locator.OwnerIDs, owners) {
+			t.Fatalf("two-owner locator mismatch: %v %#v", err, locator)
+		}
+	}
+	read(t, gmWS, "ack")
+
+	gmWS.WriteJSON(Command{Type: "move", SceneID: scene.ID, Token: Token{ID: token.ID, X: 51000, Y: 50500}})
+	for _, ws := range []*websocket.Conn{firstWS, secondWS} {
+		moved := read(t, ws, "tokenLocatorMove")
+		var x, y float64
+		json.Unmarshal(moved["x"], &x)
+		json.Unmarshal(moved["y"], &y)
+		if x != 51000 || y != 50500 {
+			t.Fatalf("locator movement was stale: %v, %v", x, y)
+		}
+	}
+	firstWS.WriteJSON(Command{Type: "sync"})
+	synced := read(t, firstWS, "snapshot")
+	var delivery uint64
+	json.Unmarshal(synced["delivery"], &delivery)
+	if delivery != 0 || string(synced["assets"]) != "{}" {
+		t.Fatalf("locator movement entered spatial delivery/artwork: delivery=%d assets=%s", delivery, synced["assets"])
+	}
+
+	focusRegion := SceneRegion{Left: -500, Top: -500, Right: 500, Bottom: 500}
+	firstWS.WriteJSON(Command{Type: "activeToken", SceneID: scene.ID, ActiveTokenID: token.ID, Focus: true, Region: &focusRegion})
+	focused := read(t, firstWS, "snapshot")
+	var activeTokenID string
+	var focusedTokens map[string]Token
+	json.Unmarshal(focused["activeTokenId"], &activeTokenID)
+	json.Unmarshal(focused["tokens"], &focusedTokens)
+	if activeTokenID != token.ID || focusedTokens[token.ID].ID == "" {
+		t.Fatalf("locator did not use active-token focus path: active=%q tokens=%s", activeTokenID, focused["tokens"])
+	}
+
+	remainingOwners := []string{secondMemberID}
+	gmWS.WriteJSON(Command{Type: "properties", Client: "locators", Seq: 2, SceneID: scene.ID, Token: Token{ID: token.ID}, Properties: Properties{OwnerIDs: &remainingOwners}})
+	deleted := read(t, firstWS, "tokenLocatorDelete")
+	if string(deleted["id"]) != `"`+token.ID+`"` {
+		t.Fatalf("revoked locator ID mismatch: %s", deleted["id"])
+	}
+	updated := read(t, secondWS, "tokenLocatorUpsert")
+	var remaining TokenLocator
+	json.Unmarshal(updated["locator"], &remaining)
+	if !slices.Equal(remaining.OwnerIDs, remainingOwners) {
+		t.Fatalf("remaining owner did not receive locator update: %#v", remaining)
+	}
+	revokedSnapshot := read(t, firstWS, "snapshot")
+	json.Unmarshal(revokedSnapshot["activeTokenId"], &activeTokenID)
+	if activeTokenID != "" {
+		t.Fatalf("revoked active token remained selected: %q", activeTokenID)
+	}
+	read(t, gmWS, "ack")
+
+	hidden := true
+	gmWS.WriteJSON(Command{Type: "properties", Client: "locators", Seq: 3, SceneID: scene.ID, Token: Token{ID: token.ID}, Properties: Properties{Hidden: &hidden}})
+	read(t, secondWS, "tokenLocatorDelete")
+	read(t, gmWS, "ack")
+	hidden = false
+	gmWS.WriteJSON(Command{Type: "properties", Client: "locators", Seq: 4, SceneID: scene.ID, Token: Token{ID: token.ID}, Properties: Properties{Hidden: &hidden}})
+	read(t, secondWS, "tokenLocatorUpsert")
+	read(t, gmWS, "ack")
+	gmWS.WriteJSON(Command{Type: "delete", Client: "locators", Seq: 5, SceneID: scene.ID, Token: Token{ID: token.ID}})
+	read(t, secondWS, "tokenLocatorDelete")
+	read(t, gmWS, "ack")
 }
 
 func TestSceneEntryPointUsesVisibleOwnedToken(t *testing.T) {
