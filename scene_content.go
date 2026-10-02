@@ -605,8 +605,8 @@ func transitionForMove(scene *Scene, token Token, next ScenePoint) (TransitionEn
 	return destination, matchedID != ""
 }
 
-// refreshAssetOrphans is the single campaign-wide reference tracker. Future
-// Actor/handout references belong here rather than in independent GC passes.
+// refreshAssetOrphans is the single campaign-wide reference tracker. Character
+// avatars are included here; future handout references belong here as well.
 func refreshAssetOrphans(session *Session, now time.Time) bool {
 	references := make(map[string]int, len(session.Assets))
 	for _, scene := range session.Scenes {
@@ -617,6 +617,16 @@ func refreshAssetOrphans(session *Session, now time.Time) bool {
 			if token.Asset != "" {
 				references[token.Asset]++
 			}
+		}
+	}
+	for _, preset := range session.CampaignDefinitions.Presets {
+		if preset.AvatarAssetID != "" {
+			references[preset.AvatarAssetID]++
+		}
+	}
+	for _, instance := range session.CharacterInstances {
+		if instance.AvatarAssetID != nil && *instance.AvatarAssetID != "" {
+			references[*instance.AvatarAssetID]++
 		}
 	}
 	// A live derived representation keeps its source chain alive. Provenance is

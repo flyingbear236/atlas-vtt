@@ -13,14 +13,14 @@ import (
 const DefinitionsSchemaVersion = 1
 
 type DefinitionImportChanges struct {
-	Added   []string
-	Updated []string
+	Added   []string `json:"added"`
+	Updated []string `json:"updated"`
 }
 
 type CampaignImportDiff struct {
-	Stats   DefinitionImportChanges
-	Actions DefinitionImportChanges
-	Presets DefinitionImportChanges
+	Stats   DefinitionImportChanges `json:"stats"`
+	Actions DefinitionImportChanges `json:"actions"`
+	Presets DefinitionImportChanges `json:"presets"`
 }
 
 type CampaignImportPreview struct {

@@ -443,6 +443,7 @@ func (s *Server) snapshotCampaign(ss *Session, member *Member) any {
 		"id":               ss.ID,
 		"name":             ss.Name,
 		"campaignRevision": ss.CampaignRevision,
+		"registryRevision": ss.RegistryRevision,
 		"scenes":           s.sceneList(ss, member),
 		"you":              *member,
 	}
@@ -460,19 +461,51 @@ func sceneEntryPoint(scene *Scene, member *Member) *ScenePoint {
 	return nil
 }
 
-func ownedTokenLocators(scene *Scene, member *Member) map[string]Token {
-	owned := map[string]Token{}
+// TokenLocator is enough to render and focus the token list, but deliberately
+// carries neither artwork references nor character data. Those remain scoped
+// to spatial snapshots and explicit character subscriptions.
+type TokenLocator struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	FloorID  string   `json:"floorId"`
+	X        float64  `json:"x"`
+	Y        float64  `json:"y"`
+	Size     float64  `json:"size"`
+	Rotation float64  `json:"rotation"`
+	Color    string   `json:"color"`
+	OwnerIDs []string `json:"ownerIds"`
+	Hidden   bool     `json:"hidden"`
+}
+
+func tokenLocator(token Token) TokenLocator {
+	return TokenLocator{
+		ID:       token.ID,
+		Name:     token.Name,
+		FloorID:  token.FloorID,
+		X:        token.X,
+		Y:        token.Y,
+		Size:     token.Size,
+		Rotation: token.Rotation,
+		Color:    token.Color,
+		OwnerIDs: append([]string(nil), token.OwnerIDs...),
+		Hidden:   token.Hidden,
+	}
+}
+
+func tokenHasLocator(token Token, member *Member) bool {
+	return member != nil && !memberIsGM(member) && tokenOwnedBy(token, member.ID) && !token.Hidden
+}
+
+func ownedTokenLocators(scene *Scene, member *Member) map[string]TokenLocator {
+	owned := map[string]TokenLocator{}
 	if scene == nil || member == nil || memberIsGM(member) {
 		return owned
 	}
 	for tokenID, token := range scene.Tokens {
-		if !tokenOwnedBy(token, member.ID) || token.Hidden {
+		if !tokenHasLocator(token, member) {
 			continue
 		}
-		// Navigation needs identity, floor and geometry, but an unopened Floor
-		// must not disclose or start loading its image asset.
-		token.Asset = ""
-		owned[tokenID] = token
+		owned[tokenID] = tokenLocator(token)
 	}
 	return owned
 }

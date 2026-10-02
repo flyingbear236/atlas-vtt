@@ -99,18 +99,21 @@ func memberIsGM(member *Member) bool {
 }
 
 type Session struct {
-	ID                  string                       `json:"id"`
-	Name                string                       `json:"name"`
-	Invite              string                       `json:"invite"`
-	Members             map[string]*Member           `json:"members"`
-	Assets              map[string]Asset             `json:"assets"`
-	Keys                map[string]string            `json:"keys"`
-	Receipts            map[string]Receipt           `json:"receipts,omitempty"`
-	CampaignRevision    uint64                       `json:"campaignRevision"`
-	Scenes              map[string]*Scene            `json:"scenes"`
-	Ruleset             RulesetSnapshot              `json:"rulesetSnapshot"`
-	CampaignDefinitions CampaignRegistry             `json:"campaignDefinitions"`
-	CharacterInstances  map[string]CharacterInstance `json:"characterInstances"`
+	ID                   string                                `json:"id"`
+	Name                 string                                `json:"name"`
+	Invite               string                                `json:"invite"`
+	Members              map[string]*Member                    `json:"members"`
+	Assets               map[string]Asset                      `json:"assets"`
+	Keys                 map[string]string                     `json:"keys"`
+	Receipts             map[string]Receipt                    `json:"receipts,omitempty"`
+	CampaignRevision     uint64                                `json:"campaignRevision"`
+	RegistryRevision     uint64                                `json:"registryRevision"`
+	CharacterRevision    uint64                                `json:"characterRevision"`
+	DefinitionOperations map[string]DefinitionOperationReceipt `json:"definitionOperations,omitempty"`
+	Scenes               map[string]*Scene                     `json:"scenes"`
+	Ruleset              RulesetSnapshot                       `json:"rulesetSnapshot"`
+	CampaignDefinitions  CampaignRegistry                      `json:"campaignDefinitions"`
+	CharacterInstances   map[string]CharacterInstance          `json:"characterInstances"`
 
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
 }
@@ -124,6 +127,8 @@ type peer struct {
 	activeTokenID string
 	region        *SceneRegion
 	delivery      uint64
+	characterID   string
+	characterWatch uint64
 }
 type Server struct {
 	mu              sync.Mutex
@@ -305,6 +310,7 @@ func (s *Server) saveLocked() error {
 		return nil
 	}
 	for sessionID, session := range s.sessions {
+		initializeSessionCharacterCollections(session)
 		if err := validateSessionCharacterState(session); err != nil {
 			return fmt.Errorf("refuse to save invalid character state in session %s: %w", sessionID, err)
 		}
@@ -373,6 +379,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions", s.create)
 	mux.HandleFunc("POST /api/join", s.join)
 	mux.HandleFunc("POST /api/upload", s.uploadAsset)
+	mux.HandleFunc("GET /api/definitions", s.readDefinitions)
+	mux.HandleFunc("POST /api/definitions/ruleset/preview", s.previewRulesetInstall)
+	mux.HandleFunc("POST /api/definitions/ruleset/apply", s.applyRulesetInstall)
+	mux.HandleFunc("POST /api/definitions/campaign/preview", s.previewCampaignImport)
+	mux.HandleFunc("POST /api/definitions/campaign/apply", s.applyCampaignImport)
 	mux.HandleFunc("GET /api/asset/", s.asset)
 	mux.HandleFunc("GET /ws", s.ws)
 	sub, _ := fs.Sub(web, "web")
@@ -412,7 +423,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	scene.Published = true
 	ss := &Session{
 		ID: id(), Name: req.Name, Invite: id(), Members: map[string]*Member{m.ID: m}, Keys: map[string]string{m.Secret: m.ID},
-		Assets: map[string]Asset{}, CampaignRevision: 1, Scenes: map[string]*Scene{sceneID: scene},
+		Assets: map[string]Asset{}, CampaignRevision: 1, RegistryRevision: 1, CharacterRevision: 1, DefinitionOperations: map[string]DefinitionOperationReceipt{}, Scenes: map[string]*Scene{sceneID: scene},
 		Ruleset: cloneRulesetSnapshot(s.defaultRuleset), CampaignDefinitions: emptyCampaignRegistry(),
 		CharacterInstances: map[string]CharacterInstance{}, characterReferences: map[string]map[CharacterTokenReference]struct{}{},
 	}
@@ -627,6 +638,10 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				p.delivery = 0
 				s.send(p, s.snapshotSceneForPeer(ss, p))
 			}
+		} else if msg.Type == "characterWatch" {
+			s.watchCharacter(ss, p, msg.CharacterID, msg.CharacterWatch)
+		} else if msg.Type == "characterUnwatch" {
+			s.unwatchCharacter(p, msg.CharacterID, msg.CharacterWatch)
 		} else {
 			s.command(ss, p, msg)
 		}

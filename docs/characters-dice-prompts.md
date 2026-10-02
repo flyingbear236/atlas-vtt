@@ -156,6 +156,36 @@ Atlas должен собираться и запускаться после к�
 - Серверные тесты покрывают Alice/Bob/Charlie/GM, пустой список, stable dedup, неизвестного member, legacy restart/precedence, rollback, character access и общий token на другом этаже.
 - UI и browser multi-select не менялись и остаются этапу 05. `gofmt`, полный `go test ./...`, `go build ./...`, `go vet ./...` — успешно. Следующий этап: 05.
 
+### Этап 05 — завершён
+
+- Клиентские проверки владения переведены на membership в `ownerIds`; существующий control стал multi-select участников без переноса из правой панели.
+- `Drafts`, сравнение исходных значений и queued-команд сравнивают массивы по содержимому, поэтому ACK старой ownership-команды не очищает более новый ввод.
+- `ownedTokens` использует отдельный `TokenLocator` без artwork/character данных; snapshot по-прежнему содержит полный доступный каталог независимо от viewport.
+- Добавлены отдельные `tokenLocatorUpsert/Move/Delete` вне spatial `delivery`: выдача, revoke, hidden, удаление и движение вне региона обновляют список узкими событиями, а spatial eviction его не удаляет.
+- Revoke отменяет drag/selection клиента; выбор удалённого locator переиспользует существующий `activeToken`/focus запрос и только затем загружает региональные token/assets.
+- Интеграционный тест покрывает двух владельцев, далёкий token, движение без artwork/delivery, focus, revoke, hidden/unhidden и delete; Chrome-сценарий покрывает multi-select и array draft ACK.
+- `gofmt`, релевантные тесты, реальный `TestBrowser` в headless Chrome, полный `go test ./...`, `go build ./...`, `go vet ./...` — успешно. Следующий этап: 06.
+
+### Этап 06 — завершён
+
+- Добавлены `definitions_commands.go` и серверные GM-only reliable WS-команды create/update/duplicate/delete campaign definitions; они используют отдельную registry revision и работают без открытой сцены.
+- Preset-команда атомарно создаёт неизвестные stat definitions; overlay/reset, независимое duplicate, опасная смена типа и удаление используемых definitions проверяются на полном effective registry с ограниченным списком references.
+- Добавлены GM read API и раздельные bounded HTTP preview/apply для ruleset install и campaign import: предел 1 МиБ, digest, expected revision, повторная validation и отсутствие server-side preview state.
+- Ruleset устанавливается только в пустой immutable snapshot с metadata; campaign import остаётся upsert-операцией и не меняет ruleset. WS-предел 16 КиБ и scene snapshots не расширялись полным registry.
+- Persisted operation receipts обеспечивают идемпотентный replay key+digest после restart; key с другим digest/kind, replace ruleset и stale apply отклоняются. Изменения и notifications публикуются только после успешного атомарного save.
+- `Session` хранит `registryRevision` и bounded `definitionOperations`; загрузка и save нормализуют legacy state, а rollback восстанавливает definitions, revision, receipts/results и dirty-state.
+- Тесты покрывают player denial, campaign без scenes, lost ACK, restart, >16 КиБ HTTP, install/import replay, overlay reset, references, stale preview, 1 МиБ limit и отказ записи. `gofmt`, целевые и полный `go test ./...` — успешно. Следующий этап: 07.
+
+### Этап 07 — завершён
+
+- Добавлен `character_commands.go`: reliable-команды явного создания instance из preset/пустого, link/relink/unlink, persistent, stat set/reset, avatar set/reset и action add/remove; server-generated character ID сохраняется в receipt для lost-ACK replay.
+- Linkage, preset/persistent/actions остаются GM-only; stat/avatar разрешены GM либо владельцу через campaign-wide `memberCanAccessCharacter`, независимо от current scene, floor и viewport. Выбор/чтение token instance не создают.
+- Unknown stat definition и instance override сохраняются одной транзакцией с registry revision; команды меняют отдельные поля, а reset удаляет только override. После успешного save разрешённые co-owners получают лёгкий `characterChanged` без sheet payload.
+- Reference index обновляется только при структурных link changes. GC transient instances подключён к unlink/relink, `persistent=false`, обычному token delete и scene delete; cross-scene ссылка и persistent flag защищают instance.
+- Rollback восстанавливает instances, campaign definitions, token linkage, scene/registry revisions, receipts, asset state и перестраивает reference index; failed command можно безопасно повторить.
+- `refreshAssetOrphans` теперь учитывает campaign preset и instance avatar references; definition/character mutations обновляют orphan state только после итоговой модели и откатывают его при ошибке записи.
+- `character_commands_test.go` покрывает сценарии A–F, двух владельцев/Charlie, независимые wolves, preset inheritance, unknown stat, avatar/actions/reset, cross-scene GC, relink, persistent без ссылок, scene delete и disk failure. `gofmt`, связанные и полные тесты, `go build ./...`, `go vet ./...`, `git diff --check` — успешно. Следующий этап: 08.
+
 ## D. Промпты
 
 ### 01. Доменная модель и чистая логика
