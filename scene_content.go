@@ -242,7 +242,7 @@ func currentFloorForMember(scene *Scene, member *Member, preferred string) strin
 	}
 	owned := make([]Token, 0)
 	for _, token := range scene.Tokens {
-		if token.Owner == member.ID && !token.Hidden {
+		if tokenOwnedBy(token, member.ID) && !token.Hidden {
 			owned = append(owned, token)
 		}
 	}
@@ -261,7 +261,7 @@ func activeTokenForMember(scene *Scene, member *Member, tokenID string) (Token, 
 		return Token{}, false
 	}
 	token, ok := scene.Tokens[tokenID]
-	return token, ok && token.Owner == member.ID && !token.Hidden
+	return token, ok && tokenOwnedBy(token, member.ID) && !token.Hidden
 }
 
 func currentFloorForPeer(peer *peer, scene *Scene) string {
@@ -276,7 +276,7 @@ func currentFloorForPeer(peer *peer, scene *Scene) string {
 	}
 	owned := make([]Token, 0)
 	for _, token := range scene.Tokens {
-		if token.Owner == peer.member.ID && !token.Hidden {
+		if tokenOwnedBy(token, peer.member.ID) && !token.Hidden {
 			owned = append(owned, token)
 		}
 	}
@@ -466,7 +466,7 @@ func ensureSceneStructure(scene *Scene) bool {
 	return changed
 }
 
-func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[string]*Member) bool {
+func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[string]*Member, characterSets ...map[string]CharacterInstance) bool {
 	if scene == nil || scene.ID == "" || strings.TrimSpace(scene.Name) == "" || scene.ModelVersion != sceneModelVersion || !validSceneBounds(scene.Bounds) || len(scene.Floors) == 0 || len(scene.Floors) > maxSceneFloors || scene.Tokens == nil || scene.Elements == nil || scene.Layers == nil || scene.Transitions == nil {
 		return false
 	}
@@ -502,7 +502,8 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 	}
 	for tokenID, token := range scene.Tokens {
 		layer := scene.Layers[token.LayerID]
-		if token.ID != tokenID || scene.Floors[token.FloorID].ID == "" || layer.Kind != layerKindTokens || layer.FloorID != token.FloorID || !validNumber(token.X) || !validNumber(token.Y) || token.Size < 16 || token.Size > 1024 || (token.Owner != "" && members[token.Owner] == nil) || (token.Asset != "" && (assets[token.Asset].ID == "" || assets[token.Asset].Kind != assetKindToken)) {
+		invalidCharacter := len(characterSets) != 0 && token.CharacterInstanceID != "" && characterSets[0][token.CharacterInstanceID].ID == ""
+		if token.ID != tokenID || scene.Floors[token.FloorID].ID == "" || layer.Kind != layerKindTokens || layer.FloorID != token.FloorID || !validNumber(token.X) || !validNumber(token.Y) || token.Size < 16 || token.Size > 1024 || !validateTokenOwners(token, members) || (token.Asset != "" && (assets[token.Asset].ID == "" || assets[token.Asset].Kind != assetKindToken)) || invalidCharacter {
 			return false
 		}
 	}

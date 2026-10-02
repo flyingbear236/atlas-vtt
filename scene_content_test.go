@@ -232,8 +232,8 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	scene.Elements["lower"] = SceneElement{ID: "lower", FloorID: lowerID, LayerID: firstLayerID(scene, lowerID), AssetID: "lower-asset", Transform: Transform{X: 10, Y: 10, Width: 64, Height: 64}, Visible: true, Opacity: 1}
 	scene.Elements["upper"] = SceneElement{ID: "upper", FloorID: upperID, LayerID: firstLayerID(scene, upperID), AssetID: "upper-asset", Transform: Transform{X: 20, Y: 20, Width: 64, Height: 64}, Visible: true, Opacity: 1}
 	scene.Elements["outside"] = SceneElement{ID: "outside", FloorID: lowerID, LayerID: firstLayerID(scene, lowerID), AssetID: "outside-asset", Transform: Transform{X: scene.Bounds.Width + 100, Y: 10, Width: 64, Height: 64}, Visible: true, Opacity: 1}
-	scene.Tokens["hero"] = Token{ID: "hero", Name: "Hero", FloorID: lowerID, LayerID: layerIDByKind(scene, lowerID, layerKindTokens), X: 50, Y: 50, Size: 80, Owner: playerMember.ID}
-	scene.Tokens["zz-upper"] = Token{ID: "zz-upper", Name: "Upper", FloorID: upperID, LayerID: layerIDByKind(scene, upperID, layerKindTokens), X: 60, Y: 60, Size: 80, Owner: playerMember.ID}
+	scene.Tokens["hero"] = Token{ID: "hero", Name: "Hero", FloorID: lowerID, LayerID: layerIDByKind(scene, lowerID, layerKindTokens), X: 50, Y: 50, Size: 80, OwnerIDs: []string{playerMember.ID}}
+	scene.Tokens["zz-upper"] = Token{ID: "zz-upper", Name: "Upper", FloorID: upperID, LayerID: layerIDByKind(scene, upperID, layerKindTokens), X: 60, Y: 60, Size: 80, OwnerIDs: []string{playerMember.ID}}
 	scene.Revision++
 	scene.rebuildRuntime()
 	region := SceneRegion{Left: 0, Top: 0, Right: scene.Bounds.Width + 1000, Bottom: 1000}
@@ -584,7 +584,7 @@ func TestFloorTransitionAndPlayerPermissions(t *testing.T) {
 	}
 	server.mu.Unlock()
 
-	gmWS.WriteJSON(Command{Type: "create", Client: "gm-content", Seq: 2, SceneID: scene.ID, Token: Token{Name: "Climber", FloorID: sourceFloor, X: 50, Y: 50, Size: 80, Owner: playerMember.ID}})
+	gmWS.WriteJSON(Command{Type: "create", Client: "gm-content", Seq: 2, SceneID: scene.ID, Token: Token{Name: "Climber", FloorID: sourceFloor, X: 50, Y: 50, Size: 80, OwnerIDs: []string{playerMember.ID}}})
 	token := tokenFrom(t, read(t, gmWS, "upsert"))
 	read(t, gmWS, "ack")
 	read(t, playerWS, "upsert")
@@ -661,18 +661,21 @@ func TestPlayerActiveTokenControlsFloorAndNavigation(t *testing.T) {
 	defer host.Close()
 	gm := post(t, host.URL+"/api/sessions", map[string]string{"name": "Active token"})
 	player := post(t, host.URL+"/api/join", map[string]string{"session": gm["session"], "invite": gm["invite"], "name": "Player"})
+	secondPlayer := post(t, host.URL+"/api/join", map[string]string{"session": gm["session"], "invite": gm["invite"], "name": "Second player"})
 
 	server.mu.Lock()
 	session := server.sessions[gm["session"]]
 	member := session.Members[session.Keys[player["key"]]]
+	secondMember := session.Members[session.Keys[secondPlayer["key"]]]
 	scene := firstScene(session)
 	lowerFloor := firstFloorID(scene)
 	upperFloor := id()
 	scene.Floors[upperFloor] = Floor{ID: upperFloor, Name: "Upper", Order: 1, Opacity: 1, WalkableMode: walkableModeUnrestricted, WalkableComponents: []WalkableComponent{}}
 	addFloorLayers(scene, upperFloor)
-	lower := Token{ID: "owned-lower", Name: "Lower", Owner: member.ID, FloorID: lowerFloor, LayerID: layerIDByKind(scene, lowerFloor, layerKindTokens), X: 100, Y: 120, Size: 80, Asset: "lower-secret"}
-	upper := Token{ID: "owned-upper", Name: "Upper", Owner: member.ID, FloorID: upperFloor, LayerID: layerIDByKind(scene, upperFloor, layerKindTokens), X: 2400, Y: 1800, Size: 80, Asset: "upper-secret"}
-	foreign := Token{ID: "foreign-upper", Name: "Foreign", Owner: "someone-else", FloorID: upperFloor, LayerID: upper.LayerID, X: 2450, Y: 1800, Size: 80}
+	owners := []string{member.ID, secondMember.ID}
+	lower := Token{ID: "owned-lower", Name: "Lower", OwnerIDs: append([]string(nil), owners...), FloorID: lowerFloor, LayerID: layerIDByKind(scene, lowerFloor, layerKindTokens), X: 100, Y: 120, Size: 80, Asset: "lower-secret"}
+	upper := Token{ID: "owned-upper", Name: "Upper", OwnerIDs: append([]string(nil), owners...), FloorID: upperFloor, LayerID: layerIDByKind(scene, upperFloor, layerKindTokens), X: 2400, Y: 1800, Size: 80, Asset: "upper-secret"}
+	foreign := Token{ID: "foreign-upper", Name: "Foreign", OwnerIDs: []string{}, FloorID: upperFloor, LayerID: upper.LayerID, X: 2450, Y: 1800, Size: 80}
 	scene.Tokens[lower.ID], scene.Tokens[upper.ID], scene.Tokens[foreign.ID] = lower, upper, foreign
 	scene.Revision++
 	scene.rebuildRuntime()
@@ -726,13 +729,20 @@ func TestPlayerActiveTokenControlsFloorAndNavigation(t *testing.T) {
 	if movedX != 2500 || movedY != 1850 {
 		t.Fatalf("move after active switch was lost: %v %v", movedX, movedY)
 	}
-	otherWS := dialRaw(t, host.URL, player)
+	otherWS := dialRaw(t, host.URL, secondPlayer)
 	read(t, otherWS, "campaignSnapshot")
 	otherWS.WriteJSON(Command{Type: "subscribe", SceneID: scene.ID, ActiveTokenID: lower.ID})
 	otherSnapshot := read(t, otherWS, "snapshot")
 	json.Unmarshal(otherSnapshot["currentFloorId"], &currentFloor)
 	if currentFloor != lowerFloor {
-		t.Fatalf("second connection did not keep its own active token: %s", currentFloor)
+		t.Fatalf("second owner did not select the shared token floor: %s", currentFloor)
+	}
+	otherWS.WriteJSON(Command{Type: "final", Client: "second-owner", Seq: 1, SceneID: scene.ID, Token: Token{ID: lower.ID, X: 140, Y: 160}})
+	secondMove := read(t, otherWS, "ack")
+	var secondIssue string
+	json.Unmarshal(secondMove["error"], &secondIssue)
+	if secondIssue != "" {
+		t.Fatalf("second owner could not move shared token: %s", secondIssue)
 	}
 	ws.WriteJSON(Command{Type: "sync"})
 	firstSnapshot := read(t, ws, "snapshot")

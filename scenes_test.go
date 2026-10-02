@@ -172,7 +172,7 @@ func TestClientsCanWorkInDifferentScenes(t *testing.T) {
 
 	gc.WriteJSON(Command{Type: "create", SceneID: hiddenID, Token: Token{Name: "GM only", Size: 80}})
 	read(t, gc, "upsert")
-	gc.WriteJSON(Command{Type: "create", SceneID: firstID, Token: Token{Name: "Player token", Size: 80, Owner: who.ID}})
+	gc.WriteJSON(Command{Type: "create", SceneID: firstID, Token: Token{Name: "Player token", Size: 80, OwnerIDs: []string{who.ID}}})
 	playerToken := tokenFrom(t, read(t, pc, "upsert"))
 	pc.WriteJSON(Command{Type: "move", SceneID: firstID, Token: Token{ID: playerToken.ID, X: 123, Y: 456}})
 	read(t, pc, "move")
@@ -539,9 +539,9 @@ func TestRegionRealtimeTracksObjectsEnteringAndLeavingLoadedArea(t *testing.T) {
 func TestSceneEntryPointUsesVisibleOwnedToken(t *testing.T) {
 	player := &Member{ID: "player", Role: "player"}
 	scene := &Scene{Tokens: map[string]Token{
-		"other":  {ID: "other", Owner: "someone-else", X: 10, Y: 20, Size: 80},
-		"hidden": {ID: "hidden", Owner: player.ID, X: 30, Y: 40, Size: 80, Hidden: true},
-		"owned":  {ID: "owned", Owner: player.ID, X: 5000, Y: 6000, Size: 80},
+		"other":  {ID: "other", OwnerIDs: []string{"someone-else"}, X: 10, Y: 20, Size: 80},
+		"hidden": {ID: "hidden", OwnerIDs: []string{player.ID}, X: 30, Y: 40, Size: 80, Hidden: true},
+		"owned":  {ID: "owned", OwnerIDs: []string{player.ID}, X: 5000, Y: 6000, Size: 80},
 	}}
 	entry := sceneEntryPoint(scene, player)
 	if entry == nil || entry.X != 5000 || entry.Y != 6000 {
