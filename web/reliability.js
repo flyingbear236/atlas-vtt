@@ -18,14 +18,17 @@ export class Outbox {
   flush(){if(this.inflight||!this.data.queue.length)return;if(this.send(this.data.queue[0]))this.inflight=true;}
   reconnect(){this.inflight=false;this.flush();}
   ack(msg){const cmd=this.data.queue[0];if(!cmd||cmd.seq!==msg.seq)return;
-    this.data.queue.shift();this.persist();this.inflight=false;this.completed(cmd,msg.error,msg.errorCode);this.changed();this.flush();
+    this.data.queue.shift();this.persist();this.inflight=false;this.completed(cmd,msg.error,msg.errorCode,msg);this.changed();this.flush();
   }
   retry(){this.inflight=false;this.flush();}
   hasQueuedBehindInflight(){return this.inflight&&this.data.queue.length>1;}
 }
 
 export function sameValue(a,b){
-  if(Array.isArray(a)&&Array.isArray(b))return a.length===b.length&&a.every((value,index)=>Object.is(value,b[index]));
+  if(Array.isArray(a)&&Array.isArray(b))return a.length===b.length&&a.every((value,index)=>sameValue(value,b[index]));
+  if(a&&b&&typeof a==='object'&&typeof b==='object'){
+    const left=Object.keys(a),right=Object.keys(b);return left.length===right.length&&left.every(key=>Object.hasOwn(b,key)&&sameValue(a[key],b[key]));
+  }
   return Object.is(a,b);
 }
 
@@ -33,6 +36,8 @@ export class Drafts {
   constructor(){this.items=new Map();}
   set(id,field,value){this.items.set(id,{...this.items.get(id),[field]:value});}
   get(id){return this.items.get(id)||{};}
+  delete(id){this.items.delete(id);}
+  clear(){this.items.clear();}
   confirm(id,patch){const draft={...this.get(id)};for(const [k,v]of Object.entries(patch))if(sameValue(draft[k],v))delete draft[k];if(Object.keys(draft).length)this.items.set(id,draft);else this.items.delete(id);}
 }
 

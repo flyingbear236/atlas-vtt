@@ -508,6 +508,49 @@ func (s *Server) readDefinitions(w http.ResponseWriter, request *http.Request) {
 	})
 }
 
+func writeDefinitionsTOML(w http.ResponseWriter, data []byte, filename string) {
+	w.Header().Set("Content-Type", "application/toml; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) exportRulesetDefinitions(w http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, member := s.auth(request)
+	if !memberIsGM(member) {
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
+		return
+	}
+	if !rulesetInstalled(session.Ruleset) {
+		fail(w, http.StatusNotFound, "Ruleset не установлен")
+		return
+	}
+	data, err := ExportRulesetSnapshotTOML(session.Ruleset)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeDefinitionsTOML(w, data, "ruleset.toml")
+}
+
+func (s *Server) exportCampaignDefinitions(w http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, member := s.auth(request)
+	if !memberIsGM(member) {
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
+		return
+	}
+	data, err := ExportCampaignDefinitionsTOML(sessionRegistries(session))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeDefinitionsTOML(w, data, "campaign-extensions.toml")
+}
+
 func rulesetInstalled(snapshot RulesetSnapshot) bool {
 	return snapshot.Metadata != (RulesetMetadata{}) || len(snapshot.Registry.Stats) != 0 || len(snapshot.Registry.Actions) != 0 || len(snapshot.Registry.Presets) != 0
 }

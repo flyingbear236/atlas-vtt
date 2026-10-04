@@ -110,7 +110,7 @@ func TestBrowser(t *testing.T) {
 			seq++
 			requestID := seq
 			ws.WriteJSON(map[string]any{"id": requestID, "method": method, "params": params, "sessionId": attached.SessionID})
-			ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+			ws.SetReadDeadline(time.Now().Add(120 * time.Second))
 			for {
 				var msg struct {
 					Method string          `json:"method"`
@@ -191,7 +191,7 @@ func TestBrowser(t *testing.T) {
  await wait(()=>document.querySelectorAll('.tree-element-row').length===2);const rotationRow=document.querySelector('.tree-element-row');rotationRow.click();const allowRotation=document.getElementById('allowElementRotation');if(document.getElementById('fixElementRotation'))throw Error('fix rotation UI still exposed');if(allowRotation.hidden)throw Error('base rotation opt-in missing');allowRotation.click();if(!allowRotation.hidden)throw Error('base rotation opt-in not applied');const transformCount=sentCommands.filter(command=>command.type==='elementTransform').length,rotationInput=document.getElementById('elementRotation');for(const value of ['3','31','37']){rotationInput.value=value;rotationInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);const transforms=sentCommands.filter(command=>command.type==='elementTransform');if(transforms.length!==transformCount+1)throw Error('element input was not coalesced: before='+transformCount+' after='+transforms.length+' valid='+document.getElementById('elementProperties').checkValidity());if(Number(transforms.at(-1).element.transform.rotation)!==37)throw Error('element autosave lost final rotation');if(!document.querySelector('#elementProperties button[type=submit]').hidden)throw Error('element save button is visible');if(sentCommands.some(command=>command.type==='elementFixRotation'))throw Error('disabled fix rotation command was sent');
  const offscreenID=rotationRow.dataset.elementId,xInput=document.getElementById('elementX');xInput.value='50000';xInput.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>xInput.disabled).catch(()=>{throw Error('offscreen state timeout: x='+xInput.value+', selected='+document.querySelector('.tree-element-row.selected')?.dataset.elementId+', transforms='+JSON.stringify(sentCommands.filter(command=>command.type==='elementTransform').slice(-2)))});if(!document.querySelector('[data-element-id="'+offscreenID+'"]'))throw Error('offscreen element disappeared from editor tree');if(!document.getElementById('duplicateElement').disabled||document.getElementById('elementName').disabled||document.getElementById('deleteElement').disabled)throw Error('offscreen editor restrictions are wrong');const offscreenName=document.getElementById('elementName');offscreenName.value='Offscreen renamed';offscreenName.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>document.querySelector('[data-element-id="'+offscreenID+'"]').textContent.includes('Offscreen renamed'));document.querySelector('[data-element-id="'+offscreenID+'"] [title="Центрировать на элементе"]').click();await wait(()=>!xInput.disabled);if(document.getElementById('duplicateElement').disabled)throw Error('centered element did not return to loaded editor state');document.getElementById('fit').click();await sleep(300);
  document.getElementById('add').click();document.getElementById('add').click();await wait(()=>document.querySelectorAll('.token-row').length===2).catch(()=>{throw Error('token create timeout: rows='+document.querySelectorAll('.token-row').length+', connection='+document.getElementById('connection').textContent+', queued='+sentCommands.filter(c=>c.type==='create').length)});
- document.querySelector('.token-row').click();const propertyCount=sentCommands.filter(command=>command.type==='properties').length,nameInput=document.getElementById('tokenName');for(const value of ['Browser','Browser he','Browser hero']){nameInput.value=value;nameInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);let propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.length!==propertyCount+1)throw Error('token input was not coalesced: before='+propertyCount+' after='+propertyCommands.length+' valid='+document.getElementById('properties').checkValidity()+' selected='+document.querySelector('.token-row.selected')?.dataset.tokenId);if(propertyCommands.at(-1).properties.name!=='Browser hero')throw Error('token autosave lost final name');await wait(()=>document.querySelector('.token-row').textContent.includes('Browser hero'));const colorCount=propertyCommands.length,colorInput=document.getElementById('tokenColor');colorInput.value='#123456';colorInput.dispatchEvent(new Event('change',{bubbles:true}));colorInput.dispatchEvent(new Event('blur',{bubbles:true}));await sleep(300);propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.length!==colorCount+1||propertyCommands.at(-1).properties.color!=='#123456')throw Error('immediate token change was duplicated or lost');if(!document.querySelector('#properties button[type=submit]').hidden)throw Error('token save button is visible');
+ document.querySelector('.token-row').click();const propertiesForm=document.getElementById('properties');if(propertiesForm.parentElement!==document.getElementById('sidebarObjects')||document.querySelectorAll('#properties').length!==1)throw Error('token properties were not moved as one form');if(document.querySelector('.inspector').contains(propertiesForm)||!document.getElementById('noSelection').hidden||document.getElementById('characterPanel').hidden)throw Error('right inspector is not showing character state');if(document.getElementById('characterEmpty').hidden||sentCommands.some(command=>command.type==='characterCreate'))throw Error('selecting an empty token created a character');if(!document.getElementById('characterGM').classList.contains('gm'))throw Error('character mutations are not GM-scoped');const propertyCount=sentCommands.filter(command=>command.type==='properties').length,nameInput=document.getElementById('tokenName');for(const value of ['Browser','Browser he','Browser hero']){nameInput.value=value;nameInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);let propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.length!==propertyCount+1)throw Error('token input was not coalesced: before='+propertyCount+' after='+propertyCommands.length+' valid='+propertiesForm.checkValidity()+' selected='+document.querySelector('.token-row.selected')?.dataset.tokenId);if(propertyCommands.at(-1).properties.name!=='Browser hero')throw Error('token autosave lost final name');await wait(()=>document.querySelector('.token-row').textContent.includes('Browser hero'));const colorCount=propertyCommands.length,colorInput=document.getElementById('tokenColor');colorInput.value='#123456';colorInput.dispatchEvent(new Event('change',{bubbles:true}));colorInput.dispatchEvent(new Event('blur',{bubbles:true}));await sleep(300);propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.length!==colorCount+1||propertyCommands.at(-1).properties.color!=='#123456')throw Error('immediate token change was duplicated or lost');const opacityCount=propertyCommands.length,opacityInput=document.getElementById('tokenOpacity');opacityInput.value='0.5';opacityInput.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>sentCommands.filter(command=>command.type==='properties').length===opacityCount+1);propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.at(-1).properties.opacity!==0.5)throw Error('token opacity was not sent as a numeric field patch');if(!propertiesForm.querySelector('button[type=submit]').hidden)throw Error('token save button is visible');
  document.getElementById('fit').click();await sleep(2500);document.getElementById('reconnect').click();await sleep(2000);await wait(()=>document.getElementById('connection').textContent.includes('В сети'));await wait(()=>!document.getElementById('workspace').hidden);await wait(()=>document.getElementById('diagnostics').textContent.includes('Загрузка 0'));const representationEntries=performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')),representationPaths=representationEntries.map(r=>new URL(r.name).pathname);if(!representationPaths.some(path=>path.endsWith('/image.png'))||!representationPaths.some(path=>/\/0_\d+_\d+\.png$/.test(path)))throw Error('representations did not use common SceneElement render path');
 	const assetEntries=()=>performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')),requests=assetEntries().length,requestCounts=new Map();for(const entry of assetEntries()){const path=entry.name.split('?')[0];requestCounts.set(path,(requestCounts.get(path)||0)+1)}document.getElementById('toScenes').click();await wait(()=>!document.getElementById('campaignHome').hidden);await sleep(500);if(assetEntries().length!==requests)throw Error('campaign home continued scene loading');
 	published=[...document.querySelectorAll('.scene-card')].find(card=>card.classList.contains('published'));published.querySelector('.primary').click();await wait(()=>!document.getElementById('workspace').hidden);await wait(()=>[...document.querySelectorAll('.token-row')].some(row=>row.textContent.includes('Browser hero')));await wait(()=>document.getElementById('diagnostics').textContent.includes('Загрузка 0'));await sleep(500);const reopenedCounts=new Map();for(const entry of assetEntries()){const path=entry.name.split('?')[0];reopenedCounts.set(path,(reopenedCounts.get(path)||0)+1)}for(const [path,count] of requestCounts)if((reopenedCounts.get(path)||0)>count)throw Error('reopening scene reloaded cached representation: '+path);
@@ -471,6 +471,9 @@ func TestBrowser(t *testing.T) {
 	if eval(browserModuleScenario) != "true" {
 		t.Fatal("client reliability modules failed")
 	}
+	if eval(browserDiceRendererScenario) != "true" {
+		t.Fatal("local dice renderer failed")
+	}
 	t.Logf("optimization metrics: %s", eval(`JSON.stringify(window.optimizationMetrics)`))
 	var center struct{ X, Y float64 }
 	if err := json.Unmarshal([]byte(eval(browserDraftScenario)), &center); err != nil {
@@ -483,6 +486,37 @@ func TestBrowser(t *testing.T) {
 	}
 	if eval(`document.getElementById('tokenName').value`) != "\"Unsaved draft\"" {
 		t.Fatal("concurrent rename lost")
+	}
+	if eval(browserDefinitionsTOMLScenario) != "true" {
+		t.Fatal("definitions TOML UI scenario failed")
+	}
+	browserSeedWolfPreset(t, s)
+	var characterAssignment struct {
+		WolfIDs    []string `json:"wolfIDs"`
+		LancelotID string   `json:"lancelotID"`
+		Relinked   string   `json:"relinked"`
+	}
+	if err := json.Unmarshal([]byte(eval(browserCharacterAssignmentScenario)), &characterAssignment); err != nil {
+		t.Fatal(err)
+	}
+	if len(characterAssignment.WolfIDs) != 5 || characterAssignment.LancelotID == "" || characterAssignment.Relinked != characterAssignment.LancelotID {
+		t.Fatalf("character assignment UI result: %+v", characterAssignment)
+	}
+	browserSeedPlayerView(t, s)
+	if eval(browserPlayerViewScenario) != "true" {
+		t.Fatal("GM Player View UI scenario failed")
+	}
+	if os.Getenv("ATLAS_BROWSER_CHARACTERS_DICE_ONLY") != "" {
+		if len(browserErrors) > 0 {
+			t.Fatalf("Browser errors: %v", browserErrors)
+		}
+		eval(`localStorage.setItem('atlas-sessions',JSON.stringify([JSON.parse(localStorage.getItem('atlas-browser-player'))]));true`)
+		call("Page.navigate", map[string]any{"url": ts.URL})
+		time.Sleep(time.Second)
+		if eval(browserRealPlayerScenario) != "true" {
+			t.Fatal("real player UI scenario failed")
+		}
+		return
 	}
 	eval(`document.getElementById('fit').click();true`)
 	if eval(`(()=>{const s=document.getElementById('imageCacheBudget');s.value='128';s.dispatchEvent(new Event('change',{bubbles:true}));return localStorage.getItem('atlas-image-memory-budget-v1')==='128'})()`) != "true" {
@@ -522,6 +556,12 @@ func TestBrowser(t *testing.T) {
 		if e := writeScreenshot(path, v.Data); e != nil {
 			t.Fatal(e)
 		}
+	}
+	eval(`localStorage.setItem('atlas-sessions',JSON.stringify([JSON.parse(localStorage.getItem('atlas-browser-player'))]));true`)
+	call("Page.navigate", map[string]any{"url": ts.URL})
+	time.Sleep(time.Second)
+	if eval(browserRealPlayerScenario) != "true" {
+		t.Fatal("real player UI scenario failed")
 	}
 	// Terminal authentication failures must not schedule reconnect attempts.
 	for _, missing := range []bool{false, true} {

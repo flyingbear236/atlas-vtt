@@ -9,8 +9,8 @@ export class SceneTreeRuntime{
     elements.addFloor.onclick=()=>this.createFloor();elements.addLayer.onclick=()=>this.createLayer();elements.addTransition.onclick=()=>this.beginTransition();
   }
 
-  update(state,selectedElement,selectedTransition=''){
-    const gm=isGM(state.you),catalog=gm?(state.elementCatalog||{}):state.elements||{};this.state={...state,elements:catalog};const floors=orderedFloors(this.state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
+  update(state,selectedElement,selectedTransition='',editor=isGM(state.you)){
+    const gm=!!editor,catalog=gm?(state.elementCatalog||{}):state.elements||{};this.state={...state,elements:catalog};const floors=orderedFloors(this.state);let current=this.getFloor();if(!floors.some(f=>f.id===current))current=floors[0]?.id||'';
     for(const control of this.elements.controls)control.hidden=!gm;this.elements.addFloor.disabled=floors.length>=2;this.elements.addFloor.title=floors.length>=2?'Сейчас поддерживаются только два этажа':'Добавить этаж';
     const floorStructure=floors.map(floor=>[floor.id,floor.name,floor.order,floor.opacity,floor.opacityWhenViewedFromBelow,floor.walkableMode,!!floor.showWalkableToPlayers,floor.geometryRevision,floor.walkableComponents?.length||0,!!floor.renderBounds]);
     const structureKey=JSON.stringify([state.scene.id,state._catalogVersion||0,floorStructure,state.layers,state.transitions,gm,this.getWalkableTool(),this.getRenderBoundsTool()]);

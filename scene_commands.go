@@ -613,7 +613,7 @@ func elementVisibleToPeer(peer *peer, scene *Scene, element SceneElement) bool {
 	if _, visible := visibleFloorSet(scene, currentFloorForPeer(peer, scene))[element.FloorID]; !visible {
 		return false
 	}
-	return memberIsGM(peer.member) || scene.ensureRuntime().elementPublic(element)
+	return !peerUsesPlayerProjection(peer) || scene.ensureRuntime().elementPublic(element)
 }
 
 func elementLoadedForPeer(peer *peer, scene *Scene, element SceneElement) bool {
@@ -631,7 +631,7 @@ func (s *Server) publishElement(session *Session, sceneID string, old SceneEleme
 		}
 		oldLoaded := existed && elementLoadedForPeer(peer, scene, old)
 		newLoaded := nextExists && elementLoadedForPeer(peer, scene, next)
-		gmCatalog := memberIsGM(peer.member) && !compact
+		gmCatalog := memberIsGM(peer.member) && !peer.playerPreview && !compact
 		if !oldLoaded && !newLoaded && !gmCatalog {
 			continue
 		}

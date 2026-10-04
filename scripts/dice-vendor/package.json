@@ -1,0 +1,11 @@
+{
+  "name": "atlas-dice-vendor",
+  "private": true,
+  "dependencies": {
+    "@3d-dice/dice-box-threejs": "0.0.12"
+  },
+  "overrides": {
+    "cannon-es": "0.20.0",
+    "three": "0.143.0"
+  }
+}

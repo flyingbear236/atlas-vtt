@@ -128,8 +128,10 @@ func TestLegacyOwnerMigrationAndExplicitOwnerIDsPrecedence(t *testing.T) {
 		tokens := sceneValue.(map[string]any)["tokens"].(map[string]any)
 		legacy := tokens[legacyID].(map[string]any)
 		delete(legacy, "ownerIds")
+		delete(legacy, "opacity")
 		legacy["owner"] = aliceID
 		current := tokens[currentID].(map[string]any)
+		current["opacity"] = 0.0
 		current["ownerIds"] = []any{}
 		current["owner"] = aliceID
 	}
@@ -149,12 +151,26 @@ func TestLegacyOwnerMigrationAndExplicitOwnerIDsPrecedence(t *testing.T) {
 	if len(scene.Tokens[currentID].OwnerIDs) != 0 {
 		t.Fatalf("explicit ownerIds did not win over legacy owner: %v", scene.Tokens[currentID].OwnerIDs)
 	}
+	if scene.Tokens[legacyID].Opacity != 1 {
+		t.Fatalf("legacy token opacity = %v, want 1", scene.Tokens[legacyID].Opacity)
+	}
+	if scene.Tokens[currentID].Opacity != 0 {
+		t.Fatalf("explicit zero opacity was lost: %v", scene.Tokens[currentID].Opacity)
+	}
 	persisted, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(persisted, []byte(`"owner":`)) || !bytes.Contains(persisted, []byte(`"ownerIds":[]`)) {
+	if bytes.Contains(persisted, []byte(`"owner":`)) || !bytes.Contains(persisted, []byte(`"ownerIds":[]`)) || !bytes.Contains(persisted, []byte(`"opacity":1`)) || !bytes.Contains(persisted, []byte(`"opacity":0`)) {
 		t.Fatalf("migration was not persisted in canonical ownership form: %s", persisted)
+	}
+	secondRestart, err := newServer(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondScene := firstScene(secondRestart.sessions[gm["session"]])
+	if !slices.Equal(secondScene.Tokens[legacyID].OwnerIDs, []string{aliceID}) || len(secondScene.Tokens[currentID].OwnerIDs) != 0 {
+		t.Fatal("canonical ownership migration did not survive a second restart")
 	}
 }
 

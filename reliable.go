@@ -18,11 +18,12 @@ import (
 // One outstanding reliable command per browser stream. Business receipts are
 // persisted before ACK; coalesced transform receipts persist on the next flush.
 type Receipt struct {
-	Seq         uint64 `json:"seq"`
-	Error       string `json:"error,omitempty"`
-	Digest      string `json:"digest"`
-	Updated     int64  `json:"updated,omitempty"`
-	CharacterID string `json:"characterId,omitempty"`
+	Seq         uint64     `json:"seq"`
+	Error       string     `json:"error,omitempty"`
+	Digest      string     `json:"digest"`
+	Updated     int64      `json:"updated,omitempty"`
+	CharacterID string     `json:"characterId,omitempty"`
+	RollEvent   *RollEvent `json:"rollEvent,omitempty"`
 }
 
 const maxReceiptsPerSession = 2048
@@ -30,6 +31,8 @@ const maxReceiptsPerSession = 2048
 const persistenceFlushInterval = 5 * time.Second
 const storageDegradedMessage = "Сервер временно не может сохранять изменения на диск. Работа продолжается, но при аварийном завершении процесса несохранённые изменения могут быть потеряны"
 const movementBlockedErrorCode = "movementBlocked"
+const previewContextChangedErrorCode = "previewContextChanged"
+const previewContextChangedIssue = "Контекст Player View изменился"
 const movementBlockedIssue = "Токен нельзя переместить за границы игровой области"
 
 type persistenceClass uint8
@@ -88,6 +91,7 @@ type Properties struct {
 	Name     *string   `json:"name,omitempty"`
 	Size     *float64  `json:"size,omitempty"`
 	Color    *string   `json:"color,omitempty"`
+	Opacity  *float64  `json:"opacity,omitempty"`
 	OwnerIDs *[]string `json:"ownerIds,omitempty"`
 	Hidden   *bool     `json:"hidden,omitempty"`
 	Asset    *string   `json:"asset,omitempty"`
@@ -133,6 +137,8 @@ type Command struct {
 	ViewFloorID              string                     `json:"viewFloorId,omitempty"`
 	ActiveTokenID            string                     `json:"activeTokenId,omitempty"`
 	Focus                    bool                       `json:"focus,omitempty"`
+	PreviewEnabled           *bool                      `json:"enabled,omitempty"`
+	PreviewRevision          uint64                     `json:"previewRevision,omitempty"`
 	Bounds                   *SceneBounds               `json:"bounds,omitempty"`
 	Floor                    Floor                      `json:"floor,omitempty"`
 	FloorProperties          FloorProperties            `json:"floorProperties,omitempty"`
@@ -170,6 +176,7 @@ type Command struct {
 	ActionID                 string                     `json:"actionId,omitempty"`
 	Persistent               *bool                      `json:"persistent,omitempty"`
 	AvatarAssetID            *string                    `json:"avatarAssetId,omitempty"`
+	Roll                     *RollRequest               `json:"roll,omitempty"`
 	wireBytes                int
 }
 
@@ -185,6 +192,10 @@ func (command *Command) UnmarshalJSON(data []byte) error {
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {
+	if c.Type == "roll" {
+		s.diceCommand(ss, p, c)
+		return
+	}
 	if characterCommandType(c.Type) {
 		s.characterCommand(ss, p, c)
 		return
@@ -229,6 +240,9 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 		response := map[string]any{"type": "ack", "client": c.Client, "seq": c.Seq, "error": r.Error, "revision": revision, "sceneId": sceneID}
 		if r.Error == movementBlockedIssue {
 			response["errorCode"] = movementBlockedErrorCode
+		} else if r.Error == previewContextChangedIssue {
+			response["errorCode"] = previewContextChangedErrorCode
+			response["previewRevision"] = p.previewRevision
 		}
 		s.send(p, response)
 	}
@@ -292,11 +306,15 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 		if c.Type == "move" {
 			kind = "move"
 		}
+		if !previewContextMatches(p, c) {
+			issue = previewContextChangedIssue
+			break
+		}
 		if !exists || !memberCanControlToken(p.member, old) {
 			issue = "Нет права перемещать этот токен"
 			break
 		}
-		if !gm && old.FloorID != currentFloorForPeer(p, scene) {
+		if peerUsesPlayerProjection(p) && old.FloorID != currentFloorForPeer(p, scene) {
 			issue = "Токен находится на другом этаже"
 			break
 		}
@@ -310,7 +328,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			// it must neither move the teleported token nor surface a spurious error.
 			break
 		}
-		if !gm && !CanMoveTokenSegment(scene, old.FloorID, ScenePoint{X: old.X, Y: old.Y}, ScenePoint{X: c.Token.X, Y: c.Token.Y}) {
+		if peerUsesPlayerProjection(p) && !CanMoveTokenSegment(scene, old.FloorID, ScenePoint{X: old.X, Y: old.Y}, ScenePoint{X: c.Token.X, Y: c.Token.Y}) {
 			issue = movementBlockedIssue
 			break
 		}
@@ -361,6 +379,9 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			if v.Color != nil {
 				t.Color = *v.Color
 			}
+			if v.Opacity != nil {
+				t.Opacity = *v.Opacity
+			}
 			if v.OwnerIDs != nil {
 				t.OwnerIDs, _ = normalizeOwnerIDs(*v.OwnerIDs)
 			}
@@ -376,7 +397,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			}
 		}
 		tokenLayer := scene.Layers[t.LayerID]
-		if !validNumber(t.X) || !validNumber(t.Y) || !validNumber(t.Size) || !validNumber(t.Rotation) || t.Size < 16 || t.Size > 1024 || utf8.RuneCountInString(t.Name) > 80 || len(t.Color) > 32 || scene.Floors[t.FloorID].ID == "" || tokenLayer.Kind != layerKindTokens || tokenLayer.FloorID != t.FloorID {
+		if !validNumber(t.X) || !validNumber(t.Y) || !validNumber(t.Size) || !validNumber(t.Rotation) || !validNumber(t.Opacity) || t.Opacity < 0 || t.Opacity > 1 || t.Size < 16 || t.Size > 1024 || utf8.RuneCountInString(t.Name) > 80 || len(t.Color) > 32 || scene.Floors[t.FloorID].ID == "" || tokenLayer.Kind != layerKindTokens || tokenLayer.FloorID != t.FloorID {
 			issue = "Некорректные свойства токена"
 			break
 		}
@@ -493,6 +514,9 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			// boundary. Return only the authoritative position: a full snapshot on
 			// every pointer move is both disruptive and unnecessarily expensive.
 			s.send(p, map[string]any{"type": "error", "operation": "move", "errorCode": movementBlockedErrorCode, "sceneId": sceneID, "id": old.ID, "floorId": old.FloorID, "x": old.X, "y": old.Y})
+		} else if issue == previewContextChangedIssue {
+			s.send(p, map[string]any{"type": "error", "operation": c.Type, "errorCode": previewContextChangedErrorCode, "message": issue, "previewRevision": p.previewRevision})
+			s.send(p, s.snapshotSceneForPeer(ss, p))
 		} else {
 			s.send(p, map[string]string{"type": "error", "message": issue})
 			s.send(p, s.snapshotSceneForPeer(ss, p))
@@ -711,7 +735,7 @@ func (s *Server) sceneCommand(ss *Session, p *peer, c Command) {
 }
 
 func tokenVisibleToPeer(p *peer, token Token) bool {
-	return memberIsGM(p.member) || !token.Hidden
+	return !peerUsesPlayerProjection(p) || !token.Hidden
 }
 
 func tokenLoadedForPeer(p *peer, scene *Scene, token Token) bool {
@@ -725,8 +749,8 @@ func tokenLoadedForPeer(p *peer, scene *Scene, token Token) bool {
 }
 
 func (s *Server) publishTokenLocator(p *peer, sceneID, kind string, old Token, existed bool, token Token, revision uint64) {
-	oldListed := existed && tokenHasLocator(old, p.member)
-	newListed := kind != "delete" && tokenHasLocator(token, p.member)
+	oldListed := existed && tokenHasLocatorForPeer(old, p)
+	newListed := kind != "delete" && tokenHasLocatorForPeer(token, p)
 	if !oldListed && !newListed {
 		return
 	}
@@ -745,6 +769,16 @@ func (s *Server) publishTokenLocator(p *peer, sceneID, kind string, old Token, e
 	s.send(p, message)
 }
 
+func tokenHasLocatorForPeer(token Token, peer *peer) bool {
+	if peer == nil || peer.member == nil {
+		return false
+	}
+	if memberIsGM(peer.member) {
+		return peer.playerPreview
+	}
+	return tokenHasLocator(token, peer.member)
+}
+
 func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed bool, t Token) {
 	for p := range s.peers {
 		if p.session != ss.ID || p.sceneID != sceneID {
@@ -758,11 +792,11 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 
 		previousFloor, previousActive := p.floorID, p.activeTokenID
 		p.floorID = currentFloorForPeer(p, scene)
-		if !memberIsGM(p.member) && previousFloor != "" && previousFloor != p.floorID {
+		if peerUsesPlayerProjection(p) && previousFloor != "" && previousFloor != p.floorID {
 			s.send(p, s.snapshotSceneForPeer(ss, p))
 			continue
 		}
-		if !memberIsGM(p.member) && previousActive != p.activeTokenID {
+		if peerUsesPlayerProjection(p) && previousActive != p.activeTokenID {
 			s.send(p, s.snapshotSceneForPeer(ss, p))
 		}
 		oldLoaded := existed && tokenLoadedForPeer(p, scene, old)

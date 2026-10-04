@@ -60,6 +60,25 @@ func readDefinitionsHTTP(t *testing.T, serverURL string, credentials map[string]
 	return response.StatusCode, result
 }
 
+func exportDefinitionsHTTP(t *testing.T, serverURL, path string, credentials map[string]string) (int, []byte, http.Header) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, serverURL+path+"?session="+url.QueryEscape(credentials["session"]), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+credentials["key"])
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data := new(bytes.Buffer)
+	if _, err := data.ReadFrom(response.Body); err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, data.Bytes(), response.Header.Clone()
+}
+
 func ackError(t *testing.T, message map[string]json.RawMessage) string {
 	t.Helper()
 	var issue string
@@ -224,6 +243,17 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 	if err := json.Unmarshal(body, &installed); err != nil || installed.RegistryRevision != 2 || installed.RulesetMetadata.ID != "core" {
 		t.Fatalf("unexpected install result: %v %#v", err, installed)
 	}
+	if status, _, _ := exportDefinitionsHTTP(t, host.URL, "/api/definitions/ruleset/export", player); status != http.StatusForbidden {
+		t.Fatalf("player ruleset export status = %d", status)
+	}
+	status, exportedRuleset, exportHeaders := exportDefinitionsHTTP(t, host.URL, "/api/definitions/ruleset/export", gm)
+	if status != http.StatusOK || !strings.Contains(exportHeaders.Get("Content-Type"), "application/toml") {
+		t.Fatalf("ruleset export: %d %s", status, exportedRuleset)
+	}
+	exportedSnapshot, err := ParseRulesetTOML(exportedRuleset)
+	if err != nil || exportedSnapshot.Metadata.ID != "core" {
+		t.Fatalf("ruleset export round trip: %v %#v", err, exportedSnapshot.Metadata)
+	}
 	status, repeatedBody := definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, rulesetDocument, applyQuery)
 	if status != http.StatusOK || !bytes.Equal(bytes.TrimSpace(body), bytes.TrimSpace(repeatedBody)) {
 		t.Fatalf("idempotent install mismatch: %d %s", status, repeatedBody)
@@ -351,5 +381,19 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 	}
 	if status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/apply", gm, failureDocument, failureApply); status != http.StatusOK {
 		t.Fatalf("retry after rolled-back save failure: %d %s", status, body)
+	}
+	status, exportedCampaign, exportHeaders := exportDefinitionsHTTP(t, host.URL, "/api/definitions/campaign/export", gm)
+	if status != http.StatusOK || !strings.Contains(exportHeaders.Get("Content-Disposition"), "campaign-extensions.toml") {
+		t.Fatalf("campaign export: %d %s", status, exportedCampaign)
+	}
+	if status, _, _ := exportDefinitionsHTTP(t, host.URL, "/api/definitions/campaign/export", player); status != http.StatusForbidden {
+		t.Fatalf("player campaign export status = %d", status)
+	}
+	if bytes.Contains(exportedCampaign, []byte("characters")) || bytes.Contains(exportedCampaign, []byte("instances")) {
+		t.Fatalf("campaign export leaked runtime state: %s", exportedCampaign)
+	}
+	preview, err := PreviewCampaignDefinitionsImport(DefinitionRegistries{Ruleset: exportedSnapshot.Registry}, exportedCampaign)
+	if err != nil || len(preview.Registry.Actions) == 0 {
+		t.Fatalf("campaign export round trip: %v %#v", err, preview.Registry)
 	}
 }
