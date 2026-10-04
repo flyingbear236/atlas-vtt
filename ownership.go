@@ -17,6 +17,7 @@ type tokenJSON struct {
 	Size                float64         `json:"size"`
 	Rotation            float64         `json:"rotation"`
 	Color               string          `json:"color"`
+	Opacity             *float64        `json:"opacity,omitempty"`
 	OwnerIDs            json.RawMessage `json:"ownerIds"`
 	LegacyOwner         json.RawMessage `json:"owner,omitempty"`
 	Hidden              bool            `json:"hidden"`
@@ -35,7 +36,7 @@ func (token Token) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(tokenJSON{
 		ID: token.ID, Name: token.Name, FloorID: token.FloorID, LayerID: token.LayerID,
-		X: token.X, Y: token.Y, Size: token.Size, Rotation: token.Rotation, Color: token.Color,
+		X: token.X, Y: token.Y, Size: token.Size, Rotation: token.Rotation, Color: token.Color, Opacity: &token.Opacity,
 		OwnerIDs: ownerJSON, Hidden: token.Hidden, Asset: token.Asset, CharacterInstanceID: token.CharacterInstanceID,
 	})
 }
@@ -65,11 +66,15 @@ func (token *Token) UnmarshalJSON(data []byte) error {
 			owners = []string{owner}
 		}
 	}
+	opacity := 1.0
+	if wire.Opacity != nil {
+		opacity = *wire.Opacity
+	}
 	*token = Token{
 		ID: wire.ID, Name: wire.Name, FloorID: wire.FloorID, LayerID: wire.LayerID,
-		X: wire.X, Y: wire.Y, Size: wire.Size, Rotation: wire.Rotation, Color: wire.Color,
+		X: wire.X, Y: wire.Y, Size: wire.Size, Rotation: wire.Rotation, Color: wire.Color, Opacity: opacity,
 		OwnerIDs: owners, Hidden: wire.Hidden, Asset: wire.Asset, CharacterInstanceID: wire.CharacterInstanceID,
-		legacyOwnerField: wire.LegacyOwner != nil,
+		legacyOwnerField: wire.LegacyOwner != nil, legacyOpacity: wire.Opacity == nil,
 	}
 	return nil
 }
@@ -89,15 +94,16 @@ func normalizeOwnerIDs(ownerIDs []string) ([]string, bool) {
 	return normalized, changed
 }
 
-func migrateTokenOwnership(scene *Scene) bool {
+func migrateTokens(scene *Scene) bool {
 	changed := false
 	for tokenID, token := range scene.Tokens {
 		owners, normalized := normalizeOwnerIDs(token.OwnerIDs)
-		if normalized || token.legacyOwnerField {
+		if normalized || token.legacyOwnerField || token.legacyOpacity {
 			changed = true
 		}
 		token.OwnerIDs = owners
 		token.legacyOwnerField = false
+		token.legacyOpacity = false
 		scene.Tokens[tokenID] = token
 	}
 	return changed
@@ -153,6 +159,6 @@ func cloneToken(token Token) Token {
 func tokensEqual(left, right Token) bool {
 	return left.ID == right.ID && left.Name == right.Name && left.FloorID == right.FloorID && left.LayerID == right.LayerID &&
 		left.X == right.X && left.Y == right.Y && left.Size == right.Size && left.Rotation == right.Rotation &&
-		left.Color == right.Color && slices.Equal(left.OwnerIDs, right.OwnerIDs) && left.Hidden == right.Hidden &&
+		left.Color == right.Color && left.Opacity == right.Opacity && slices.Equal(left.OwnerIDs, right.OwnerIDs) && left.Hidden == right.Hidden &&
 		left.Asset == right.Asset && left.CharacterInstanceID == right.CharacterInstanceID
 }

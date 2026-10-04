@@ -127,6 +127,22 @@ func ExportCampaignDefinitionsTOML(registries DefinitionRegistries) ([]byte, err
 	return encodeDefinitionsTOML(registries.Campaign)
 }
 
+// ExportRulesetSnapshotTOML exports the immutable installed snapshot together
+// with its required metadata. Runtime characters and campaign overlays are not
+// part of this document.
+func ExportRulesetSnapshotTOML(snapshot RulesetSnapshot) ([]byte, error) {
+	if err := ValidateRulesetSnapshot(snapshot); err != nil {
+		return nil, fmt.Errorf("definitions TOML: %w", err)
+	}
+	registry := CampaignRegistry{
+		Stats:   maps.Clone(snapshot.Registry.Stats),
+		Actions: maps.Clone(snapshot.Registry.Actions),
+		Presets: maps.Clone(snapshot.Registry.Presets),
+	}
+	metadata := snapshot.Metadata
+	return encodeDefinitionsDocumentTOML(registry, &metadata)
+}
+
 // PreviewCampaignDefinitionsImport performs a pure all-or-nothing upsert.
 // Definitions omitted from the document remain in the returned registry.
 func PreviewCampaignDefinitionsImport(registries DefinitionRegistries, data []byte) (CampaignImportPreview, error) {
@@ -269,11 +285,18 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 }
 
 func encodeDefinitionsTOML(registry CampaignRegistry) ([]byte, error) {
+	return encodeDefinitionsDocumentTOML(registry, nil)
+}
+
+func encodeDefinitionsDocumentTOML(registry CampaignRegistry, metadata *RulesetMetadata) ([]byte, error) {
 	document := definitionsTOMLDocument{
 		SchemaVersion: DefinitionsSchemaVersion,
 		Stats:         make(map[string]statTOMLDefinition, len(registry.Stats)),
 		Actions:       make(map[string]actionTOMLDefinition, len(registry.Actions)),
 		Presets:       make(map[string]presetTOMLDefinition, len(registry.Presets)),
+	}
+	if metadata != nil {
+		document.Ruleset = &rulesetTOMLMetadata{ID: metadata.ID, Name: metadata.Name, Version: metadata.Version}
 	}
 	for id, definition := range registry.Stats {
 		raw := statTOMLDefinition{Name: definition.Name, Type: string(definition.Type)}

@@ -204,6 +204,134 @@ Atlas должен собираться и запускаться после к�
 - Read authorization для avatar отделён от scene assets: владелец читает effective avatar доступного character без зависимости от viewport/current scene, GM также читает preset и persistent roster avatars без открытой сцены; чужие sheets/assets не раскрываются.
 - `image_pipeline_test.go` и `avatar_upload_test.go` покрывают PNG/JPEG, большой вход, byte/pixel/side limits, cancellation, отсутствие original/temp, revoke во время worker, preset overlay, persistent без token, shared avatar, restart validation и rollback save failure. `gofmt`, полный `go test ./...`, `go build ./...`, `go vet ./...` и `git diff --check` — успешны. Следующий этап: 10.
 
+### Этап 10 — завершён
+
+- Единственная существующая форма свойств token вместе с multi-owner control перенесена в левую вкладку «Токены»; `Drafts`, autosave и обработчики не дублировались. Загрузка изображения, floor/size/color/hidden и прежние GM-only ограничения сохранены.
+- Правая панель больше не содержит token controls и продолжает обслуживать инспектор элементов/переходов; при выборе token она оставляет место для будущего character UI.
+- `Token` и field-level `Properties` получили `opacity` 0…1. JSON boundary отличает отсутствующее legacy-поле (мигрирует в 1) от явного `0`, а startup сохраняет миграцию в каноническом виде.
+- Snapshot/realtime/reconnect передают opacity; validation отклоняет нечисловые и выходящие за диапазон значения. Новые token клиента явно создаются с opacity 1.
+- Renderer перемножает token opacity с floor/hidden alpha на compositing-этапе; opacity не входит в artwork cache key и не создаёт новые механики движения.
+- Тесты покрывают legacy default 1, явный 0, patch/reconnect для 0/0.5/1, invalid range, размещение единственной формы, сохранение draft при move/property update, числовой UI patch и alpha/cache composition.
+- `gofmt`, полный `go test ./...`, `go build ./...`, `go vet ./...`, `git diff --check` и реальный `TestBrowser` в headless Chrome — успешны. Следующий этап: 11.
+
+### Этап 11 — завершён
+
+- Правая панель показывает состояние выбранного token: empty state ничего не создаёт, а существующий character загружается только через прежний single-watch snapshot; stats/definitions editor не добавлялся.
+- GM UI вызывает существующие reliable-команды создания из preset/пустого, link/relink, unlink и `persistent` («Сохранить в кампании»). Все token-target команды несут явный `sceneId`; player controls остаются в GM-only группе, а серверный запрет сохраняется.
+- Добавлен GM-only `GET /api/characters` с отдельными paginated каталогами `presets` и `roster`, максимум 100 записей на страницу. Roster содержит только summary persistent instances без stats, actions, avatar/assets или sheets.
+- `web/characters.js` получил `CharacterCatalog` с generation-защитой, page cursors, очисткой и пределом 500 retained summaries; полный выбранный sheet по-прежнему приходит отдельно по WS. Registry/character ACK обновляют только лёгкие каталоги.
+- Linkage upsert немедленно переключает watch выбранного token; unlink/relink/GC очищают старое состояние, а существующая request-generation защита отбрасывает поздние ответы прежнего character.
+- Серверные тесты покрывают GM-only API, лимит страницы, cursor, summaries без утечки sheet/assets и player denial. Browser scenario покрывает empty selection, пять wolf token → пять IDs, unlink/recreate, persistent Lancelot на двух сценах, удаление последних token и relink того же ID.
+- `gofmt`, полный `go test ./...`, `go build ./...`, `go vet ./...`, `git diff --check` и реальный `TestBrowser` в headless Chrome — успешны. Следующий этап: 12.
+
+### Этап 12 — завершён
+
+- Правая панель отображает типизированные effective stats и источник значения; edit/reset/add отправляют только один stat patch, сохраняют `0`/`false`/`""` и уведомляют об атомарно созданной campaign definition.
+- Character drafts разделены по character ID/stat ID; plain-object comparison защищает новый ввод от старого ACK/update, rejection оставляет локальный draft и показывает server error, а revoke удаляет timers/drafts/pending markers и закрывает editor.
+- Подключены avatar upload/reset через существующий bounded HTTP pipeline и один отзываемый object URL без отдельного растущего cache; token artwork не меняется.
+- Effective actions показывают description и RollSpec без локальных бросков; GM назначает/удаляет их существующими reliable-командами через отдельный paginated `actions` summary catalog, player следует snapshot permissions.
+- Серверный read API дополнен только action summaries; полные action metadata по-прежнему приходят исключительно с разрешённым выбранным character snapshot.
+- Тесты покрывают object drafts/старый ACK, `0`/`false`/пустую строку, type conflict, inherited reset, stat notification, action remove/add и avatar upload/reset; прежние cross-owner/revoke/atomicity server scenarios остаются зелёными.
+- `gofmt`, полный `go test ./...`, `go build ./...`, `go vet ./...`, `git diff --check` и реальный `TestBrowser` в headless Chrome — успешны. Следующий этап: 13.
+
+### Этап 13 — завершён
+
+- Добавлен `web/definitions.js`: компактный GM-only редактор effective stats/actions с create/update/delete, источником Ruleset/Campaign/overlay, revision-aware командами и сохранением локальной формы после stale/error refresh.
+- Stat UI поддерживает display name, четыре типа и optional default с доменными ограничениями; Action UI — name, description, до 32 tags и до 16 RollSpec с допустимыми dice/count/modifier полями. Сервер остаётся окончательной границей validation.
+- Ruleset definitions редактируются созданием campaign overlay, поэтому immutable ruleset snapshot не меняется; удаление overlay возвращает ruleset definition. Reference/type errors преобразуются в читаемые сообщения со списком зависимостей.
+- Duplicate Action создаёт независимую campaign definition с Unicode ID. При открытом управляемом character назначение отправляется второй существующей `characterActionAdd` командой, а UI раздельно сообщает успех копирования и результат назначения.
+- Редактор встроен в существующий header/modal без framework; player не может открыть его, а прежний серверный GM-only запрет защищает обход UI. Preset/TOML editor сознательно оставлен этапу 14.
+- Browser module scenario покрывает сохранение нового draft после stale ACK, source/reference labels и player gate; реальный Chrome — overlay без изменения ruleset, Unicode duplicate/independent edit/assignment, blocked referenced delete и blocked referenced type change.
+- Исправлен найденный UI-дефект: refresh после отклонённой CRUD-команды больше не стирает серверную ошибку. `gofmt`, `git diff --check`, полный `go test ./...`, `go build ./...`, `go vet ./...` и реальный `TestBrowser` в headless Chrome — успешны. Следующий этап: 14.
+
+### Этап 14 — завершён
+
+- `web/definitions.js` дополнен редактором preset: name/kind, typed stats, выбор known actions по ID, avatar upload/reset и независимый duplicate. Unknown stat values уходят в существующую атомарную preset-команду; ruleset preset редактируется campaign overlay.
+- Изменение preset не переписывает instances: существующий registry realtime обновляет открытые sheets, inherited значения меняются, а instance overrides сохраняются. Avatar использует bounded pipeline этапа 09 и один отзываемый object URL.
+- Добавлены две раздельные TOML-карточки: однократная установка ruleset с metadata/diff preview и campaign upsert import с added/updated diff. Apply повторно отправляет тот же `File`, preview digest/revision и устойчивый browser operation ID; stale preview требует нового Preview.
+- После установки ruleset controls блокируются и показывают immutable metadata — replace/uninstall не предлагаются. Campaign import не удаляет пропущенные definitions и не меняет ruleset; временный preview на сервере и второй persistence backend не добавлялись.
+- Backend получил GM-only `ruleset/export` и `campaign/export`: первый канонически выгружает immutable snapshot с metadata, второй — только campaign extensions без runtime instances. Оба документа ограничены и проходят существующий TOML codec/validation.
+- Browser acceptance покрывает Unicode round-trip обоих TOML видов, install в существующую пустую кампанию, stale apply, upsert, wolf dexterity realtime с сохранённым override, unknown stat, Unicode duplicate preset и preset avatar upload/reset.
+- Серверные тесты дополнены export authorization/round-trip/no-runtime проверками. `gofmt`, полный `go test ./...`, `go build ./...`, `go vet ./...`, `git diff --check` и реальный `TestBrowser` в headless Chrome — успешны. Следующий этап: 15.
+
+### Этап 15 — завершён
+
+- Добавлен transient `playerPreview` на конкретный WS peer без изменения `Member.gm/role`; `subscribe` может явно восстановить режим после reconnect, а scene snapshot подтверждает `playerPreview`, `previewRevision`, active token и floor.
+- GM в preview выбирает любой token текущей сцены, включая hidden, и получает лёгкие locators всех tokens; spatial snapshot при этом использует прежнюю player projection без hidden tokens, editor transitions/catalog и непубличных background elements/assets.
+- `move/final` в preview проходят существующий `CanMoveTokenSegment`; обычный GM вне preview сохраняет прежний unrestricted movement. После первого переключения команды движения привязаны к `previewRevision`, поэтому задержавшиеся move/final старого режима отклоняются без mutation.
+- Realtime token/element delivery учитывает projection конкретного peer; смена этажа выбранного token обновляет snapshot, а locator updates остаются независимыми от viewport и включают hidden selector entries без artwork/character data.
+- Для image requests preview snapshot выдаёт ротируемый непрозрачный `previewAssetKey`; bounded индекс `key → peer` применяет player asset visibility без линейного обхода peers и очищается при переключении/закрытии соединения.
+- `player_preview_test.go` покрывает два peer одного GM, player denial, hidden/background filtering, далёкий focus, off-region locator, walkable rejection, normal GM move, stale move/final и reconnect restore.
+- `gofmt`, целевые server tests, полный `go test ./...`, `go build ./...`, `go vet ./...` и `git diff --check` — успешно. UI-переключатель и передача revision/key клиентскими move/image запросами остаются этапу 16.
+
+### Этап 16 — завершён
+
+- В `web/index.html`, `web/style.css` и `web/app.js` добавлен всегда доступный GM / Player View switch; фактическая GM-роль отделена от `isEditorView`, а смена считается завершённой только после server snapshot.
+- Переключение дожидается movement outbox, завершает token/element drag, очищает build selection/tools/geometry drafts и сохраняет viewport/активный token; reconnect передаёт желаемый transient mode через `subscribe`.
+- Preview использует общий player path для canvas, render bounds, walkable movement, selector, sidebar и character sheet; build tree/handles/tools/keyboard mutations скрыты, но разрешённые stat/avatar edits остаются реальными.
+- `move/final/activeToken` передают `previewRevision`, image requests — `previewAssetKey`; selector остаётся locator-only и включает hidden token без раскрытия его canvas/artwork.
+- При возврате authoritative editor snapshot восстанавливает catalog и прежний token selection после region load; `main.go` сбрасывает peer region на границе projection, не меняя роль/GM-флаг.
+- `browser_scenarios_test.go` и `browser_test.go` покрывают GM → preview, ограниченный drag, неселектируемый background, другой этаж/hidden locator, возврат в build и отдельный UI-вход настоящего player.
+- Проверки: `gofmt`, `go test ./...`, `go build ./...`, `go vet ./...`, `git diff --check` и реальный `TestBrowser` в headless Chrome — успешно. Открытых блокеров этапа нет.
+
+### Этап 17 — завершён
+
+- Добавлены `dice.go` и `dice_test.go`: `RollRequest`, серверный snapshot `RollEvent` и `RollService` для взаимоисключающих manual/action rolls без WS, persistence и UI.
+- Action roll разрешает effective character/action/RollSpec на сервере, складывает fixed и числовой stat modifier и отклоняет клиентские count/sides/modifier/results/authoritative metadata.
+- Character roll требует управляемый связанный token именно в указанной доступной сцене; автор и все отображаемые имена берутся из канонических campaign данных, а не из запроса.
+- `DiceRNG` инъецируется; production `CryptoDiceRNG` использует равномерный `crypto/rand`, а ошибка или результат RNG вне диапазона возвращает нулевой event без частичной публикации.
+- Валидация покрывает d4/d6/d8/d10/d12/d20, 1…100 dice, integer count, missing/wrong stat/action и конечный безопасно представимый modifier/total; event фиксирует scene/character/action/roll IDs и names, UTC timestamp и отдельные результаты.
+- Проверки: целевые dice tests, полный `go test ./...`, `go build ./...`, `go vet ./...` и `git diff --check` — успешно. Следующий этап: 18.
+
+### Этап 18 — завершён
+
+- В `dice_commands.go`, `reliable.go` и `main.go` команда `roll` подключена к общему reliable stream; `Receipt.RollEvent` сохраняет полный результат и повтор ACK возвращает его с `replayed: true` без повторного RNG.
+- `Session.RollHistory` ограничена `MaxRollHistory = 500`, имеет отдельную persisted `RollRevision`; event, history и result-bearing receipt записываются одним save до scene-wide broadcast и ACK.
+- Ошибка save откатывает history/revision/receipt и не рассылает event; успешный live event (`rollEvent`, `replayed: false`) доставляется всем доступным подписчикам сцены независимо от viewport и spatial delivery counter.
+- Subscribe/sync возвращает отдельный `rollHistory` envelope только для текущей доступной сцены; удалённые/скрытые сцены не раскрываются. Имена в событиях остаются snapshot, а string IDs истории не участвуют в character reference index/GC.
+- `web/app.js` до этапа 19 явно отделяет и игнорирует dice messages, не отправляя их в token/element delivery-gap recovery; UI и журнал бросков не добавлялись.
+- `dice_commands_test.go` покрывает lost ACK/reconnect/restart, same seq/different payload, eviction при 500, receipt после eviction, две сцены, access denial/unpublish/delete, GC/name snapshot и атомарный disk failure без broadcast.
+- Проверки: целевые integration tests, полный `go test ./...`, `go build ./...`, `go vet ./...`, `git diff --check` и реальный `TestBrowser` в headless Chrome — успешно. Следующий этап: 19.
+
+### Этап 19 — завершён
+
+- Добавлен `web/dice.js`: manual 1…100 dice, цикл d4/d6/d8/d10/d12/d20 по ЛКМ/ПКМ, optional character выбранного linked token и action roll только по character/action/RollSpec IDs.
+- Нижняя часть правой панели получила компактные controls и раскрываемый журнал; пользовательские имена и metadata создаются только через `textContent`.
+- Journal и dedup ограничены 500 событиями, объединяют live/history/result-bearing ACK без дублей и отбрасывают сообщения неактуальной сцены до spatial delivery path.
+- `all/self/off` хранится локально и влияет только на передачу новых live events через `atlas-dice-roll`; replay и journal от настройки не зависят, 3D renderer не добавлялся.
+- `Outbox` передаёт полный ACK completion callback: серверная ошибка по-прежнему очищает подтверждённую команду и показывается существующим toast/status path, а replay receipt попадает в dedup journal.
+- Character action rows получили реальные кнопки броска; count/sides/modifier action-клиент не вычисляет и не отправляет.
+- Browser scenario покрывает 10d10, input boundaries, ЛКМ/ПКМ, manual без/с character, action payload, server modifier rendering, replay/receipt dedup, late scene, unsafe text, off и 501 events.
+- Проверки: `gofmt`, релевантные dice/roll tests, полный `go test ./...`, `go build ./...`, `go vet ./...`, реальный `TestBrowser` в headless Edge и `git diff --check` — успешно. Следующий этап: 20.
+
+### Этап 20 — завершён
+
+- Зафиксирован официальный `@3d-dice/dice-box-threejs` 0.0.12 с точными `three` 0.143.0 и `cannon-es` 0.20.0; локальные bundle, MIT license и минимальные plastic/felt sound assets входят в `web/*` и Go embed без CDN.
+- `scripts/vendor-dice.ps1` воспроизводимо получает npm tarball, проверяет SHA-256 и dependency metadata и обновляет vendor-файлы; lockfile вынесен в `scripts/dice-vendor` без перевода приложения на общий frontend build.
+- Новый `web/dice-renderer.js` лениво импортирует bundle и использует проверенные upstream `initialize()`/`roll()`; cleanup самостоятельно отменяет RAF, снимает resize listener, удаляет canvas/overlay и освобождает Three/Cannon/WebGL resources, не предполагая отсутствующий `dispose()` у DiceBox.
+- Predetermined notation формируется только из server `RollEvent`; адаптер проверяет ordered результаты по roll IDs и фактически видимым граням. Это отдельно обходит известный stale return value d4 в 0.0.12 без изменения journal/total.
+- Overlay полностью `pointer-events: none`; ошибка инициализации/WebGL очищает частично созданное состояние и возвращается вызывающему коду.
+- Embed/module tests проверяют локальные ресурсы, notation/order/multiset и cleanup mocks; реальный headless Edge проверяет d4/d6/d8/d10/d12/d20, ordered 10d10, повторный init/cleanup и локальную раздачу packaged assets.
+
+### Этап 21 — завершён
+
+- `DiceAnimator` отделён от немедленного journal: выполняет максимум одну анимацию, удерживает не более 8 ожидающих и целиком пропускает 3D для бросков больше 30 dice, не отбрасывая события журнала.
+- Политики `all/self/off` применяются до lazy renderer и тем самым также к звуку; `off` не создаёт DiceBox, смена политики отменяет неподходящую active/pending работу и освобождает renderer.
+- History/replayed/receipt события остаются только в bounded deduplicated journal; animator получает исключительно новые live events актуальной сцены.
+- Timeout, rejection, WebGL failure, disconnect, смена сцены/кампании и уничтожение выполняют cancellation/cleanup перед продолжением очереди; после завершённого roll постоянный RAF не остаётся.
+- Browser mock scenario покрывает burst/overflow, one-in-flight, 100 dice, Alice/Bob self filter, off до/во время roll, scene switch, timeout/rejection и listener/canvas/GPU cleanup; реальный browser path проходит через vendored библиотеку.
+- Проверки: `gofmt`, целевые embed/browser проверки, полный `go test ./...`, `go build ./...`, `go vet ./...`, `git diff --check` и один полный `TestBrowser` в headless Edge — успешно. Два контрольных browser-повтора снова прошли dice path, но позднее поймали несвязанные флейки старых image-cache/action-overlay сценариев. Следующий этап: 22.
+
+### Этап 22 — завершён
+
+- Сценарии A–F сопоставлены с `TestCharacterCommandsScenariosAThroughF`, GC/index/watch/avatar tests и новыми `TestEpicCoOwnersConcurrentStatPatchesReconnect`/`TestEpicAvatarUploadRejectsCharacterDeletedDuringWorker`; добавлена сквозная проверка пяти wolves, preset realtime, persistent character в двух scenes и revoke/GC в реальном браузере.
+- Ruleset/install цепочка дополнена `TestEpicExistingCampaignRulesetRestartAndOverlay`: existing campaign → HTTP preview/apply → restart → неизменный snapshot → campaign overlay → второй restart. Legacy owner migration теперь также проверяет второй restart и совместимую opacity migration.
+- Сценарий G и отдельный real-player path проходят targeted headless Edge: Player View использует player projection, walkable блокирует drag, background не выбирается, смена floor/token и возврат в GM восстанавливают build tools.
+- Сценарии H–J и §50 покрыты deterministic dice/server tests, lost ACK/restart/history/failed-save tests и browser journal/queue/policy/real-renderer checks; real vendored 3D путь проверяет forced d4/d6/d8/d10/d12/d20 и 10d10, avatar browser path использует реальный libvips worker.
+- Найден и исправлен epic-дефект `DefinitionsEditor.reload`: `registryChanged`/ACK больше не теряют refresh во время уже идущего запроса; хранится только один коалесцированный pending reload, локальный dirty draft сохраняется.
+- Проверки: `gofmt` изменённых Go-файлов, `go build ./...`, полный обычный `go test ./... -count=1 -timeout 10m`, `git diff --check` и targeted `TestBrowser` с `ATLAS_CHROME`/`ATLAS_BROWSER_CHARACTERS_DICE_ONLY` — успешно.
+- Тяжёлые opt-in memory/profile/stress suites не запускались по §50; обязательных непроверенных сценариев и реальных блокеров не осталось.
+
 ## D. Промпты
 
 ### 01. Доменная модель и чистая логика

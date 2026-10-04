@@ -1,0 +1,73 @@
+schema_version = 1
+
+# Новая характеристика существует только в этой кампании.
+[stats.reputation]
+name = "Репутация в Гринвуде"
+type = "integer"
+default = 0
+
+# Новое действие существует только в этой кампании.
+[actions.dirty_trick]
+name = "Грязный приём"
+description = "Особенность местных гоблинов."
+tags = ["attack", "campaign"]
+
+[[actions.dirty_trick.rolls]]
+id = "check"
+name = "Проверка"
+count = 1
+sides = 20
+modifier_stat = "dexterity_mod"
+modifier_fixed = 1
+
+# Тот же ID уже есть в ruleset: это полная campaign-замена action,
+# а не добавление одного поля к исходной definition.
+[actions.sword_attack]
+name = "Удар оружием Гринвуда"
+description = "Кампания использует более опасный вариант действия."
+tags = ["attack", "melee", "campaign"]
+
+[[actions.sword_attack.rolls]]
+id = "attack"
+name = "Попадание"
+count = 1
+sides = 20
+modifier_stat = "strength_mod"
+modifier_fixed = 1
+
+[[actions.sword_attack.rolls]]
+id = "damage"
+name = "Урон"
+count = 2
+sides = 8
+modifier_stat = "strength_mod"
+
+# Тот же ID preset, что в ruleset: весь preset перечислен заново.
+[presets.goblin]
+name = "Гоблин Гринвуда"
+kind = "monster"
+actions = ["sword_attack", "dodge", "dirty_trick"]
+
+[presets.goblin.stats]
+strength_mod = 1
+dexterity_mod = 3
+hp = 10
+speed = 6.5
+alive = true
+motto = "Лес принадлежит нам"
+reputation = -2
+
+# Совершенно новый campaign preset.
+[presets.tavern_keeper]
+name = "Трактирщик"
+kind = "npc"
+actions = ["dodge"]
+
+[presets.tavern_keeper.stats]
+strength_mod = 0
+dexterity_mod = 1
+hp = 12
+speed = 5.0
+alive = true
+motto = "Сначала заплати"
+reputation = 4

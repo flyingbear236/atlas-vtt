@@ -82,12 +82,14 @@ type Token struct {
 	Size                float64  `json:"size"`
 	Rotation            float64  `json:"rotation"`
 	Color               string   `json:"color"`
+	Opacity             float64  `json:"opacity"`
 	OwnerIDs            []string `json:"ownerIds"`
 	Hidden              bool     `json:"hidden"`
 	Asset               string   `json:"asset"`
 	CharacterInstanceID string   `json:"characterInstanceId,omitempty"`
 
 	legacyOwnerField bool
+	legacyOpacity    bool
 }
 type Member struct {
 	ID     string `json:"id"`
@@ -112,7 +114,9 @@ type Session struct {
 	CampaignRevision     uint64                                `json:"campaignRevision"`
 	RegistryRevision     uint64                                `json:"registryRevision"`
 	CharacterRevision    uint64                                `json:"characterRevision"`
+	RollRevision         uint64                                `json:"rollRevision,omitempty"`
 	DefinitionOperations map[string]DefinitionOperationReceipt `json:"definitionOperations,omitempty"`
+	RollHistory          []RollEvent                           `json:"rollHistory,omitempty"`
 	Scenes               map[string]*Scene                     `json:"scenes"`
 	Ruleset              RulesetSnapshot                       `json:"rulesetSnapshot"`
 	CampaignDefinitions  CampaignRegistry                      `json:"campaignDefinitions"`
@@ -121,17 +125,20 @@ type Session struct {
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
 }
 type peer struct {
-	conn           *websocket.Conn
-	member         *Member
-	session        string
-	out            chan any
-	sceneID        string
-	floorID        string
-	activeTokenID  string
-	region         *SceneRegion
-	delivery       uint64
-	characterID    string
-	characterWatch uint64
+	conn            *websocket.Conn
+	member          *Member
+	session         string
+	out             chan any
+	sceneID         string
+	floorID         string
+	activeTokenID   string
+	region          *SceneRegion
+	delivery        uint64
+	playerPreview   bool
+	previewRevision uint64
+	previewAssetKey string
+	characterID     string
+	characterWatch  uint64
 }
 type Server struct {
 	mu              sync.Mutex
@@ -146,6 +153,8 @@ type Server struct {
 	jobCancel       context.CancelFunc
 	jobWG           sync.WaitGroup
 	rotationJobs    map[string]*rotationJob
+	previewPeers    map[string]*peer
+	rollService     *RollService
 	stopping        bool
 	storageDegraded bool
 	defaultRuleset  RulesetSnapshot
@@ -170,7 +179,7 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 		return nil, fmt.Errorf("invalid default ruleset: %w", err)
 	}
 	jobContext, jobCancel := context.WithCancel(context.Background())
-	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, imageJobs: make(chan struct{}, 1), jobContext: jobContext, jobCancel: jobCancel, rotationJobs: map[string]*rotationJob{}, defaultRuleset: defaultRuleset}
+	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, imageJobs: make(chan struct{}, 1), jobContext: jobContext, jobCancel: jobCancel, rotationJobs: map[string]*rotationJob{}, previewPeers: map[string]*peer{}, rollService: NewRollService(nil), defaultRuleset: defaultRuleset}
 	if err := os.MkdirAll(filepath.Join(root, "assets"), 0755); err != nil {
 		return nil, fmt.Errorf("storage directory: %w", err)
 	}
@@ -199,6 +208,9 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 			ss.Receipts = map[string]Receipt{}
 		}
 		if initializeSessionCharacterCollections(ss) {
+			migrated = true
+		}
+		if initializeSessionDiceState(ss) {
 			migrated = true
 		}
 		for assetID, asset := range ss.Assets {
@@ -253,7 +265,7 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 			if removeLegacyWalkableLayers(scene) {
 				migrated = true
 			}
-			if migrateTokenOwnership(scene) {
+			if migrateTokens(scene) {
 				migrated = true
 			}
 			if !validateSceneStructure(scene, ss.Assets, ss.Members) {
@@ -290,6 +302,9 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 		if err := validateSessionCharacterState(ss); err != nil {
 			return nil, fmt.Errorf("invalid character state in session %s: %w", sessionID, err)
 		}
+		if err := validateSessionDiceState(ss); err != nil {
+			return nil, fmt.Errorf("invalid dice state in session %s: %w", sessionID, err)
+		}
 		rebuildCharacterReferences(ss)
 		if refreshAssetOrphans(ss, time.Now()) {
 			migrated = true
@@ -314,8 +329,12 @@ func (s *Server) saveLocked() error {
 	}
 	for sessionID, session := range s.sessions {
 		initializeSessionCharacterCollections(session)
+		initializeSessionDiceState(session)
 		if err := validateSessionCharacterState(session); err != nil {
 			return fmt.Errorf("refuse to save invalid character state in session %s: %w", sessionID, err)
+		}
+		if err := validateSessionDiceState(session); err != nil {
+			return fmt.Errorf("refuse to save invalid dice state in session %s: %w", sessionID, err)
 		}
 	}
 	b, e := json.Marshal(s.sessions)
@@ -383,6 +402,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/join", s.join)
 	mux.HandleFunc("POST /api/upload", s.uploadAsset)
 	mux.HandleFunc("GET /api/definitions", s.readDefinitions)
+	mux.HandleFunc("GET /api/definitions/ruleset/export", s.exportRulesetDefinitions)
+	mux.HandleFunc("GET /api/definitions/campaign/export", s.exportCampaignDefinitions)
+	mux.HandleFunc("GET /api/characters", s.readCharacterCatalog)
 	mux.HandleFunc("POST /api/definitions/ruleset/preview", s.previewRulesetInstall)
 	mux.HandleFunc("POST /api/definitions/ruleset/apply", s.applyRulesetInstall)
 	mux.HandleFunc("POST /api/definitions/campaign/preview", s.previewCampaignImport)
@@ -523,10 +545,11 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := &peer{
-		conn:    c,
-		member:  m,
-		session: ss.ID,
-		out:     make(chan any, 128),
+		conn:            c,
+		member:          m,
+		session:         ss.ID,
+		out:             make(chan any, 128),
+		previewRevision: 1,
 	}
 	s.peers[p] = true
 	s.send(p, s.snapshotCampaign(ss, p.member))
@@ -537,6 +560,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
+		delete(s.previewPeers, p.previewAssetKey)
 		delete(s.peers, p)
 		stillOnline := false
 		for other := range s.peers {
@@ -585,12 +609,13 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		}
 		if msg.Type == "sync" {
 			s.send(p, s.snapshotSceneForPeer(ss, p))
+			s.sendRollHistory(ss, p)
 		} else if msg.Type == "view" {
 			if p.sceneID == "" || msg.SceneID != p.sceneID || msg.Region == nil || !msg.Region.valid() {
 				s.send(p, map[string]string{"type": "error", "message": "Некорректная область сцены"})
 			} else {
 				scene := ss.Scenes[p.sceneID]
-				if memberIsGM(m) && msg.ViewFloorID != "" {
+				if memberIsGM(m) && !p.playerPreview && msg.ViewFloorID != "" {
 					if scene.Floors[msg.ViewFloorID].ID == "" {
 						s.send(p, map[string]string{"type": "error", "message": "Этаж не найден"})
 						s.mu.Unlock()
@@ -603,10 +628,27 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				p.region = &region
 				s.send(p, s.snapshotSceneForPeer(ss, p))
 			}
+		} else if msg.Type == "playerPreview" {
+			if !memberIsGM(m) || msg.PreviewEnabled == nil {
+				s.send(p, map[string]string{"type": "error", "operation": "playerPreview", "message": "Player View доступен только ведущему"})
+			} else if p.sceneID == "" || (msg.SceneID != "" && msg.SceneID != p.sceneID) {
+				s.send(p, map[string]string{"type": "error", "operation": "playerPreview", "message": "Сначала откройте сцену"})
+			} else {
+				changed := p.playerPreview != *msg.PreviewEnabled
+				s.setPeerPlayerPreview(p, *msg.PreviewEnabled)
+				if changed {
+					p.region = nil
+				}
+				p.floorID = currentFloorForPeer(p, ss.Scenes[p.sceneID])
+				s.send(p, s.snapshotSceneForPeer(ss, p))
+			}
 		} else if msg.Type == "activeToken" {
-			if p.sceneID == "" || msg.SceneID != p.sceneID || memberIsGM(m) {
+			if p.sceneID == "" || msg.SceneID != p.sceneID || (memberIsGM(m) && !p.playerPreview) {
 				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Токен нельзя сделать активным"})
-			} else if token, ok := activeTokenForMember(ss.Scenes[p.sceneID], m, msg.ActiveTokenID); !ok {
+			} else if memberIsGM(m) && !previewContextMatches(p, msg) {
+				s.send(p, map[string]any{"type": "error", "operation": "activeToken", "errorCode": previewContextChangedErrorCode, "message": previewContextChangedIssue, "previewRevision": p.previewRevision})
+				s.send(p, s.snapshotSceneForPeer(ss, p))
+			} else if token, ok := activeTokenForPeer(p, ss.Scenes[p.sceneID], msg.ActiveTokenID); !ok {
 				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Токен не принадлежит игроку"})
 			} else if msg.Region != nil && !msg.Region.valid() {
 				s.send(p, map[string]string{"type": "error", "operation": "activeToken", "message": "Некорректная область сцены"})
@@ -631,15 +673,21 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				p.region = nil
 				p.delivery = 0
 				s.send(p, s.snapshotCampaign(ss, m))
+			} else if msg.PreviewEnabled != nil && *msg.PreviewEnabled && !memberIsGM(m) {
+				s.send(p, map[string]string{"type": "error", "operation": "playerPreview", "message": "Player View доступен только ведущему"})
 			} else if scene := ss.Scenes[msg.SceneID]; scene == nil || (!memberIsGM(m) && !scene.Published) {
 				s.send(p, map[string]string{"type": "error", "message": "Сцена недоступна"})
 			} else {
+				if msg.PreviewEnabled != nil {
+					s.setPeerPlayerPreview(p, *msg.PreviewEnabled)
+				}
 				p.sceneID = msg.SceneID
 				p.activeTokenID = msg.ActiveTokenID
 				p.floorID = currentFloorForPeer(p, scene)
 				p.region = nil
 				p.delivery = 0
 				s.send(p, s.snapshotSceneForPeer(ss, p))
+				s.sendRollHistory(ss, p)
 			}
 		} else if msg.Type == "characterWatch" {
 			s.watchCharacter(ss, p, msg.CharacterID, msg.CharacterWatch)
@@ -782,7 +830,18 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	ss, m := s.auth(r)
-	allowed := ss != nil && m != nil && assetVisibleToAtToken(ss, m, r.URL.Query().Get("scene"), parts[0], r.URL.Query().Get("activeTokenId"))
+	allowed := false
+	if ss != nil && m != nil {
+		previewKey := r.URL.Query().Get("previewKey")
+		if previewKey == "" {
+			allowed = assetVisibleToAtToken(ss, m, r.URL.Query().Get("scene"), parts[0], r.URL.Query().Get("activeTokenId"))
+		} else {
+			peer := s.previewPeers[previewKey]
+			if peer != nil && peer.session == ss.ID && peer.member.ID == m.ID && peer.sceneID == r.URL.Query().Get("scene") && peer.playerPreview {
+				allowed = assetVisibleToPeer(ss, peer, parts[0])
+			}
+		}
+	}
 	s.mu.Unlock()
 	if !allowed {
 		fail(w, 403, "Ассет недоступен")

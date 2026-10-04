@@ -81,6 +81,26 @@ func TestDefinitionsTOMLExportIsCanonicalAcrossMapOrder(t *testing.T) {
 	}
 }
 
+func TestRulesetSnapshotTOMLExportRoundTrip(t *testing.T) {
+	registry := selfContainedTOMLRegistry()
+	for id, preset := range registry.Presets {
+		preset.AvatarAssetID = ""
+		registry.Presets[id] = preset
+	}
+	want := RulesetSnapshot{Metadata: RulesetMetadata{ID: "ядро", Name: "Ядро правил", Version: "1.0"}, Registry: RulesetRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets}}
+	data, err := ExportRulesetSnapshotTOML(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseRulesetTOML(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ruleset snapshot round trip differs\ngot: %#v\nwant: %#v\n%s", got, want, data)
+	}
+}
+
 func TestDefinitionsTOMLRejectsInvalidDocuments(t *testing.T) {
 	tests := map[string]string{
 		"missing schema": `[stats.hp]

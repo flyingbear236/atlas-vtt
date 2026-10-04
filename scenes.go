@@ -510,12 +510,33 @@ func ownedTokenLocators(scene *Scene, member *Member) map[string]TokenLocator {
 	return owned
 }
 
+func tokenLocatorsForPeer(scene *Scene, peer *peer) map[string]TokenLocator {
+	if peer == nil || peer.member == nil || scene == nil {
+		return map[string]TokenLocator{}
+	}
+	if !memberIsGM(peer.member) {
+		return ownedTokenLocators(scene, peer.member)
+	}
+	locators := map[string]TokenLocator{}
+	if !peer.playerPreview {
+		return locators
+	}
+	for tokenID, token := range scene.Tokens {
+		locators[tokenID] = tokenLocator(token)
+	}
+	return locators
+}
+
 func (s *Server) snapshotScene(ss *Session, member *Member, sceneID string, region *SceneRegion) any {
 	scene := ss.Scenes[sceneID]
 	return s.snapshotSceneAtFloor(ss, member, sceneID, region, currentFloorForMember(scene, member, ""))
 }
 
 func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID string, region *SceneRegion, floorID string) any {
+	return s.snapshotSceneAtFloorProjection(ss, member, sceneID, region, floorID, !memberIsGM(member), nil)
+}
+
+func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sceneID string, region *SceneRegion, floorID string, playerProjection bool, peer *peer) any {
 	scene := ss.Scenes[sceneID]
 	if !sceneVisible(scene, member) {
 		return s.snapshotCampaign(ss, member)
@@ -531,7 +552,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 	if region != nil {
 		runtime := scene.ensureRuntime()
 		for _, token := range runtime.query(*region) {
-			if _, visible := visibleFloors[tokenFloorID(scene, token)]; visible && (memberIsGM(member) || !token.Hidden) {
+			if _, visible := visibleFloors[tokenFloorID(scene, token)]; visible && (!playerProjection || !token.Hidden) {
 				tokens[token.ID] = token
 				if asset, ok := ss.Assets[token.Asset]; ok {
 					assets[asset.ID] = publicAsset(asset)
@@ -542,7 +563,7 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 			if _, visible := visibleFloors[element.FloorID]; !visible {
 				continue
 			}
-			if !memberIsGM(member) && !runtime.elementPublic(element) {
+			if playerProjection && !runtime.elementPublic(element) {
 				continue
 			}
 			elements[element.ID] = element
@@ -564,19 +585,19 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 	}
 	metadata := SceneMetadata{ID: scene.ID, Name: scene.Name, Published: scene.Published, Revision: scene.Revision, Bounds: scene.Bounds}
 	var entry *ScenePoint
-	if region == nil {
+	if region == nil && (!playerProjection || !memberIsGM(member)) {
 		entry = sceneEntryPoint(scene, member)
 	}
 	layers := make(map[string]Layer, len(scene.Layers))
 	for layerID, layer := range scene.Layers {
-		if memberIsGM(member) {
+		if !playerProjection {
 			layers[layerID] = layer
 		} else if _, visible := visibleFloors[layer.FloorID]; visible {
 			layers[layerID] = layer
 		}
 	}
 	transitions := scene.Transitions
-	if !memberIsGM(member) {
+	if playerProjection {
 		// Transition geometry is editor state. Runtime triggering is authoritative
 		// on the server, so players do not need endpoint metadata.
 		transitions = map[string]Transition{}
@@ -601,7 +622,10 @@ func (s *Server) snapshotSceneAtFloor(ss *Session, member *Member, sceneID strin
 		"region":         region,
 		"entry":          entry,
 	}
-	if memberIsGM(member) && region == nil {
+	if peer != nil {
+		snapshot["ownedTokens"] = tokenLocatorsForPeer(scene, peer)
+	}
+	if !playerProjection && region == nil {
 		snapshot["elementCatalog"] = sceneElementCatalog(scene)
 	}
 	return snapshot
@@ -628,13 +652,25 @@ func catalogElement(element SceneElement) SceneElement {
 // authoritative state; delivery describes only events actually sent to this
 // peer, so filtered region-local events do not look like packet loss.
 func (s *Server) snapshotSceneForPeer(ss *Session, p *peer) any {
+	if p.previewRevision == 0 {
+		p.previewRevision = 1
+	}
+	if p.playerPreview && p.previewAssetKey == "" {
+		p.previewAssetKey = id()
+		s.previewPeers[p.previewAssetKey] = p
+	}
 	scene := ss.Scenes[p.sceneID]
 	p.floorID = currentFloorForPeer(p, scene)
-	snapshot := s.snapshotSceneAtFloor(ss, p.member, p.sceneID, p.region, p.floorID)
+	snapshot := s.snapshotSceneAtFloorProjection(ss, p.member, p.sceneID, p.region, p.floorID, peerUsesPlayerProjection(p), p)
 	if value, ok := snapshot.(map[string]any); ok && value["type"] == "snapshot" {
 		value["delivery"] = p.delivery
 		value["activeTokenId"] = p.activeTokenID
-		if token, ok := activeTokenForMember(scene, p.member, p.activeTokenID); ok && p.region == nil {
+		value["playerPreview"] = p.playerPreview
+		value["previewRevision"] = p.previewRevision
+		if p.playerPreview {
+			value["previewAssetKey"] = p.previewAssetKey
+		}
+		if token, ok := activeTokenForPeer(p, scene, p.activeTokenID); ok && p.region == nil {
 			value["entry"] = &ScenePoint{X: token.X, Y: token.Y}
 		}
 	}
@@ -656,7 +692,7 @@ func (s *Server) publishSceneSnapshot(ss *Session, sceneID string) {
 			// Structural operations are rare and can create, move or remove many
 			// elements at once. Refresh the GM-only catalog with that snapshot;
 			// ordinary viewport snapshots intentionally omit it.
-			if memberIsGM(p.member) {
+			if memberIsGM(p.member) && !p.playerPreview {
 				if value, ok := snapshot.(map[string]any); ok && value["type"] == "snapshot" {
 					if scene := ss.Scenes[sceneID]; scene != nil {
 						value["elementCatalog"] = sceneElementCatalog(scene)
@@ -697,6 +733,30 @@ func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, active
 	}
 	for visibleFloorID := range visibleFloorSet(scene, floorID) {
 		if rt.assetPublicByFloor[visibleFloorID][assetID] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func assetVisibleToPeer(ss *Session, peer *peer, assetID string) bool {
+	asset, ok := ss.Assets[assetID]
+	if !ok || peer == nil || peer.member == nil {
+		return false
+	}
+	if asset.Kind == assetKindAvatar {
+		return avatarAssetVisibleTo(ss, peer.member, assetID)
+	}
+	scene := ss.Scenes[peer.sceneID]
+	if !sceneVisible(scene, peer.member) {
+		return false
+	}
+	runtime := scene.ensureRuntime()
+	if !peerUsesPlayerProjection(peer) {
+		return runtime.assetAll[assetID] > 0
+	}
+	for visibleFloorID := range visibleFloorSet(scene, currentFloorForPeer(peer, scene)) {
+		if runtime.assetPublicByFloor[visibleFloorID][assetID] > 0 {
 			return true
 		}
 	}

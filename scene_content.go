@@ -264,15 +264,68 @@ func activeTokenForMember(scene *Scene, member *Member, tokenID string) (Token, 
 	return token, ok && tokenOwnedBy(token, member.ID) && !token.Hidden
 }
 
+func peerUsesPlayerProjection(peer *peer) bool {
+	return peer != nil && peer.member != nil && (!memberIsGM(peer.member) || peer.playerPreview)
+}
+
+func (s *Server) setPeerPlayerPreview(peer *peer, enabled bool) {
+	if peer.previewRevision == 0 {
+		peer.previewRevision = 1
+	}
+	if peer.playerPreview == enabled {
+		return
+	}
+	delete(s.previewPeers, peer.previewAssetKey)
+	peer.playerPreview = enabled
+	peer.previewRevision++
+	peer.activeTokenID = ""
+	peer.previewAssetKey = ""
+	if enabled {
+		peer.previewAssetKey = id()
+		s.previewPeers[peer.previewAssetKey] = peer
+	}
+}
+
+func previewContextMatches(peer *peer, command Command) bool {
+	if peer == nil || !memberIsGM(peer.member) {
+		return true
+	}
+	// Existing editor clients predate previewRevision. Their commands remain
+	// valid until this particular peer has switched projection for the first
+	// time. Afterwards the generation is mandatory in both modes.
+	if !peer.playerPreview && peer.previewRevision <= 1 && command.PreviewRevision == 0 {
+		return true
+	}
+	return command.PreviewRevision == peer.previewRevision
+}
+
+func activeTokenForPeer(peer *peer, scene *Scene, tokenID string) (Token, bool) {
+	if peer == nil || peer.member == nil || scene == nil || tokenID == "" {
+		return Token{}, false
+	}
+	if memberIsGM(peer.member) {
+		if !peer.playerPreview {
+			return Token{}, false
+		}
+		token, ok := scene.Tokens[tokenID]
+		return token, ok
+	}
+	return activeTokenForMember(scene, peer.member, tokenID)
+}
+
 func currentFloorForPeer(peer *peer, scene *Scene) string {
 	if peer == nil {
 		return firstFloorID(scene)
 	}
-	if peer.member == nil || memberIsGM(peer.member) {
+	if peer.member == nil || (memberIsGM(peer.member) && !peer.playerPreview) {
 		return currentFloorForMember(scene, peer.member, peer.floorID)
 	}
-	if token, ok := activeTokenForMember(scene, peer.member, peer.activeTokenID); ok {
+	if token, ok := activeTokenForPeer(peer, scene, peer.activeTokenID); ok {
 		return tokenFloorID(scene, token)
+	}
+	peer.activeTokenID = ""
+	if memberIsGM(peer.member) {
+		return currentFloorForMember(scene, nil, peer.floorID)
 	}
 	owned := make([]Token, 0)
 	for _, token := range scene.Tokens {
@@ -503,7 +556,7 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 	for tokenID, token := range scene.Tokens {
 		layer := scene.Layers[token.LayerID]
 		invalidCharacter := len(characterSets) != 0 && token.CharacterInstanceID != "" && characterSets[0][token.CharacterInstanceID].ID == ""
-		if token.ID != tokenID || scene.Floors[token.FloorID].ID == "" || layer.Kind != layerKindTokens || layer.FloorID != token.FloorID || !validNumber(token.X) || !validNumber(token.Y) || token.Size < 16 || token.Size > 1024 || !validateTokenOwners(token, members) || (token.Asset != "" && (assets[token.Asset].ID == "" || assets[token.Asset].Kind != assetKindToken)) || invalidCharacter {
+		if token.ID != tokenID || scene.Floors[token.FloorID].ID == "" || layer.Kind != layerKindTokens || layer.FloorID != token.FloorID || !validNumber(token.X) || !validNumber(token.Y) || !validNumber(token.Opacity) || token.Opacity < 0 || token.Opacity > 1 || token.Size < 16 || token.Size > 1024 || !validateTokenOwners(token, members) || (token.Asset != "" && (assets[token.Asset].ID == "" || assets[token.Asset].Kind != assetKindToken)) || invalidCharacter {
 			return false
 		}
 	}
