@@ -2,15 +2,22 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
-const DefinitionsSchemaVersion = 1
+const (
+	DefinitionsSchemaVersion = 1
+	MaxRulesetFiles           = 32
+	MaxRulesetPackageBytes    = MaxDefinitionDocumentBytes
+)
 
 type DefinitionImportChanges struct {
 	Added   []string `json:"added"`
@@ -72,6 +79,284 @@ type presetTOMLDefinition struct {
 	// The exchange format uses "actions" while runtime explicitly uses
 	// CharacterPresetDefinition.ActionIDs.
 	Actions []string `toml:"actions,omitempty"`
+}
+
+
+type DefinitionReplacementChanges struct {
+	Added   []string `json:"added"`
+	Changed []string `json:"changed"`
+	Removed []string `json:"removed"`
+}
+
+type RulesetReplacementDiff struct {
+	Stats   DefinitionReplacementChanges `json:"stats"`
+	Actions DefinitionReplacementChanges `json:"actions"`
+	Presets DefinitionReplacementChanges `json:"presets"`
+}
+
+func validateRulesetFileName(name string) error {
+	if name == "" || len(name) > 255 || strings.TrimSpace(name) != name || strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') || !strings.HasSuffix(strings.ToLower(name), ".toml") {
+		return fmt.Errorf("invalid ruleset filename %q", name)
+	}
+	return nil
+}
+
+func rulesetFileDigest(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+func sortedDefinitionIDs[T any](values map[string]T) []string {
+	ids := make([]string, 0, len(values))
+	for id := range values {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func rulesetFileManifest(content string, document definitionsTOMLDocument) RulesetFileManifest {
+	return RulesetFileManifest{
+		Digest:      rulesetFileDigest(content),
+		HasMetadata: document.Ruleset != nil,
+		Stats:       sortedDefinitionIDs(document.Stats),
+		Actions:     sortedDefinitionIDs(document.Actions),
+		Presets:     sortedDefinitionIDs(document.Presets),
+	}
+}
+
+func decodeRulesetSourceFile(name, content string) (definitionsTOMLDocument, error) {
+	if err := validateRulesetFileName(name); err != nil {
+		return definitionsTOMLDocument{}, err
+	}
+	if len(content) > MaxDefinitionDocumentBytes {
+		return definitionsTOMLDocument{}, fmt.Errorf("ruleset file %q exceeds %d bytes", name, MaxDefinitionDocumentBytes)
+	}
+	var document definitionsTOMLDocument
+	decoder := toml.NewDecoder(strings.NewReader(content)).DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return definitionsTOMLDocument{}, fmt.Errorf("ruleset file %q: %w", name, err)
+	}
+	if document.SchemaVersion != DefinitionsSchemaVersion {
+		return definitionsTOMLDocument{}, fmt.Errorf("ruleset file %q: unsupported schema_version %d", name, document.SchemaVersion)
+	}
+	return document, nil
+}
+
+func CompileRulesetFiles(files map[string]string) (RulesetSnapshot, error) {
+	if len(files) == 0 || len(files) > MaxRulesetFiles {
+		return RulesetSnapshot{}, fmt.Errorf("ruleset package must contain between 1 and %d TOML files", MaxRulesetFiles)
+	}
+	totalBytes := 0
+	names := make([]string, 0, len(files))
+	for name, content := range files {
+		totalBytes += len(content)
+		if totalBytes > MaxRulesetPackageBytes {
+			return RulesetSnapshot{}, fmt.Errorf("ruleset package exceeds %d bytes", MaxRulesetPackageBytes)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	merged := definitionsTOMLDocument{
+		SchemaVersion: DefinitionsSchemaVersion,
+		Stats:         map[string]statTOMLDefinition{},
+		Actions:       map[string]actionTOMLDefinition{},
+		Presets:       map[string]presetTOMLDefinition{},
+	}
+	manifests := make(map[string]RulesetFileManifest, len(files))
+	statSource, actionSource, presetSource := map[string]string{}, map[string]string{}, map[string]string{}
+	metadataSource := ""
+
+	for _, name := range names {
+		content := files[name]
+		document, err := decodeRulesetSourceFile(name, content)
+		if err != nil {
+			return RulesetSnapshot{}, err
+		}
+		manifests[name] = rulesetFileManifest(content, document)
+		if document.Ruleset != nil {
+			if metadataSource != "" {
+				return RulesetSnapshot{}, fmt.Errorf("ruleset metadata is defined in both %q and %q", metadataSource, name)
+			}
+			metadata := *document.Ruleset
+			merged.Ruleset = &metadata
+			metadataSource = name
+		}
+		for id, definition := range document.Stats {
+			if source := statSource[id]; source != "" {
+				return RulesetSnapshot{}, fmt.Errorf("duplicate stat %q in %q and %q", id, source, name)
+			}
+			statSource[id], merged.Stats[id] = name, definition
+		}
+		for id, definition := range document.Actions {
+			if source := actionSource[id]; source != "" {
+				return RulesetSnapshot{}, fmt.Errorf("duplicate action %q in %q and %q", id, source, name)
+			}
+			actionSource[id], merged.Actions[id] = name, definition
+		}
+		for id, definition := range document.Presets {
+			if source := presetSource[id]; source != "" {
+				return RulesetSnapshot{}, fmt.Errorf("duplicate preset %q in %q and %q", id, source, name)
+			}
+			presetSource[id], merged.Presets[id] = name, definition
+		}
+	}
+	if merged.Ruleset == nil {
+		return RulesetSnapshot{}, fmt.Errorf("ruleset package must contain [ruleset] metadata in exactly one file")
+	}
+
+	combined, err := toml.Marshal(merged)
+	if err != nil {
+		return RulesetSnapshot{}, fmt.Errorf("encode merged ruleset: %w", err)
+	}
+	registry, metadata, err := decodeDefinitionsTOML(combined, EffectiveRegistry{})
+	if err != nil {
+		return RulesetSnapshot{}, err
+	}
+	snapshot := RulesetSnapshot{
+		Metadata: *metadata,
+		Registry: RulesetRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets},
+		Files:    manifests,
+	}
+	if err := ValidateRulesetSnapshot(snapshot); err != nil {
+		return RulesetSnapshot{}, fmt.Errorf("ruleset package: %w", err)
+	}
+	return snapshot, nil
+}
+
+func definitionOwner(files map[string]RulesetFileManifest, kind, id string) string {
+	for name, manifest := range files {
+		var ids []string
+		switch kind {
+		case definitionKindStat:
+			ids = manifest.Stats
+		case definitionKindAction:
+			ids = manifest.Actions
+		case definitionKindPreset:
+			ids = manifest.Presets
+		}
+		if slices.Contains(ids, id) {
+			return name
+		}
+	}
+	return ""
+}
+
+func ReplaceRulesetFile(current RulesetSnapshot, name, content string) (RulesetSnapshot, error) {
+	oldManifest, exists := current.Files[name]
+	if !exists {
+		if len(current.Files) == 0 {
+			return RulesetSnapshot{}, fmt.Errorf("current ruleset has no file manifest; replace the whole ruleset first")
+		}
+		return RulesetSnapshot{}, fmt.Errorf("ruleset file %q is not installed", name)
+	}
+	document, err := decodeRulesetSourceFile(name, content)
+	if err != nil {
+		return RulesetSnapshot{}, err
+	}
+	if oldManifest.HasMetadata != (document.Ruleset != nil) {
+		return RulesetSnapshot{}, fmt.Errorf("single-file replacement cannot move [ruleset] metadata between files")
+	}
+
+	candidate := cloneRulesetSnapshot(current)
+	for _, id := range oldManifest.Stats {
+		delete(candidate.Registry.Stats, id)
+	}
+	for _, id := range oldManifest.Actions {
+		delete(candidate.Registry.Actions, id)
+	}
+	for _, id := range oldManifest.Presets {
+		delete(candidate.Registry.Presets, id)
+	}
+
+	for id := range document.Stats {
+		if _, duplicate := candidate.Registry.Stats[id]; duplicate {
+			return RulesetSnapshot{}, fmt.Errorf("duplicate stat %q in %q and %q", id, definitionOwner(candidate.Files, definitionKindStat, id), name)
+		}
+	}
+	for id := range document.Actions {
+		if _, duplicate := candidate.Registry.Actions[id]; duplicate {
+			return RulesetSnapshot{}, fmt.Errorf("duplicate action %q in %q and %q", id, definitionOwner(candidate.Files, definitionKindAction, id), name)
+		}
+	}
+	for id := range document.Presets {
+		if _, duplicate := candidate.Registry.Presets[id]; duplicate {
+			return RulesetSnapshot{}, fmt.Errorf("duplicate preset %q in %q and %q", id, definitionOwner(candidate.Files, definitionKindPreset, id), name)
+		}
+	}
+
+	base := EffectiveRegistry{Stats: candidate.Registry.Stats, Actions: candidate.Registry.Actions, Presets: candidate.Registry.Presets}
+	fragment, metadata, err := decodeDefinitionsTOML([]byte(content), base)
+	if err != nil {
+		return RulesetSnapshot{}, err
+	}
+	for id, definition := range fragment.Stats {
+		candidate.Registry.Stats[id] = cloneStatDefinition(definition)
+	}
+	for id, definition := range fragment.Actions {
+		candidate.Registry.Actions[id] = cloneActionDefinition(definition)
+	}
+	for id, definition := range fragment.Presets {
+		candidate.Registry.Presets[id] = clonePresetDefinition(definition)
+	}
+	if metadata != nil {
+		candidate.Metadata = *metadata
+	}
+	candidate.Files[name] = rulesetFileManifest(content, document)
+	if err := ValidateRulesetSnapshot(candidate); err != nil {
+		return RulesetSnapshot{}, fmt.Errorf("ruleset file %q: %w", name, err)
+	}
+	return candidate, nil
+}
+
+func DiffRulesetRegistries(oldRegistry, newRegistry RulesetRegistry) RulesetReplacementDiff {
+	diff := RulesetReplacementDiff{}
+	for id, definition := range newRegistry.Stats {
+		old, exists := oldRegistry.Stats[id]
+		if !exists {
+			diff.Stats.Added = append(diff.Stats.Added, id)
+		} else if !equalStatDefinition(old, definition) {
+			diff.Stats.Changed = append(diff.Stats.Changed, id)
+		}
+	}
+	for id := range oldRegistry.Stats {
+		if _, exists := newRegistry.Stats[id]; !exists {
+			diff.Stats.Removed = append(diff.Stats.Removed, id)
+		}
+	}
+	for id, definition := range newRegistry.Actions {
+		old, exists := oldRegistry.Actions[id]
+		if !exists {
+			diff.Actions.Added = append(diff.Actions.Added, id)
+		} else if !equalActionDefinition(old, definition) {
+			diff.Actions.Changed = append(diff.Actions.Changed, id)
+		}
+	}
+	for id := range oldRegistry.Actions {
+		if _, exists := newRegistry.Actions[id]; !exists {
+			diff.Actions.Removed = append(diff.Actions.Removed, id)
+		}
+	}
+	for id, definition := range newRegistry.Presets {
+		old, exists := oldRegistry.Presets[id]
+		if !exists {
+			diff.Presets.Added = append(diff.Presets.Added, id)
+		} else if !equalPresetDefinition(old, definition) {
+			diff.Presets.Changed = append(diff.Presets.Changed, id)
+		}
+	}
+	for id := range oldRegistry.Presets {
+		if _, exists := newRegistry.Presets[id]; !exists {
+			diff.Presets.Removed = append(diff.Presets.Removed, id)
+		}
+	}
+	for _, changes := range []*DefinitionReplacementChanges{&diff.Stats, &diff.Actions, &diff.Presets} {
+		sort.Strings(changes.Added)
+		sort.Strings(changes.Changed)
+		sort.Strings(changes.Removed)
+	}
+	return diff
 }
 
 // ParseDefinitionsTOML parses and validates a self-contained definitions

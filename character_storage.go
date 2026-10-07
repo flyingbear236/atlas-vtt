@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 func loadRulesetSnapshotFile(path string) (RulesetSnapshot, error) {
@@ -19,7 +21,7 @@ func loadRulesetSnapshotFile(path string) (RulesetSnapshot, error) {
 	if err != nil {
 		return RulesetSnapshot{}, fmt.Errorf("read default ruleset: %w", err)
 	}
-	snapshot, err := ParseRulesetTOML(data)
+	snapshot, err := CompileRulesetFiles(map[string]string{filepath.Base(path): string(data)})
 	if err != nil {
 		return RulesetSnapshot{}, fmt.Errorf("parse default ruleset: %w", err)
 	}
@@ -99,9 +101,18 @@ type RulesetMetadata struct {
 	Version string `json:"version"`
 }
 
+type RulesetFileManifest struct {
+	Digest      string   `json:"digest"`
+	HasMetadata bool     `json:"hasMetadata,omitempty"`
+	Stats       []string `json:"stats,omitempty"`
+	Actions     []string `json:"actions,omitempty"`
+	Presets     []string `json:"presets,omitempty"`
+}
+
 type RulesetSnapshot struct {
-	Metadata RulesetMetadata `json:"metadata"`
-	Registry RulesetRegistry `json:"registry"`
+	Metadata RulesetMetadata                  `json:"metadata"`
+	Registry RulesetRegistry                  `json:"registry"`
+	Files    map[string]RulesetFileManifest   `json:"files,omitempty"`
 }
 
 type CharacterTokenReference struct {
@@ -136,10 +147,80 @@ func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 	for id, definition := range snapshot.Registry.Presets {
 		result.Registry.Presets[id] = clonePresetDefinition(definition)
 	}
+	if snapshot.Files != nil {
+		result.Files = make(map[string]RulesetFileManifest, len(snapshot.Files))
+		for name, manifest := range snapshot.Files {
+			manifest.Stats = append([]string(nil), manifest.Stats...)
+			manifest.Actions = append([]string(nil), manifest.Actions...)
+			manifest.Presets = append([]string(nil), manifest.Presets...)
+			result.Files[name] = manifest
+		}
+	}
 	return result
 }
 
+func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
+	if snapshot.Files == nil {
+		return nil
+	}
+	if len(snapshot.Files) == 0 || len(snapshot.Files) > MaxRulesetFiles {
+		return fmt.Errorf("ruleset file manifest must contain between 1 and %d files", MaxRulesetFiles)
+	}
+	statOwners, actionOwners, presetOwners := map[string]string{}, map[string]string{}, map[string]string{}
+	metadataFiles := 0
+	checkIDs := func(name, kind string, ids []string, registryHas func(string) bool, owners map[string]string) error {
+		local := map[string]struct{}{}
+		for _, id := range ids {
+			if _, duplicate := local[id]; duplicate {
+				return fmt.Errorf("ruleset file %q lists duplicate %s %q", name, kind, id)
+			}
+			local[id] = struct{}{}
+			if !registryHas(id) {
+				return fmt.Errorf("ruleset file %q owns missing %s %q", name, kind, id)
+			}
+			if owner := owners[id]; owner != "" {
+				return fmt.Errorf("ruleset %s %q is owned by both %q and %q", kind, id, owner, name)
+			}
+			owners[id] = name
+		}
+		return nil
+	}
+	for name, manifest := range snapshot.Files {
+		if err := validateRulesetFileName(name); err != nil {
+			return err
+		}
+		if len(manifest.Digest) != 64 {
+			return fmt.Errorf("ruleset file %q has invalid digest", name)
+		}
+		if _, err := hex.DecodeString(manifest.Digest); err != nil {
+			return fmt.Errorf("ruleset file %q has invalid digest", name)
+		}
+		if manifest.HasMetadata {
+			metadataFiles++
+		}
+		if err := checkIDs(name, "stat", manifest.Stats, func(id string) bool { _, ok := snapshot.Registry.Stats[id]; return ok }, statOwners); err != nil {
+			return err
+		}
+		if err := checkIDs(name, "action", manifest.Actions, func(id string) bool { _, ok := snapshot.Registry.Actions[id]; return ok }, actionOwners); err != nil {
+			return err
+		}
+		if err := checkIDs(name, "preset", manifest.Presets, func(id string) bool { _, ok := snapshot.Registry.Presets[id]; return ok }, presetOwners); err != nil {
+			return err
+		}
+	}
+	if metadataFiles != 1 {
+		return fmt.Errorf("ruleset file manifest must identify exactly one metadata file")
+	}
+	if len(statOwners) != len(snapshot.Registry.Stats) || len(actionOwners) != len(snapshot.Registry.Actions) || len(presetOwners) != len(snapshot.Registry.Presets) {
+		return errors.New("ruleset file manifest does not own every definition")
+	}
+	return nil
+}
+
 func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
+	if err := validateRulesetFileManifests(snapshot); err != nil {
+		return err
+	}
 	registryEmpty := len(snapshot.Registry.Stats) == 0 && len(snapshot.Registry.Actions) == 0 && len(snapshot.Registry.Presets) == 0
 	metadataEmpty := snapshot.Metadata == (RulesetMetadata{})
 	if metadataEmpty && registryEmpty {
