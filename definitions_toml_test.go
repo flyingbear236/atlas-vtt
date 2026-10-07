@@ -276,3 +276,114 @@ func TestExportCampaignDefinitionsAllowsRulesetReferences(t *testing.T) {
 		t.Fatalf("campaign export cannot be imported against ruleset: %v\n%s", err, data)
 	}
 }
+
+
+func TestCompileRulesetFilesMergesFragmentsAndRejectsDuplicateIDs(t *testing.T) {
+	core := `schema_version = 1
+[ruleset]
+id = "dnd"
+name = "D&D"
+version = "1"
+
+[stats.strength]
+name = "Strength"
+type = "integer"
+default = 10
+
+[presets.hero]
+name = "Hero"
+kind = "character"
+actions = ["strength_check"]
+
+[presets.hero.stats]
+strength = 16
+`
+	actions := `schema_version = 1
+[actions.strength_check]
+name = "Strength check"
+
+[[actions.strength_check.rolls]]
+id = "check"
+name = "Check"
+count = 1
+sides = 20
+modifier_stat = "strength"
+`
+
+	snapshot, err := CompileRulesetFiles(map[string]string{"core.toml": core, "actions.toml": actions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Files) != 2 || !snapshot.Files["core.toml"].HasMetadata || snapshot.Files["actions.toml"].HasMetadata {
+		t.Fatalf("unexpected ruleset file manifests: %#v", snapshot.Files)
+	}
+	if snapshot.Registry.Actions["strength_check"].ID == "" || snapshot.Registry.Presets["hero"].Stats["strength"].Integer() != 16 {
+		t.Fatalf("fragments were not compiled into one registry: %#v", snapshot.Registry)
+	}
+
+	duplicate := actions + `
+[stats.strength]
+name = "Duplicate strength"
+type = "integer"
+`
+	if _, err := CompileRulesetFiles(map[string]string{"core.toml": core, "actions.toml": duplicate}); err == nil || !strings.Contains(err.Error(), "duplicate stat") {
+		t.Fatalf("duplicate ID across ruleset files was accepted: %v", err)
+	}
+}
+
+func TestReplaceRulesetFileRecompilesWholeRulesetAndKeepsOldSnapshotOnFailure(t *testing.T) {
+	core := `schema_version = 1
+[ruleset]
+id = "dnd"
+name = "D&D"
+version = "1"
+
+[stats.strength]
+name = "Strength"
+type = "integer"
+
+[presets.hero]
+name = "Hero"
+kind = "character"
+actions = ["strength_check"]
+
+[presets.hero.stats]
+strength = 16
+`
+	actions := `schema_version = 1
+[actions.strength_check]
+name = "Strength check"
+
+[[actions.strength_check.rolls]]
+id = "check"
+name = "Check"
+count = 1
+sides = 20
+modifier_stat = "strength"
+`
+	current, err := CompileRulesetFiles(map[string]string{"core.toml": core, "actions.toml": actions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := cloneRulesetSnapshot(current)
+
+	updated := strings.Replace(actions, `name = "Strength check"`, `name = "Updated strength check"`, 1)
+	next, err := ReplaceRulesetFile(current, "actions.toml", updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Registry.Actions["strength_check"].Name != "Updated strength check" || next.Files["actions.toml"].Digest == current.Files["actions.toml"].Digest {
+		t.Fatalf("single-file replacement did not rebuild the ruleset: %#v", next)
+	}
+
+	broken := `schema_version = 1
+[actions.other]
+name = "Other"
+`
+	if _, err := ReplaceRulesetFile(current, "actions.toml", broken); err == nil || !strings.Contains(err.Error(), "unknown action") {
+		t.Fatalf("replacement that breaks another fragment was accepted: %v", err)
+	}
+	if !reflect.DeepEqual(current, original) {
+		t.Fatal("failed single-file replacement mutated the current snapshot")
+	}
+}

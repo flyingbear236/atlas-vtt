@@ -51,10 +51,11 @@ type definitionRegistryResponse struct {
 }
 
 type definitionPreviewResponse struct {
-	Digest           string              `json:"digest"`
-	RegistryRevision uint64              `json:"registryRevision"`
-	Diff             *CampaignImportDiff `json:"diff,omitempty"`
-	Ruleset          *RulesetSnapshot    `json:"ruleset,omitempty"`
+	Digest           string                  `json:"digest"`
+	RegistryRevision uint64                  `json:"registryRevision"`
+	Diff             *CampaignImportDiff     `json:"diff,omitempty"`
+	RulesetDiff      *RulesetReplacementDiff `json:"rulesetDiff,omitempty"`
+	Ruleset          *RulesetSnapshot        `json:"ruleset,omitempty"`
 }
 
 func definitionCommandType(commandType string) bool {
@@ -441,6 +442,111 @@ func readDefinitionDocument(w http.ResponseWriter, request *http.Request) ([]byt
 	return data, true
 }
 
+type rulesetUploadFile struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+type rulesetUploadPayload struct {
+	Files []rulesetUploadFile `json:"files"`
+}
+
+func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[string]string, bool) {
+	if strings.HasPrefix(strings.ToLower(request.Header.Get("Content-Type")), "application/json") {
+		request.Body = http.MaxBytesReader(w, request.Body, 4*MaxRulesetPackageBytes+(1<<20))
+		var payload rulesetUploadPayload
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				fail(w, http.StatusRequestEntityTooLarge, "Пакет ruleset превышает лимит")
+				return nil, false
+			}
+			fail(w, http.StatusBadRequest, "Некорректный пакет ruleset")
+			return nil, false
+		}
+		if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+			fail(w, http.StatusBadRequest, "Некорректный пакет ruleset")
+			return nil, false
+		}
+		if len(payload.Files) == 0 || len(payload.Files) > MaxRulesetFiles {
+			fail(w, http.StatusBadRequest, fmt.Sprintf("Пакет ruleset должен содержать от 1 до %d TOML-файлов", MaxRulesetFiles))
+			return nil, false
+		}
+		files := make(map[string]string, len(payload.Files))
+		totalBytes := 0
+		for _, file := range payload.Files {
+			if err := validateRulesetFileName(file.Name); err != nil {
+				fail(w, http.StatusBadRequest, err.Error())
+				return nil, false
+			}
+			if _, duplicate := files[file.Name]; duplicate {
+				fail(w, http.StatusBadRequest, fmt.Sprintf("Файл %q передан дважды", file.Name))
+				return nil, false
+			}
+			totalBytes += len(file.Content)
+			if totalBytes > MaxRulesetPackageBytes {
+				fail(w, http.StatusRequestEntityTooLarge, "Пакет ruleset превышает лимит 1 МиБ")
+				return nil, false
+			}
+			files[file.Name] = file.Content
+		}
+		return files, true
+	}
+
+	data, ok := readDefinitionDocument(w, request)
+	if !ok {
+		return nil, false
+	}
+	name := request.URL.Query().Get("filename")
+	if name == "" {
+		name = request.URL.Query().Get("replaceFile")
+	}
+	if name == "" {
+		name = "ruleset.toml"
+	}
+	if err := validateRulesetFileName(name); err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	return map[string]string{name: string(data)}, true
+}
+
+func rulesetDocumentsDigest(files map[string]string, replaceFile string) string {
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, "replaceFile")
+	_, _ = hash.Write([]byte{0})
+	_, _ = io.WriteString(hash, replaceFile)
+	_, _ = hash.Write([]byte{0})
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		_, _ = io.WriteString(hash, name)
+		_, _ = hash.Write([]byte{0})
+		_, _ = io.WriteString(hash, files[name])
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func rulesetReplacementCandidate(session *Session, uploads map[string]string, replaceFile string) (RulesetSnapshot, error) {
+	if replaceFile == "" {
+		return CompileRulesetFiles(uploads)
+	}
+	if len(uploads) != 1 {
+		return RulesetSnapshot{}, errors.New("для замены одного файла нужно передать ровно один TOML-файл")
+	}
+	content, exists := uploads[replaceFile]
+	if !exists {
+		return RulesetSnapshot{}, fmt.Errorf("имя загруженного файла должно совпадать с заменяемым %q", replaceFile)
+	}
+	return ReplaceRulesetFile(session.Ruleset, replaceFile, content)
+}
+
 func definitionOperationKeyValid(key string) bool {
 	if key == "" || !utf8.ValidString(key) || utf8.RuneCountInString(key) > maxDefinitionOperationKeyRunes || strings.TrimSpace(key) != key {
 		return false
@@ -559,18 +665,19 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 	if !s.authorizeDefinitionsRequest(w, request) {
 		return
 	}
-	data, ok := readDefinitionDocument(w, request)
+	uploads, ok := readRulesetDocuments(w, request)
 	if !ok {
 		return
 	}
+	replaceFile := request.URL.Query().Get("replaceFile")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, member := s.auth(request)
-	if !memberIsGM(member) || rulesetInstalled(session.Ruleset) {
-		fail(w, http.StatusConflict, "Ruleset уже установлен")
+	if !memberIsGM(member) {
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
 		return
 	}
-	snapshot, err := ParseRulesetTOML(data)
+	snapshot, err := rulesetReplacementCandidate(session, uploads, replaceFile)
 	if err == nil {
 		err = validateDefinitionState(session, snapshot, session.CampaignDefinitions)
 	}
@@ -579,7 +686,13 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	copy := cloneRulesetSnapshot(snapshot)
-	reply(w, definitionPreviewResponse{Digest: definitionsDigest(data), RegistryRevision: session.RegistryRevision, Ruleset: &copy})
+	diff := DiffRulesetRegistries(session.Ruleset.Registry, snapshot.Registry)
+	reply(w, definitionPreviewResponse{
+		Digest: rulesetDocumentsDigest(uploads, replaceFile),
+		RegistryRevision: session.RegistryRevision,
+		RulesetDiff: &diff,
+		Ruleset: &copy,
+	})
 }
 
 func (s *Server) previewCampaignImport(w http.ResponseWriter, request *http.Request) {
@@ -706,13 +819,28 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	data, ok := readDefinitionDocument(w, request)
-	if !ok {
-		return
+	var data []byte
+	var rulesetUploads map[string]string
+	replaceFile := ""
+	actualDigest := ""
+	if kind == definitionOperationRulesetInstall {
+		var ok bool
+		rulesetUploads, ok = readRulesetDocuments(w, request)
+		if !ok {
+			return
+		}
+		replaceFile = request.URL.Query().Get("replaceFile")
+		actualDigest = rulesetDocumentsDigest(rulesetUploads, replaceFile)
+	} else {
+		var ok bool
+		data, ok = readDefinitionDocument(w, request)
+		if !ok {
+			return
+		}
+		actualDigest = definitionsDigest(data)
 	}
-	actualDigest := definitionsDigest(data)
 	if actualDigest != expectedDigest {
-		fail(w, http.StatusConflict, "Документ не совпадает с preview digest")
+		fail(w, http.StatusConflict, "Документ не совпадает с результатом проверки")
 		return
 	}
 
@@ -745,11 +873,7 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	result := DefinitionApplyResult{Kind: kind}
 	switch kind {
 	case definitionOperationRulesetInstall:
-		if rulesetInstalled(session.Ruleset) {
-			fail(w, http.StatusConflict, "Ruleset уже установлен")
-			return
-		}
-		snapshot, parseErr := ParseRulesetTOML(data)
+		snapshot, parseErr := rulesetReplacementCandidate(session, rulesetUploads, replaceFile)
 		if parseErr == nil {
 			parseErr = validateDefinitionState(session, snapshot, session.CampaignDefinitions)
 		}
