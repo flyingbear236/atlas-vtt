@@ -92,22 +92,23 @@ func addPersistedCharacterFixture(t *testing.T, server *Server, session *Session
 	}
 }
 
-func TestRulesetTOMLRequiresMetadataAndIsInternallyClosed(t *testing.T) {
+func TestRulesetTOMLMetadataIsOptionalAndRulesetIsInternallyClosed(t *testing.T) {
 	snapshot, err := ParseRulesetTOML(testRulesetTOML("test", "1.0.0"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Metadata.ID != "test" || snapshot.Registry.Presets["wolf"].ActionIDs[0] != "bite" {
+	if snapshot.Metadata.ID != "test" || snapshot.Registry.Presets["wolf"].ActionIDs[0] != "bite" || snapshot.Files["ruleset.toml"].Source == "" {
 		t.Fatalf("unexpected ruleset snapshot: %#v", snapshot)
 	}
-	if _, err := ParseRulesetTOML([]byte("schema_version = 1\n")); err == nil {
-		t.Fatal("ruleset without metadata was accepted")
+	withoutMetadata := []byte("schema_version = 1\n[stats.hp]\nname = \"HP\"\ntype = \"integer\"\n")
+	plain, err := ParseRulesetTOML(withoutMetadata)
+	if err != nil {
+		t.Fatalf("ruleset without metadata was rejected: %v", err)
+	}
+	if plain.Metadata != (RulesetMetadata{}) || plain.Registry.Stats["hp"].ID != "hp" {
+		t.Fatalf("unexpected metadata-less ruleset: %#v", plain)
 	}
 	broken := []byte(`schema_version = 1
-[ruleset]
-id = "broken"
-name = "Broken"
-version = "1"
 [presets.wolf]
 name = "Wolf"
 actions = ["missing"]
@@ -148,6 +149,9 @@ func TestCharacterStorageRoundTripAndRulesetDefaultSnapshot(t *testing.T) {
 	got := restored.sessions[session.ID]
 	if got.Ruleset.Metadata.ID != "rules-a" || got.Ruleset.Metadata.Version != "1" {
 		t.Fatalf("existing session rebound to changed default: %#v", got.Ruleset.Metadata)
+	}
+	if got.Ruleset.Files["default.toml"].Source == "" {
+		t.Fatal("committed ruleset source did not round trip through storage")
 	}
 	instance := got.CharacterInstances["wolf-1"]
 	if instance.StatOverrides["hp"].Type() != StatTypeInteger || instance.StatOverrides["hp"].Integer() != 4 || instance.StatOverrides["speed"].Type() != StatTypeNumber || instance.StatOverrides["speed"].Number() != 12 {

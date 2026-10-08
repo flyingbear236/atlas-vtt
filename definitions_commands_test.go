@@ -326,8 +326,7 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 	}
 
 	singleFileRuleset := bytes.Replace(alternateRuleset, []byte(`name = "HP"`), []byte(`name = "Hit points"`), 1)
-	filePreviewQuery := url.Values{"replaceFile": {"ruleset.toml"}}
-	status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, singleFileRuleset, filePreviewQuery)
+	status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, singleFileRuleset, nil)
 	if status != http.StatusOK {
 		t.Fatalf("single-file replacement preview: %d %s", status, body)
 	}
@@ -340,7 +339,7 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 	}
 	fileApply := url.Values{
 		"expectedRevision": {fmt.Sprint(filePreview.RegistryRevision)}, "digest": {filePreview.Digest},
-		"key": {"replace-file-1"}, "replaceFile": {"ruleset.toml"},
+		"key": {"replace-file-1"},
 	}
 	if status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, singleFileRuleset, fileApply); status != http.StatusOK {
 		t.Fatalf("single-file replacement: %d %s", status, body)
@@ -466,7 +465,7 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 }
 
 
-func TestDefinitionHTTPMultiFileRulesetAndFragmentReplacement(t *testing.T) {
+func TestDefinitionHTTPMultiFileRulesetDraftCandidate(t *testing.T) {
 	root := t.TempDir()
 	server := testServer(t, root)
 	host := httptest.NewServer(server.routes())
@@ -474,11 +473,6 @@ func TestDefinitionHTTPMultiFileRulesetAndFragmentReplacement(t *testing.T) {
 	gm := post(t, host.URL+"/api/sessions", map[string]string{"name": "Multi-file ruleset"})
 
 	core := `schema_version = 1
-[ruleset]
-id = "multi"
-name = "Multi"
-version = "1"
-
 [stats.power]
 name = "Power"
 type = "integer"
@@ -511,8 +505,8 @@ modifier_stat = "power"
 	if err := json.Unmarshal(body, &preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.RulesetDiff == nil || !slices.Contains(preview.RulesetDiff.Actions.Added, "strike") {
-		t.Fatalf("multi-file preview diff: %#v", preview.RulesetDiff)
+	if preview.Ruleset.Metadata != (RulesetMetadata{}) || preview.RulesetDiff == nil || !slices.Contains(preview.RulesetDiff.Actions.Added, "strike") {
+		t.Fatalf("metadata-less multi-file preview: %#v", preview)
 	}
 	apply := url.Values{
 		"expectedRevision": {fmt.Sprint(preview.RegistryRevision)},
@@ -527,41 +521,66 @@ modifier_stat = "power"
 	if status != http.StatusOK || len(registry.Ruleset.Files) != 2 || registry.Ruleset.Registry.Actions["strike"].Name != "Strike" {
 		t.Fatalf("multi-file registry not installed: status=%d %#v", status, registry.Ruleset)
 	}
+	if registry.Ruleset.Files["core.toml"].Source != core || registry.Ruleset.Files["actions.toml"].Source != actions {
+		t.Fatalf("committed ruleset did not retain source files: %#v", registry.Ruleset.Files)
+	}
 
 	updatedActions := strings.Replace(actions, `name = "Strike"`, `name = "Strike v2"`, 1)
-	fragmentFiles := map[string]string{"actions.toml": updatedActions}
-	replaceQuery := url.Values{"replaceFile": {"actions.toml"}}
-	status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, fragmentFiles, replaceQuery)
+	candidate := map[string]string{"core.toml": core, "actions-v2.toml": updatedActions}
+	status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, candidate, nil)
 	if status != http.StatusOK {
-		t.Fatalf("fragment preview: %d %s", status, body)
+		t.Fatalf("replacement candidate preview: %d %s", status, body)
 	}
-	var fragmentPreview definitionPreviewResponse
-	if err := json.Unmarshal(body, &fragmentPreview); err != nil {
+	var candidatePreview definitionPreviewResponse
+	if err := json.Unmarshal(body, &candidatePreview); err != nil {
 		t.Fatal(err)
 	}
-	if fragmentPreview.RulesetDiff == nil || !slices.Contains(fragmentPreview.RulesetDiff.Actions.Changed, "strike") {
-		t.Fatalf("fragment preview diff: %#v", fragmentPreview.RulesetDiff)
+	if candidatePreview.RulesetDiff == nil || !slices.Contains(candidatePreview.RulesetDiff.Actions.Changed, "strike") {
+		t.Fatalf("candidate preview diff: %#v", candidatePreview.RulesetDiff)
 	}
-	fragmentApply := url.Values{
-		"replaceFile": {"actions.toml"},
-		"expectedRevision": {fmt.Sprint(fragmentPreview.RegistryRevision)},
-		"digest": {fragmentPreview.Digest},
-		"key": {"fragment-replace"},
+	candidateApply := url.Values{
+		"expectedRevision": {fmt.Sprint(candidatePreview.RegistryRevision)},
+		"digest": {candidatePreview.Digest},
+		"key": {"candidate-save"},
 	}
-	if status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, fragmentFiles, fragmentApply); status != http.StatusOK {
-		t.Fatalf("fragment apply: %d %s", status, body)
+	if status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, candidate, candidateApply); status != http.StatusOK {
+		t.Fatalf("candidate apply: %d %s", status, body)
 	}
 	_, registry = readDefinitionsHTTP(t, host.URL, gm)
 	if registry.Ruleset.Registry.Actions["strike"].Name != "Strike v2" || len(registry.Ruleset.Files) != 2 {
-		t.Fatalf("fragment replacement did not preserve/rebuild package: %#v", registry.Ruleset)
+		t.Fatalf("candidate replacement did not rebuild package: %#v", registry.Ruleset)
+	}
+	if _, exists := registry.Ruleset.Files["actions.toml"]; exists || registry.Ruleset.Files["actions-v2.toml"].Source != updatedActions {
+		t.Fatalf("removed/added file set was not committed atomically: %#v", registry.Ruleset.Files)
 	}
 
 	duplicateCore := core + `
 [actions.strike]
 name = "Duplicate"
 `
-	status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, map[string]string{"core.toml": duplicateCore, "actions.toml": actions}, nil)
-	if status != http.StatusBadRequest || !bytes.Contains(body, []byte("duplicate action")) {
-		t.Fatalf("duplicate definitions across files were not rejected: %d %s", status, body)
+	status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, map[string]string{"core.toml": duplicateCore, "actions-v2.toml": updatedActions}, nil)
+	if status != http.StatusConflict || !bytes.Contains(body, []byte("duplicate action")) {
+		t.Fatalf("duplicate definitions across files were not rejected as conflict: %d %s", status, body)
+	}
+
+	status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, map[string]string{}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("empty ruleset preview: %d %s", status, body)
+	}
+	var emptyPreview definitionPreviewResponse
+	if err := json.Unmarshal(body, &emptyPreview); err != nil {
+		t.Fatal(err)
+	}
+	emptyApply := url.Values{
+		"expectedRevision": {fmt.Sprint(emptyPreview.RegistryRevision)},
+		"digest": {emptyPreview.Digest},
+		"key": {"empty-ruleset"},
+	}
+	if status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, map[string]string{}, emptyApply); status != http.StatusOK {
+		t.Fatalf("empty ruleset apply: %d %s", status, body)
+	}
+	_, registry = readDefinitionsHTTP(t, host.URL, gm)
+	if len(registry.Ruleset.Files) != 0 || len(registry.Ruleset.Registry.Stats) != 0 || len(registry.Ruleset.Registry.Actions) != 0 || len(registry.Ruleset.Registry.Presets) != 0 {
+		t.Fatalf("empty ruleset was not committed: %#v", registry.Ruleset)
 	}
 }
