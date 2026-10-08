@@ -470,8 +470,8 @@ func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[str
 			fail(w, http.StatusBadRequest, "Некорректный пакет ruleset")
 			return nil, false
 		}
-		if len(payload.Files) == 0 || len(payload.Files) > MaxRulesetFiles {
-			fail(w, http.StatusBadRequest, fmt.Sprintf("Пакет ruleset должен содержать от 1 до %d TOML-файлов", MaxRulesetFiles))
+		if len(payload.Files) > MaxRulesetFiles {
+			fail(w, http.StatusBadRequest, fmt.Sprintf("Пакет ruleset может содержать не больше %d TOML-файлов", MaxRulesetFiles))
 			return nil, false
 		}
 		files := make(map[string]string, len(payload.Files))
@@ -482,7 +482,7 @@ func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[str
 				return nil, false
 			}
 			if _, duplicate := files[file.Name]; duplicate {
-				fail(w, http.StatusBadRequest, fmt.Sprintf("Файл %q передан дважды", file.Name))
+				fail(w, http.StatusConflict, fmt.Sprintf("Файл %q передан дважды", file.Name))
 				return nil, false
 			}
 			totalBytes += len(file.Content)
@@ -501,9 +501,6 @@ func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[str
 	}
 	name := request.URL.Query().Get("filename")
 	if name == "" {
-		name = request.URL.Query().Get("replaceFile")
-	}
-	if name == "" {
 		name = "ruleset.toml"
 	}
 	if err := validateRulesetFileName(name); err != nil {
@@ -513,12 +510,8 @@ func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[str
 	return map[string]string{name: string(data)}, true
 }
 
-func rulesetDocumentsDigest(files map[string]string, replaceFile string) string {
+func rulesetDocumentsDigest(files map[string]string) string {
 	hash := sha256.New()
-	_, _ = io.WriteString(hash, "replaceFile")
-	_, _ = hash.Write([]byte{0})
-	_, _ = io.WriteString(hash, replaceFile)
-	_, _ = hash.Write([]byte{0})
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
@@ -531,20 +524,6 @@ func rulesetDocumentsDigest(files map[string]string, replaceFile string) string 
 		_, _ = hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil))
-}
-
-func rulesetReplacementCandidate(session *Session, uploads map[string]string, replaceFile string) (RulesetSnapshot, error) {
-	if replaceFile == "" {
-		return CompileRulesetFiles(uploads)
-	}
-	if len(uploads) != 1 {
-		return RulesetSnapshot{}, errors.New("для замены одного файла нужно передать ровно один TOML-файл")
-	}
-	content, exists := uploads[replaceFile]
-	if !exists {
-		return RulesetSnapshot{}, fmt.Errorf("имя загруженного файла должно совпадать с заменяемым %q", replaceFile)
-	}
-	return ReplaceRulesetFile(session.Ruleset, replaceFile, content)
 }
 
 func definitionOperationKeyValid(key string) bool {
@@ -606,9 +585,14 @@ func (s *Server) readDefinitions(w http.ResponseWriter, request *http.Request) {
 		fail(w, http.StatusInternalServerError, "Registry повреждён")
 		return
 	}
+	ruleset, err := RulesetSnapshotWithSources(session.Ruleset)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "Не удалось подготовить ruleset для редактирования")
+		return
+	}
 	reply(w, definitionRegistryResponse{
 		RegistryRevision: session.RegistryRevision,
-		Ruleset:          cloneRulesetSnapshot(session.Ruleset),
+		Ruleset:          ruleset,
 		Campaign:         cloneCampaignRegistry(session.CampaignDefinitions),
 		Effective:        effective,
 	})
@@ -658,18 +642,17 @@ func (s *Server) exportCampaignDefinitions(w http.ResponseWriter, request *http.
 }
 
 func rulesetInstalled(snapshot RulesetSnapshot) bool {
-	return snapshot.Metadata != (RulesetMetadata{}) || len(snapshot.Registry.Stats) != 0 || len(snapshot.Registry.Actions) != 0 || len(snapshot.Registry.Presets) != 0
+	return len(snapshot.Files) != 0 || rulesetSnapshotHasContent(snapshot)
 }
 
 func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Request) {
 	if !s.authorizeDefinitionsRequest(w, request) {
 		return
 	}
-	uploads, ok := readRulesetDocuments(w, request)
+	files, ok := readRulesetDocuments(w, request)
 	if !ok {
 		return
 	}
-	replaceFile := request.URL.Query().Get("replaceFile")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, member := s.auth(request)
@@ -677,18 +660,23 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 		fail(w, http.StatusForbidden, "Нужны права ведущего")
 		return
 	}
-	snapshot, err := rulesetReplacementCandidate(session, uploads, replaceFile)
+	snapshot, err := CompileRulesetFiles(files)
 	if err == nil {
 		err = validateDefinitionState(session, snapshot, session.CampaignDefinitions)
 	}
 	if err != nil {
-		fail(w, http.StatusBadRequest, err.Error())
+		var conflict *RulesetDefinitionConflictError
+		if errors.As(err, &conflict) {
+			fail(w, http.StatusConflict, err.Error())
+		} else {
+			fail(w, http.StatusBadRequest, err.Error())
+		}
 		return
 	}
 	copy := cloneRulesetSnapshot(snapshot)
 	diff := DiffRulesetRegistries(session.Ruleset.Registry, snapshot.Registry)
 	reply(w, definitionPreviewResponse{
-		Digest: rulesetDocumentsDigest(uploads, replaceFile),
+		Digest: rulesetDocumentsDigest(files),
 		RegistryRevision: session.RegistryRevision,
 		RulesetDiff: &diff,
 		Ruleset: &copy,
@@ -820,17 +808,15 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 		return
 	}
 	var data []byte
-	var rulesetUploads map[string]string
-	replaceFile := ""
+	var rulesetFiles map[string]string
 	actualDigest := ""
 	if kind == definitionOperationRulesetInstall {
 		var ok bool
-		rulesetUploads, ok = readRulesetDocuments(w, request)
+		rulesetFiles, ok = readRulesetDocuments(w, request)
 		if !ok {
 			return
 		}
-		replaceFile = request.URL.Query().Get("replaceFile")
-		actualDigest = rulesetDocumentsDigest(rulesetUploads, replaceFile)
+		actualDigest = rulesetDocumentsDigest(rulesetFiles)
 	} else {
 		var ok bool
 		data, ok = readDefinitionDocument(w, request)
@@ -873,17 +859,24 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	result := DefinitionApplyResult{Kind: kind}
 	switch kind {
 	case definitionOperationRulesetInstall:
-		snapshot, parseErr := rulesetReplacementCandidate(session, rulesetUploads, replaceFile)
+		snapshot, parseErr := CompileRulesetFiles(rulesetFiles)
 		if parseErr == nil {
 			parseErr = validateDefinitionState(session, snapshot, session.CampaignDefinitions)
 		}
 		if parseErr != nil {
-			fail(w, http.StatusBadRequest, parseErr.Error())
+			var conflict *RulesetDefinitionConflictError
+			if errors.As(parseErr, &conflict) {
+				fail(w, http.StatusConflict, parseErr.Error())
+			} else {
+				fail(w, http.StatusBadRequest, parseErr.Error())
+			}
 			return
 		}
 		session.Ruleset = cloneRulesetSnapshot(snapshot)
-		metadata := snapshot.Metadata
-		result.RulesetMetadata = &metadata
+		if snapshot.Metadata != (RulesetMetadata{}) {
+			metadata := snapshot.Metadata
+			result.RulesetMetadata = &metadata
+		}
 	case definitionOperationCampaignImport:
 		preview, previewErr := previewCampaignImportForSession(session, data)
 		if previewErr != nil {
