@@ -234,6 +234,8 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	scene.Elements["outside"] = SceneElement{ID: "outside", FloorID: lowerID, LayerID: firstLayerID(scene, lowerID), AssetID: "outside-asset", Transform: Transform{X: scene.Bounds.Width + 100, Y: 10, Width: 64, Height: 64}, Visible: true, Opacity: 1}
 	scene.Tokens["hero"] = Token{ID: "hero", Name: "Hero", FloorID: lowerID, LayerID: layerIDByKind(scene, lowerID, layerKindTokens), X: 50, Y: 50, Size: 80, OwnerIDs: []string{playerMember.ID}}
 	scene.Tokens["zz-upper"] = Token{ID: "zz-upper", Name: "Upper", FloorID: upperID, LayerID: layerIDByKind(scene, upperID, layerKindTokens), X: 60, Y: 60, Size: 80, OwnerIDs: []string{playerMember.ID}}
+	migrateLegacyTokenCharacters(session)
+	rebuildCharacterReferences(session)
 	scene.Revision++
 	scene.rebuildRuntime()
 	region := SceneRegion{Left: 0, Top: 0, Right: scene.Bounds.Width + 1000, Bottom: 1000}

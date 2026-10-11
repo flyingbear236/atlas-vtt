@@ -255,6 +255,9 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 				return nil, fmt.Errorf("invalid derived asset in session %s", sessionID)
 			}
 		}
+		if migrateLegacyTokenCharacters(ss) {
+			migrated = true
+		}
 		for sceneID, scene := range ss.Scenes {
 			if scene == nil || scene.ID != sceneID || scene.Name == "" {
 				return nil, fmt.Errorf("invalid scene in session %s", sessionID)
@@ -842,6 +845,10 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	asset := Asset{}
+	if ss != nil {
+		asset = ss.Assets[parts[0]]
+	}
 	s.mu.Unlock()
 	if !allowed {
 		fail(w, 403, "Ассет недоступен")
@@ -851,6 +858,11 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	if strings.ContainsAny(name, "/\\:") || (!strings.HasSuffix(name, ".png")) {
 		http.NotFound(w, r)
 		return
+	}
+	if name == "avatar.png" && asset.Kind == assetKindToken {
+		name = "token.png"
+	} else if name == "token.png" && asset.Kind == assetKindAvatar {
+		name = "avatar.png"
 	}
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	http.ServeFile(w, r, filepath.Join(s.root, "assets", parts[0], name))

@@ -555,7 +555,7 @@ func validateSceneStructure(scene *Scene, assets map[string]Asset, members map[s
 	}
 	for tokenID, token := range scene.Tokens {
 		layer := scene.Layers[token.LayerID]
-		invalidCharacter := len(characterSets) != 0 && token.CharacterInstanceID != "" && characterSets[0][token.CharacterInstanceID].ID == ""
+		invalidCharacter := len(characterSets) != 0 && (token.CharacterInstanceID == "" || characterSets[0][token.CharacterInstanceID].ID == "")
 		if token.ID != tokenID || scene.Floors[token.FloorID].ID == "" || layer.Kind != layerKindTokens || layer.FloorID != token.FloorID || !validNumber(token.X) || !validNumber(token.Y) || !validNumber(token.Opacity) || token.Opacity < 0 || token.Opacity > 1 || token.Size < 16 || token.Size > 1024 || !validateTokenOwners(token, members) || (token.Asset != "" && (assets[token.Asset].ID == "" || assets[token.Asset].Kind != assetKindToken)) || invalidCharacter {
 			return false
 		}
@@ -665,11 +665,6 @@ func refreshAssetOrphans(session *Session, now time.Time) bool {
 	for _, scene := range session.Scenes {
 		for _, element := range scene.Elements {
 			references[element.AssetID]++
-		}
-		for _, token := range scene.Tokens {
-			if token.Asset != "" {
-				references[token.Asset]++
-			}
 		}
 	}
 	for _, preset := range session.CampaignDefinitions.Presets {

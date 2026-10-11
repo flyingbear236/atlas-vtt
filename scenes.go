@@ -461,9 +461,9 @@ func sceneEntryPoint(scene *Scene, member *Member) *ScenePoint {
 	return nil
 }
 
-// TokenLocator is enough to render and focus the token list, but deliberately
-// carries neither artwork references nor character data. Those remain scoped
-// to spatial snapshots and explicit character subscriptions.
+// TokenLocator is enough to render and focus the token list. Its name is the
+// character's presented name; artwork and sheet data remain scoped to spatial
+// snapshots and explicit character subscriptions.
 type TokenLocator struct {
 	ID       string   `json:"id"`
 	Name     string   `json:"name"`
@@ -492,11 +492,24 @@ func tokenLocator(token Token) TokenLocator {
 	}
 }
 
+func presentToken(session *Session, registry EffectiveRegistry, token Token) Token {
+	presented := cloneToken(token)
+	presented.Name = ""
+	presented.Asset = ""
+	instance, exists := session.CharacterInstances[token.CharacterInstanceID]
+	if !exists {
+		return presented
+	}
+	presented.Name = instance.Name
+	presented.Asset = effectiveCharacterAvatar(instance, registry)
+	return presented
+}
+
 func tokenHasLocator(token Token, member *Member) bool {
 	return member != nil && !memberIsGM(member) && tokenOwnedBy(token, member.ID) && !token.Hidden
 }
 
-func ownedTokenLocators(scene *Scene, member *Member) map[string]TokenLocator {
+func ownedTokenLocators(session *Session, registry EffectiveRegistry, scene *Scene, member *Member) map[string]TokenLocator {
 	owned := map[string]TokenLocator{}
 	if scene == nil || member == nil || memberIsGM(member) {
 		return owned
@@ -505,24 +518,24 @@ func ownedTokenLocators(scene *Scene, member *Member) map[string]TokenLocator {
 		if !tokenHasLocator(token, member) {
 			continue
 		}
-		owned[tokenID] = tokenLocator(token)
+		owned[tokenID] = tokenLocator(presentToken(session, registry, token))
 	}
 	return owned
 }
 
-func tokenLocatorsForPeer(scene *Scene, peer *peer) map[string]TokenLocator {
+func tokenLocatorsForPeer(session *Session, registry EffectiveRegistry, scene *Scene, peer *peer) map[string]TokenLocator {
 	if peer == nil || peer.member == nil || scene == nil {
 		return map[string]TokenLocator{}
 	}
 	if !memberIsGM(peer.member) {
-		return ownedTokenLocators(scene, peer.member)
+		return ownedTokenLocators(session, registry, scene, peer.member)
 	}
 	locators := map[string]TokenLocator{}
 	if !peer.playerPreview {
 		return locators
 	}
 	for tokenID, token := range scene.Tokens {
-		locators[tokenID] = tokenLocator(token)
+		locators[tokenID] = tokenLocator(presentToken(session, registry, token))
 	}
 	return locators
 }
@@ -545,6 +558,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		floorID = currentFloorForMember(scene, member, "")
 	}
 	visibleFloors := visibleFloorSet(scene, floorID)
+	registry, _ := MergeDefinitionRegistries(sessionRegistries(ss))
 	tokens := map[string]Token{}
 	elements := map[string]SceneElement{}
 	assets := make(map[string]Asset)
@@ -553,8 +567,9 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		runtime := scene.ensureRuntime()
 		for _, token := range runtime.query(*region) {
 			if _, visible := visibleFloors[tokenFloorID(scene, token)]; visible && (!playerProjection || !token.Hidden) {
-				tokens[token.ID] = token
-				if asset, ok := ss.Assets[token.Asset]; ok {
+				presented := presentToken(ss, registry, token)
+				tokens[token.ID] = presented
+				if asset, ok := ss.Assets[presented.Asset]; ok {
 					assets[asset.ID] = publicAsset(asset)
 				}
 			}
@@ -613,7 +628,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		"layers":         layers,
 		"elements":       elements,
 		"tokens":         tokens,
-		"ownedTokens":    ownedTokenLocators(scene, member),
+		"ownedTokens":    ownedTokenLocators(ss, registry, scene, member),
 		"transitions":    transitions,
 		"assets":         assets,
 		"members":        members,
@@ -623,7 +638,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		"entry":          entry,
 	}
 	if peer != nil {
-		snapshot["ownedTokens"] = tokenLocatorsForPeer(scene, peer)
+		snapshot["ownedTokens"] = tokenLocatorsForPeer(ss, registry, scene, peer)
 	}
 	if !playerProjection && region == nil {
 		snapshot["elementCatalog"] = sceneElementCatalog(scene)
@@ -716,8 +731,8 @@ func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, active
 	if !ok {
 		return false
 	}
-	if asset.Kind == assetKindAvatar {
-		return avatarAssetVisibleTo(ss, member, assetID)
+	if isCharacterArtworkAsset(asset) && avatarAssetVisibleTo(ss, member, assetID) {
+		return true
 	}
 	scene := ss.Scenes[sceneID]
 	if !sceneVisible(scene, member) {
@@ -744,20 +759,30 @@ func assetVisibleToPeer(ss *Session, peer *peer, assetID string) bool {
 	if !ok || peer == nil || peer.member == nil {
 		return false
 	}
-	if asset.Kind == assetKindAvatar {
-		return avatarAssetVisibleTo(ss, peer.member, assetID)
-	}
 	scene := ss.Scenes[peer.sceneID]
 	if !sceneVisible(scene, peer.member) {
 		return false
 	}
 	runtime := scene.ensureRuntime()
 	if !peerUsesPlayerProjection(peer) {
+		if isCharacterArtworkAsset(asset) && avatarAssetVisibleTo(ss, peer.member, assetID) {
+			return true
+		}
 		return runtime.assetAll[assetID] > 0
 	}
-	for visibleFloorID := range visibleFloorSet(scene, currentFloorForPeer(peer, scene)) {
+	visibleFloors := visibleFloorSet(scene, currentFloorForPeer(peer, scene))
+	for visibleFloorID := range visibleFloors {
 		if runtime.assetPublicByFloor[visibleFloorID][assetID] > 0 {
 			return true
+		}
+	}
+	if isCharacterArtworkAsset(asset) {
+		registry, _ := MergeDefinitionRegistries(sessionRegistries(ss))
+		for _, token := range scene.Tokens {
+			_, floorVisible := visibleFloors[token.FloorID]
+			if !token.Hidden && floorVisible && presentToken(ss, registry, token).Asset == assetID {
+				return true
+			}
 		}
 	}
 	return false

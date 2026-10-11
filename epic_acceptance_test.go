@@ -152,7 +152,7 @@ func TestEpicAvatarUploadRejectsCharacterDeletedDuringWorker(t *testing.T) {
 		result <- uploadResult{status: status, message: message}
 	}()
 	<-started
-	writeCharacterCommand(t, gmWS, Command{Type: "characterUnlink", Client: "acceptance-avatar", Seq: 2, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["red"]})
+	writeCharacterCommand(t, gmWS, Command{Type: "delete", Client: "acceptance-avatar", Seq: 2, SceneID: fixture.sceneA.ID, Token: Token{ID: fixture.tokens["red"]}})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}
@@ -160,7 +160,7 @@ func TestEpicAvatarUploadRejectsCharacterDeletedDuringWorker(t *testing.T) {
 	_, exists := fixture.session.CharacterInstances[characterID]
 	fixture.server.mu.Unlock()
 	if exists {
-		t.Fatal("transient character survived unlink before avatar worker completed")
+		t.Fatal("transient character survived token deletion before avatar worker completed")
 	}
 	close(release)
 	upload := <-result

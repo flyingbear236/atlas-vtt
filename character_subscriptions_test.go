@@ -174,7 +174,7 @@ func TestCharacterWatchClosesWhenTransientCharacterIsDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	read(t, gmWS, "characterSnapshot")
-	writeCharacterCommand(t, gmWS, Command{Type: "characterUnlink", Client: "watch-delete", Seq: 2, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["red"]})
+	writeCharacterCommand(t, gmWS, Command{Type: "delete", Client: "watch-delete", Seq: 2, SceneID: fixture.sceneA.ID, Token: Token{ID: fixture.tokens["red"]}})
 	read(t, gmWS, "characterWatchClosed")
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)

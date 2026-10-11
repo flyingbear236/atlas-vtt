@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 func characterCommandType(commandType string) bool {
 	switch commandType {
-	case "characterCreate", "characterLink", "characterUnlink", "characterSetPersistent",
+	case "characterCreate", "characterLink", "characterSetPersistent",
 		"characterStatSet", "characterStatReset", "characterAvatarSet", "characterAvatarReset",
 		"characterActionAdd", "characterActionRemove":
 		return true
@@ -184,7 +185,7 @@ func nextCharacterID(session *Session) string {
 }
 
 func applyCharacterCommand(session *Session, member *Member, sceneID string, command Command, mutation *characterMutation) error {
-	admin := command.Type == "characterCreate" || command.Type == "characterLink" || command.Type == "characterUnlink" ||
+	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
 		command.Type == "characterSetPersistent" || command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
@@ -211,11 +212,10 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		}
 		characterID := nextCharacterID(session)
 		instance := NewCharacterInstance(characterID, preset)
-		if command.CharacterName != "" {
-			instance.Name = command.CharacterName
-		}
-		if command.Persistent != nil {
-			instance.Persistent = *command.Persistent
+		if preset == nil {
+			if name := strings.TrimSpace(command.CharacterName); name != "" {
+				instance.Name = name
+			}
 		}
 		mutation.setInstance(instance)
 		old := cloneToken(token)
@@ -238,20 +238,6 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		mutation.setToken(sceneID, scene, old, token)
 		mutation.gcCharacter(oldCharacterID)
 		mutation.resultCharacterID = command.CharacterID
-	case "characterUnlink":
-		scene, token, err := characterTargetToken(session, sceneID, command.TokenID)
-		if err != nil {
-			return err
-		}
-		if token.CharacterInstanceID == "" {
-			return errors.New("token has no character")
-		}
-		old := cloneToken(token)
-		oldCharacterID := token.CharacterInstanceID
-		token.CharacterInstanceID = ""
-		mutation.setToken(sceneID, scene, old, token)
-		mutation.gcCharacter(oldCharacterID)
-		mutation.resultCharacterID = oldCharacterID
 	case "characterSetPersistent":
 		if command.Persistent == nil {
 			return errors.New("persistent value is required")
@@ -418,6 +404,9 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		}
 		if mutation.token != nil {
 			s.publish(session, mutation.token.sceneID, "upsert", mutation.token.old, true, mutation.token.next)
+		}
+		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" {
+			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
 		s.refreshCharacterWatches(session, mutation.changedCharacters, mutation.token != nil || mutation.registryChanged)
 	}

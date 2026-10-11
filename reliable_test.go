@@ -55,14 +55,14 @@ func TestMoveRenameReconnectRestart(t *testing.T) {
 	}
 	s.mu.Unlock()
 	disk := testServer(t, root)
-	if got := firstScene(disk.sessions[gm["session"]]).Tokens[token.ID]; got.Name != name || got.X != 100 || got.Y != 200 {
+	if got := firstScene(disk.sessions[gm["session"]]).Tokens[token.ID]; disk.sessions[gm["session"]].CharacterInstances[got.CharacterInstanceID].Name != name || got.X != 100 || got.Y != 200 {
 		t.Fatalf("unflushed disk state changed at ack: %+v", got)
 	}
 	if err := s.save(); err != nil {
 		t.Fatal(err)
 	}
 	disk = testServer(t, root)
-	if got := firstScene(disk.sessions[gm["session"]]).Tokens[token.ID]; got.Name != name || got.X != 345 || got.Y != 678 {
+	if got := firstScene(disk.sessions[gm["session"]]).Tokens[token.ID]; disk.sessions[gm["session"]].CharacterInstances[got.CharacterInstanceID].Name != name || got.X != 345 || got.Y != 678 {
 		t.Fatalf("flush did not persist final state: %+v", got)
 	}
 	pc.Close()
@@ -199,7 +199,7 @@ func TestImmediateCommandFlushFailureKeepsPendingMovementForRetry(t *testing.T) 
 	read(t, gc, "upsert")
 	read(t, gc, "ack")
 	disk := testServer(t, root)
-	if got := firstScene(disk.sessions[gm["session"]]).Tokens[tok.ID]; got.X != 999 || got.Name != name {
+	if got := firstScene(disk.sessions[gm["session"]]).Tokens[tok.ID]; got.X != 999 || disk.sessions[gm["session"]].CharacterInstances[got.CharacterInstanceID].Name != name {
 		t.Fatalf("retry did not persist pending movement and business change: %+v", got)
 	}
 }

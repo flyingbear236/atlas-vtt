@@ -122,3 +122,21 @@ func (s *Server) refreshCharacterWatches(session *Session, changed map[string]bo
 		s.send(peer, snapshot)
 	}
 }
+
+func (s *Server) publishCharacterTokens(session *Session, characterIDs map[string]bool) {
+	for characterID, deleted := range characterIDs {
+		if deleted {
+			continue
+		}
+		for reference := range session.characterReferences[characterID] {
+			scene := session.Scenes[reference.SceneID]
+			if scene == nil {
+				continue
+			}
+			token, exists := scene.Tokens[reference.TokenID]
+			if exists {
+				s.publish(session, scene.ID, "upsert", token, true, token)
+			}
+		}
+	}
+}
