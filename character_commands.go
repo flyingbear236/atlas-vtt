@@ -522,6 +522,9 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" {
 			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
+		if command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" {
+			s.publishCharacterDisplayChanged(session, mutation.changedCharacters)
+		}
 		s.refreshCharacterWatches(session, mutation.changedCharacters, mutation.token != nil || mutation.registryChanged)
 	}
 	ack(session.Receipts[stream])

@@ -369,6 +369,9 @@ func validateSessionCharacterState(session *Session) error {
 	if session == nil {
 		return errors.New("session is nil")
 	}
+	if err := validateSessionResourceOverlays(session); err != nil {
+		return err
+	}
 	if err := ValidateRulesetSnapshot(session.Ruleset); err != nil {
 		return err
 	}
