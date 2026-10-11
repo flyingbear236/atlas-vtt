@@ -30,9 +30,9 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	}
 	instance := cloneCharacterInstance(session.CharacterInstances[characterID])
 	var preset *CharacterPresetDefinition
-	if instance.PresetID != "" {
-		definition := clonePresetDefinition(registry.Presets[instance.PresetID])
-		preset = &definition
+	if definition, exists := registry.Presets[instance.PresetID]; instance.PresetID != "" && exists {
+		copy := clonePresetDefinition(definition)
+		preset = &copy
 	}
 	effective := EffectiveCharacterState(instance, preset)
 	stats := make(map[string]StatDefinition, len(effective.Stats))

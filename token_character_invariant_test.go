@@ -31,7 +31,7 @@ func TestTokenCreationAndReassignmentMaintainCharacterInvariant(t *testing.T) {
 	persistent := NewCharacterInstance("roster-hero", nil)
 	persistent.Name = "Roster hero"
 	persistent.Persistent = true
-	persistent.StatOverrides["legacy"] = StringStatValue("untouched")
+	persistent.Materialized.Stats["legacy"] = StringStatValue("untouched")
 	session.CampaignDefinitions.Stats["legacy"] = StatDefinition{ID: "legacy", Name: "Legacy", Type: StatTypeString}
 	session.CharacterInstances[persistent.ID] = persistent
 	session.RegistryRevision++
@@ -70,7 +70,7 @@ func TestTokenCreationAndReassignmentMaintainCharacterInvariant(t *testing.T) {
 	if _, exists := session.CharacterInstances[oldEmptyID]; exists {
 		t.Fatal("last reference did not collect the old transient character")
 	}
-	if got := session.CharacterInstances[persistent.ID]; got.Name != persistent.Name || got.StatOverrides["legacy"].String() != "untouched" {
+	if got := session.CharacterInstances[persistent.ID]; got.Name != persistent.Name || got.Materialized.Stats["legacy"].String() != "untouched" {
 		t.Fatal("reassignment copied or merged character data")
 	}
 	if len(session.characterReferences[persistent.ID]) != 2 {

@@ -125,63 +125,70 @@ func TestDefaultsAreOnlyAppliedWhenStatIsExplicitlyAdded(t *testing.T) {
 func TestEffectiveStatsOverridesResetAndPresetChanges(t *testing.T) {
 	preset := CharacterPresetDefinition{ID: "wolf", Name: "Wolf", Stats: map[string]StatValue{
 		"hp": IntegerStatValue(11), "zero": IntegerStatValue(5), "ready": BooleanStatValue(true), "note": StringStatValue("preset"),
-	}}
+	}, ActionIDs: []string{"bite", "dash"}}
 	instance := NewCharacterInstance("wolf-1", &preset)
+	if instance.Materialized != nil || instance.Name != "Wolf" {
+		t.Fatal("new preset character should be linked and keep preset name")
+	}
+	instance = MaterializeCharacter(instance, &preset)
 	instance = WithStatOverride(instance, "hp", IntegerStatValue(4))
 	instance = WithStatOverride(instance, "zero", IntegerStatValue(0))
 	instance = WithStatOverride(instance, "ready", BooleanStatValue(false))
 	instance = WithStatOverride(instance, "note", StringStatValue(""))
-
 	preset.Stats["hp"] = IntegerStatValue(20)
 	preset.Stats["armor"] = IntegerStatValue(12)
+	preset.ActionIDs = []string{"dash"}
 	effective := EffectiveCharacterState(instance, &preset)
-	if effective.Stats["hp"].Integer() != 4 || effective.Stats["armor"].Integer() != 12 || effective.Stats["zero"].Integer() != 0 || effective.Stats["ready"].Boolean() || effective.Stats["note"].String() != "" {
-		t.Fatalf("wrong effective stats: %#v", effective.Stats)
+	if effective.Stats["hp"].Integer() != 4 || len(effective.Stats) != 4 ||
+		effective.Stats["zero"].Integer() != 0 || effective.Stats["ready"].Boolean() ||
+		effective.Stats["note"].String() != "" || !reflect.DeepEqual(effective.ActionIDs, []string{"bite", "dash"}) {
+		t.Fatalf("materialization failed to freeze all fields: %#v", effective)
 	}
 	reset := ResetStatOverride(instance, "hp")
-	if EffectiveCharacterState(reset, &preset).Stats["hp"].Integer() != 20 {
-		t.Fatal("reset did not expose current preset value")
+	if _, ok := EffectiveCharacterState(reset, &preset).Stats["hp"]; ok {
+		t.Fatal("reset accidentally restored inheritance")
 	}
-	if instance.StatOverrides["hp"].Integer() != 4 {
-		t.Fatal("pure reset mutated its input")
+	if instance.Materialized.Stats["hp"].Integer() != 4 {
+		t.Fatal("reset mutated its input")
 	}
 }
-
 func TestEffectiveActionsStableDeduplicatedAndRemoved(t *testing.T) {
-	preset := CharacterPresetDefinition{ActionIDs: []string{"bite", "dash", "bite", "hide"}}
-	instance := CharacterInstance{
-		AddedActionIDs:   []string{"roar", "dash", "claw", "roar"},
-		RemovedActionIDs: []string{"dash", "roar"},
-	}
-	effective := EffectiveCharacterState(instance, &preset)
-	want := []string{"bite", "hide", "claw"}
-	if !reflect.DeepEqual(effective.ActionIDs, want) {
-		t.Fatalf("actions = %#v, want %#v", effective.ActionIDs, want)
+	preset := CharacterPresetDefinition{ID: "wolf", Name: "Wolf", ActionIDs: []string{"bite", "dash", "bite", "hide"}}
+	instance := NewCharacterInstance("one", &preset)
+	instance = MaterializeCharacter(instance, &preset)
+	instance = WithActionAdded(instance, "roar")
+	instance = WithActionRemoved(instance, "dash")
+	instance = WithActionRemoved(instance, "roar")
+	if got := EffectiveCharacterState(instance, &preset).ActionIDs; !reflect.DeepEqual(got, []string{"bite", "hide"}) {
+		t.Fatalf("actions = %#v", got)
 	}
 	if !reflect.DeepEqual(preset.ActionIDs, []string{"bite", "dash", "bite", "hide"}) {
-		t.Fatal("effective merge mutated preset actions")
+		t.Fatal("materialization mutated preset")
 	}
 	added := WithActionAdded(instance, "roar")
-	if !reflect.DeepEqual(added.RemovedActionIDs, []string{"dash"}) || !reflect.DeepEqual(added.AddedActionIDs, []string{"roar", "dash", "claw"}) {
-		t.Fatalf("add normalization failed: %#v", added)
+	if !reflect.DeepEqual(added.Materialized.ActionIDs, []string{"bite", "hide", "roar"}) {
+		t.Fatalf("add action failed: %#v", added)
 	}
-	removed := WithActionRemoved(added, "claw")
-	if !reflect.DeepEqual(removed.AddedActionIDs, []string{"roar", "dash"}) || !reflect.DeepEqual(removed.RemovedActionIDs, []string{"dash", "claw"}) {
-		t.Fatalf("remove normalization failed: %#v", removed)
+	removed := WithActionRemoved(added, "hide")
+	if !reflect.DeepEqual(removed.Materialized.ActionIDs, []string{"bite", "roar"}) {
+		t.Fatalf("remove action failed: %#v", removed)
 	}
 }
-
 func TestNewInstancesDoNotShareMutableState(t *testing.T) {
 	preset := CharacterPresetDefinition{ID: "wolf", Name: "Wolf", Stats: map[string]StatValue{"hp": IntegerStatValue(11)}, ActionIDs: []string{"bite"}}
 	one := NewCharacterInstance("one", &preset)
 	two := NewCharacterInstance("two", &preset)
-	one.StatOverrides["hp"] = IntegerStatValue(3)
-	one.AddedActionIDs = append(one.AddedActionIDs, "dash")
-	if len(two.StatOverrides) != 0 || len(two.AddedActionIDs) != 0 || preset.Stats["hp"].Integer() != 11 || len(preset.ActionIDs) != 1 {
+	one = MaterializeCharacter(one, &preset)
+	one.Materialized.Stats["hp"] = IntegerStatValue(3)
+	one.Materialized.ActionIDs = append(one.Materialized.ActionIDs, "dash")
+	if two.Materialized != nil || preset.Stats["hp"].Integer() != 11 || len(preset.ActionIDs) != 1 {
 		t.Fatal("instances or preset share mutable state")
 	}
+	standalone := NewCharacterInstance("independent", nil)
+	if standalone.Materialized == nil || len(standalone.Materialized.Stats) != 0 || standalone.PresetID != "" {
+		t.Fatalf("standalone must begin materialized and empty: %#v", standalone)
+	}
 }
-
 func TestInferUnknownStatsIsAtomicAndRejectsTypeConflict(t *testing.T) {
 	registries := baseCharacterRegistries()
 	campaign, err := WithInferredStatDefinitions(registries, map[string]StatValue{

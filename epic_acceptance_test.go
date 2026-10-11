@@ -123,8 +123,8 @@ func TestEpicCoOwnersConcurrentStatPatchesReconnect(t *testing.T) {
 	instance := fixture.session.CharacterInstances[characterID]
 	fixture.server.mu.Unlock()
 	want := map[string]StatValue{"hp": IntegerStatValue(3), "dexterity": IntegerStatValue(18)}
-	if !reflect.DeepEqual(instance.StatOverrides, want) {
-		t.Fatalf("field patches replaced the override map: got=%#v want=%#v", instance.StatOverrides, want)
+	if instance.Materialized == nil || !reflect.DeepEqual(instance.Materialized.Stats, want) {
+		t.Fatalf("field patches replaced the mechanical snapshot: got=%#v want=%#v", instance.Materialized, want)
 	}
 }
 

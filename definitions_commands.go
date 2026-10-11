@@ -71,27 +71,50 @@ func sessionRegistries(session *Session) DefinitionRegistries {
 	return DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: session.CampaignDefinitions}
 }
 
-func validateDefinitionState(session *Session, ruleset RulesetSnapshot, campaign CampaignRegistry) error {
+// prepareDefinitionCharacters validates a prospective registry without changing
+// committed session state. Only characters whose preset disappears are copied.
+func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, campaign CampaignRegistry) (map[string]CharacterInstance, error) {
 	if err := ValidateRulesetSnapshot(ruleset); err != nil {
-		return err
+		return nil, err
 	}
-	effective, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: ruleset.Registry, Campaign: campaign})
+	next, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: ruleset.Registry, Campaign: campaign})
 	if err != nil {
-		return err
+		return nil, err
+	}
+	current, err := MergeDefinitionRegistries(sessionRegistries(session))
+	if err != nil {
+		return nil, err
 	}
 	for id, preset := range campaign.Presets {
 		if preset.AvatarAssetID != "" {
 			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
-				return fmt.Errorf("campaign preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
+				return nil, fmt.Errorf("campaign preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
 			}
 		}
 	}
-	for id, instance := range session.CharacterInstances {
-		if err := ValidateCharacterInstance(instance, effective); err != nil {
-			return fmt.Errorf("character instance %q: %w", id, err)
+	updates := map[string]CharacterInstance{}
+	for id, original := range session.CharacterInstances {
+		instance := original
+		if instance.PresetID != "" && instance.Materialized == nil {
+			if _, exists := next.Presets[instance.PresetID]; !exists {
+				oldPreset, exists := current.Presets[instance.PresetID]
+				if !exists {
+					return nil, fmt.Errorf("linked character %q references missing old preset %q", id, instance.PresetID)
+				}
+				instance = MaterializeCharacter(original, &oldPreset)
+				updates[id] = instance
+			}
+		}
+		if err := ValidateCharacterInstance(instance, next); err != nil {
+			return nil, fmt.Errorf("character instance %q: %w", id, err)
 		}
 	}
-	return nil
+	return updates, nil
+}
+
+func validateDefinitionState(session *Session, ruleset RulesetSnapshot, campaign CampaignRegistry) error {
+	_, err := prepareDefinitionCharacters(session, ruleset, campaign)
+	return err
 }
 
 func definitionReferences(session *Session, registry EffectiveRegistry, kind, definitionID string) []string {
@@ -117,8 +140,13 @@ func definitionReferences(session *Session, registry EffectiveRegistry, kind, de
 			}
 		}
 		for instanceID, instance := range session.CharacterInstances {
-			if _, exists := instance.StatOverrides[definitionID]; exists {
-				add("character:" + instanceID)
+			if instance.Materialized != nil {
+				if _, exists := instance.Materialized.Stats[definitionID]; exists {
+					add("character:" + instanceID)
+				}
+				if _, exists := instance.Materialized.ResourceInitial[definitionID]; exists {
+					add("character:" + instanceID)
+				}
 			}
 		}
 	case definitionKindAction:
@@ -128,7 +156,7 @@ func definitionReferences(session *Session, registry EffectiveRegistry, kind, de
 			}
 		}
 		for instanceID, instance := range session.CharacterInstances {
-			if slices.Contains(instance.AddedActionIDs, definitionID) || slices.Contains(instance.RemovedActionIDs, definitionID) {
+			if instance.Materialized != nil && slices.Contains(instance.Materialized.ActionIDs, definitionID) {
 				add("character:" + instanceID)
 			}
 		}
@@ -297,7 +325,7 @@ func applyDefinitionCommand(session *Session, command Command) (CampaignRegistry
 			return CampaignRegistry{}, false, err
 		}
 		candidateEffective, mergeErr := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: candidate})
-		if mergeErr == nil && !effectiveHasDefinition(candidateEffective, command.DefinitionKind, command.DefinitionID) {
+		if mergeErr == nil && command.DefinitionKind != definitionKindPreset && !effectiveHasDefinition(candidateEffective, command.DefinitionKind, command.DefinitionID) {
 			if references := definitionReferences(session, currentEffective, command.DefinitionKind, command.DefinitionID); len(references) > 0 {
 				return CampaignRegistry{}, false, fmt.Errorf("definition %q is referenced by %s", command.DefinitionID, strings.Join(references, ", "))
 			}
@@ -365,6 +393,7 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 
 	oldCampaign := cloneCampaignRegistry(session.CampaignDefinitions)
 	oldRevision, oldCharacterRevision, oldDirty := session.RegistryRevision, session.CharacterRevision, s.dirty
+	oldCharacters := map[string]CharacterInstance{}
 	var oldAssets map[string]Asset
 	issue := ""
 	changed := false
@@ -375,15 +404,24 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 		if err != nil {
 			issue = err.Error()
 		} else if candidateChanged {
-			oldAssets = make(map[string]Asset, len(session.Assets))
-			for assetID, asset := range session.Assets {
-				oldAssets[assetID] = asset
+			updates, projectionErr := prepareDefinitionCharacters(session, session.Ruleset, candidate)
+			if projectionErr != nil {
+				issue = projectionErr.Error()
+			} else {
+				for characterID, next := range updates {
+					oldCharacters[characterID] = cloneCharacterInstance(session.CharacterInstances[characterID])
+					session.CharacterInstances[characterID] = next
+				}
+				oldAssets = make(map[string]Asset, len(session.Assets))
+				for assetID, asset := range session.Assets {
+					oldAssets[assetID] = asset
+				}
+				session.CampaignDefinitions = candidate
+				session.RegistryRevision++
+				session.CharacterRevision++
+				refreshAssetOrphans(session, time.Now())
+				changed = true
 			}
-			session.CampaignDefinitions = candidate
-			session.RegistryRevision++
-			session.CharacterRevision++
-			refreshAssetOrphans(session, time.Now())
-			changed = true
 		}
 	}
 	session.Receipts[stream] = Receipt{Seq: command.Seq, Error: issue, Digest: digest, Updated: time.Now().Unix()}
@@ -391,6 +429,9 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 	if err := s.saveLocked(); err != nil {
 		if changed {
 			session.CampaignDefinitions = oldCampaign
+			for characterID, original := range oldCharacters {
+				session.CharacterInstances[characterID] = original
+			}
 		}
 		if oldAssets != nil {
 			session.Assets = oldAssets
@@ -854,14 +895,16 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	oldRuleset := cloneRulesetSnapshot(session.Ruleset)
 	oldCampaign := cloneCampaignRegistry(session.CampaignDefinitions)
 	oldOperations := cloneDefinitionOperationReceipts(session.DefinitionOperations)
+	oldCharacters := map[string]CharacterInstance{}
 	var oldAssets map[string]Asset
 	oldRevision, oldCharacterRevision, oldDirty := session.RegistryRevision, session.CharacterRevision, s.dirty
 	result := DefinitionApplyResult{Kind: kind}
 	switch kind {
 	case definitionOperationRulesetInstall:
 		snapshot, parseErr := CompileRulesetFiles(rulesetFiles)
+		var updates map[string]CharacterInstance
 		if parseErr == nil {
-			parseErr = validateDefinitionState(session, snapshot, session.CampaignDefinitions)
+			updates, parseErr = prepareDefinitionCharacters(session, snapshot, session.CampaignDefinitions)
 		}
 		if parseErr != nil {
 			var conflict *RulesetDefinitionConflictError
@@ -873,6 +916,10 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 			return
 		}
 		session.Ruleset = cloneRulesetSnapshot(snapshot)
+		for characterID, next := range updates {
+			oldCharacters[characterID] = cloneCharacterInstance(session.CharacterInstances[characterID])
+			session.CharacterInstances[characterID] = next
+		}
 		if snapshot.Metadata != (RulesetMetadata{}) {
 			metadata := snapshot.Metadata
 			result.RulesetMetadata = &metadata
@@ -904,6 +951,9 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 		session.Ruleset = oldRuleset
 		session.CampaignDefinitions = oldCampaign
 		session.DefinitionOperations = oldOperations
+		for characterID, original := range oldCharacters {
+			session.CharacterInstances[characterID] = original
+		}
 		if oldAssets != nil {
 			session.Assets = oldAssets
 		}

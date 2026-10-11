@@ -221,11 +221,11 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 	red := fixture.session.CharacterInstances[redID]
 	firstEffective := effectiveCharacterForTest(first, registry)
 	secondEffective := effectiveCharacterForTest(second, registry)
-	if first.StatOverrides["hp"].Integer() != 4 || second.StatOverrides["hp"].Type() != "" || firstEffective.Stats["dexterity"].Integer() != 99 || secondEffective.Stats["dexterity"].Integer() != 16 {
+	if first.Materialized == nil || first.Materialized.Stats["hp"].Integer() != 4 || second.Materialized != nil || firstEffective.Stats["dexterity"].Integer() != 99 || secondEffective.Stats["dexterity"].Integer() != 16 {
 		fixture.server.mu.Unlock()
 		t.Fatal("wolf instances do not preserve independent overrides and preset inheritance")
 	}
-	if red.PresetID != "wolf" || red.StatOverrides["fur_color"].String() != "red" || fixture.session.CampaignDefinitions.Stats["fur_color"].Type != StatTypeString {
+	if red.PresetID != "wolf" || red.Materialized == nil || red.Materialized.Stats["fur_color"].String() != "red" || fixture.session.CampaignDefinitions.Stats["fur_color"].Type != StatTypeString {
 		fixture.server.mu.Unlock()
 		t.Fatal("unknown stat and red wolf override were not saved atomically")
 	}
@@ -245,7 +245,7 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 	}
 	fixture.server.mu.Lock()
 	first = fixture.session.CharacterInstances[wolves[0]]
-	if len(first.AddedActionIDs) != 1 || first.AddedActionIDs[0] != "bite" || len(first.RemovedActionIDs) != 0 {
+	if first.Materialized == nil || len(first.Materialized.ActionIDs) != 1 || first.Materialized.ActionIDs[0] != "bite" {
 		fixture.server.mu.Unlock()
 		t.Fatalf("action add/remove normalization failed: %#v", first)
 	}
@@ -256,7 +256,7 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 		t.Fatal(issue)
 	}
 	fixture.server.mu.Lock()
-	_, overrideRemains := fixture.session.CharacterInstances[redID].StatOverrides["fur_color"]
+	_, overrideRemains := fixture.session.CharacterInstances[redID].Materialized.Stats["fur_color"]
 	_, definitionRemains := fixture.session.CampaignDefinitions.Stats["fur_color"]
 	fixture.server.mu.Unlock()
 	if overrideRemains || !definitionRemains {
@@ -282,7 +282,7 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 		t.Fatal(issue)
 	}
 	fixture.server.mu.Lock()
-	if fixture.session.CharacterInstances[lancelotID].StatOverrides["hp"].Integer() != 7 || fixture.sceneB.Tokens[fixture.tokens["return"]].CharacterInstanceID != lancelotID {
+	if fixture.session.CharacterInstances[lancelotID].Materialized.Stats["hp"].Integer() != 7 || fixture.sceneB.Tokens[fixture.tokens["return"]].CharacterInstanceID != lancelotID {
 		fixture.server.mu.Unlock()
 		t.Fatal("persistent character did not survive token removal and relink")
 	}
@@ -381,7 +381,7 @@ func TestCharacterGCIndexRelinkSceneDeleteAndSaveRollback(t *testing.T) {
 	read(t, aliceWS, "saveError")
 	fixture.server.mu.Lock()
 	_, definitionLeaked := fixture.session.CampaignDefinitions.Stats["new_stat"]
-	_, valueLeaked := fixture.session.CharacterInstances[persistentID].StatOverrides["new_stat"]
+	_, valueLeaked := fixture.session.CharacterInstances[persistentID].Materialized.Stats["new_stat"]
 	aliceID := fixture.session.Keys[fixture.alice["key"]]
 	receiptLeaked := fixture.session.Receipts[aliceID+":atomic-stat"].Seq != 0
 	fixture.server.mu.Unlock()

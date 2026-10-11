@@ -41,8 +41,8 @@ func newDiceCommandFixture(t *testing.T) diceCommandFixture {
 	registry.Actions["strike"] = ActionDefinition{ID: "strike", Name: "Strike", Rolls: []RollSpec{{ID: "attack", Name: "Attack", Count: 2, Sides: 10, ModifierStat: "agility", ModifierFixed: 0.5}}}
 	character := NewCharacterInstance("hero", nil)
 	character.Name = "Hero"
-	character.StatOverrides["agility"] = IntegerStatValue(2)
-	character.AddedActionIDs = []string{"strike"}
+	character.Materialized.Stats["agility"] = IntegerStatValue(2)
+	character.Materialized.ActionIDs = []string{"strike"}
 	character.Persistent = true
 	addToken := func(scene *Scene, tokenID string) {
 		token := Token{ID: tokenID, Name: "Hero", FloorID: firstFloorID(scene), X: 50, Y: 60, Size: 80, Opacity: 1, Color: "#ffffff", OwnerIDs: []string{aliceMember.ID}, CharacterInstanceID: character.ID}

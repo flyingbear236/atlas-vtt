@@ -154,8 +154,13 @@ func TestCharacterStorageRoundTripAndRulesetDefaultSnapshot(t *testing.T) {
 		t.Fatal("committed ruleset source did not round trip through storage")
 	}
 	instance := got.CharacterInstances["wolf-1"]
-	if instance.StatOverrides["hp"].Type() != StatTypeInteger || instance.StatOverrides["hp"].Integer() != 4 || instance.StatOverrides["speed"].Type() != StatTypeNumber || instance.StatOverrides["speed"].Number() != 12 {
-		t.Fatalf("typed instance values did not round trip: %#v", instance.StatOverrides)
+	if instance.Materialized == nil || instance.Materialized.Stats["hp"].Type() != StatTypeInteger || instance.Materialized.Stats["hp"].Integer() != 4 ||
+		instance.Materialized.Stats["speed"].Type() != StatTypeNumber || instance.Materialized.Stats["speed"].Number() != 12 ||
+		len(instance.Materialized.ActionIDs) != 1 || instance.Materialized.ActionIDs[0] != "bite" {
+		t.Fatalf("legacy instance overrides were not fully materialized: %#v", instance)
+	}
+	if len(instance.StatOverrides) != 0 || len(instance.AddedActionIDs) != 0 || len(instance.RemovedActionIDs) != 0 {
+		t.Fatal("legacy fields survived migration")
 	}
 	if len(got.characterReferences["wolf-1"]) != 2 {
 		t.Fatalf("cross-scene reference index was not restored: %#v", got.characterReferences)
