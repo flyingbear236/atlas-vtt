@@ -14,6 +14,8 @@ jobs:
           go-version: '1.26'
       - name: Compile and targeted Go tests
         run: go test ./... -run 'TestLinkedMaterialization|TestResourceValueZeroAndMissing|TestMaterializationOfActions|TestIndependentCharacterInitialState|TestPresetSourceSplicePreservesOutsideBytes|TestPresetSourceAmbiguousRangeRejected|TestRulesetArtworkPathValidation' -count=1
+      - name: Existing character and ruleset tests
+        run: go test ./... -run 'Test.*(Character|Ruleset|Definition|Avatar)' -count=1
       - name: JavaScript syntax
         run: |
           for f in web/app.js web/definitions.js web/preset-editor.js; do node --input-type=module --check < "$f"; done
