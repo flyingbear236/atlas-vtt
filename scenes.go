@@ -501,7 +501,7 @@ func presentToken(session *Session, registry EffectiveRegistry, token Token) Tok
 		return presented
 	}
 	presented.Name = instance.Name
-	presented.Asset = effectiveCharacterAvatar(instance, registry)
+	presented.Asset = effectiveCharacterAvatar(session, instance, registry)
 	return presented
 }
 

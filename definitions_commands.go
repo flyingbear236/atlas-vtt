@@ -46,6 +46,7 @@ type DefinitionOperationReceipt struct {
 type definitionRegistryResponse struct {
 	RegistryRevision uint64            `json:"registryRevision"`
 	Ruleset          RulesetSnapshot   `json:"ruleset"`
+	ArtworkWarnings  []ArtworkWarning  `json:"artworkWarnings,omitempty"`
 	Campaign         CampaignRegistry  `json:"campaign"`
 	Effective        EffectiveRegistry `json:"effective"`
 }
@@ -56,6 +57,7 @@ type definitionPreviewResponse struct {
 	Diff             *CampaignImportDiff     `json:"diff,omitempty"`
 	RulesetDiff      *RulesetReplacementDiff `json:"rulesetDiff,omitempty"`
 	Ruleset          *RulesetSnapshot        `json:"ruleset,omitempty"`
+	ArtworkWarnings  []ArtworkWarning        `json:"artworkWarnings,omitempty"`
 }
 
 func definitionCommandType(commandType string) bool {
@@ -92,16 +94,27 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 			}
 		}
 	}
+	if err := validateRulesetMediaAssets(session, ruleset); err != nil {
+		return nil, err
+	}
 	updates := map[string]CharacterInstance{}
 	for id, original := range session.CharacterInstances {
 		instance := original
-		if instance.PresetID != "" && instance.Materialized == nil {
+		if instance.PresetID != "" {
 			if _, exists := next.Presets[instance.PresetID]; !exists {
 				oldPreset, exists := current.Presets[instance.PresetID]
-				if !exists {
+				if !exists && instance.Materialized == nil {
 					return nil, fmt.Errorf("linked character %q references missing old preset %q", id, instance.PresetID)
 				}
-				instance = MaterializeCharacter(original, &oldPreset, current)
+				if instance.AvatarAssetID == nil && exists {
+					art := resolveCharacterArtwork(session, instance, &oldPreset, session.Ruleset)
+					if art.AssetID != "" {
+						instance = WithAvatarOverride(instance, art.AssetID)
+					}
+				}
+				if instance.Materialized == nil {
+					instance = MaterializeCharacter(instance, &oldPreset, current)
+				}
 				updates[id] = instance
 			}
 		}
@@ -491,11 +504,22 @@ type rulesetUploadFile struct {
 	Content string `json:"content"`
 }
 
+type rulesetPackage struct {
+	Files map[string]string
+	Media map[string]string
+}
+
 type rulesetUploadPayload struct {
 	Files []rulesetUploadFile `json:"files"`
+	Media map[string]string   `json:"media,omitempty"`
 }
 
 func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[string]string, bool) {
+	packageData, ok := readRulesetPackage(w, request)
+	return packageData.Files, ok
+}
+
+func readRulesetPackage(w http.ResponseWriter, request *http.Request) (rulesetPackage, bool) {
 	if strings.HasPrefix(strings.ToLower(request.Header.Get("Content-Type")), "application/json") {
 		request.Body = http.MaxBytesReader(w, request.Body, 4*MaxRulesetPackageBytes+(1<<20))
 		var payload rulesetUploadPayload
@@ -505,43 +529,43 @@ func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[str
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
 				fail(w, http.StatusRequestEntityTooLarge, "Пакет ruleset превышает лимит")
-				return nil, false
+				return rulesetPackage{}, false
 			}
 			fail(w, http.StatusBadRequest, "Некорректный пакет ruleset")
-			return nil, false
+			return rulesetPackage{}, false
 		}
 		if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 			fail(w, http.StatusBadRequest, "Некорректный пакет ruleset")
-			return nil, false
+			return rulesetPackage{}, false
 		}
 		if len(payload.Files) > MaxRulesetFiles {
 			fail(w, http.StatusBadRequest, fmt.Sprintf("Пакет ruleset может содержать не больше %d TOML-файлов", MaxRulesetFiles))
-			return nil, false
+			return rulesetPackage{}, false
 		}
 		files := make(map[string]string, len(payload.Files))
 		totalBytes := 0
 		for _, file := range payload.Files {
 			if err := validateRulesetFileName(file.Name); err != nil {
 				fail(w, http.StatusBadRequest, err.Error())
-				return nil, false
+				return rulesetPackage{}, false
 			}
 			if _, duplicate := files[file.Name]; duplicate {
 				fail(w, http.StatusConflict, fmt.Sprintf("Файл %q передан дважды", file.Name))
-				return nil, false
+				return rulesetPackage{}, false
 			}
 			totalBytes += len(file.Content)
 			if totalBytes > MaxRulesetPackageBytes {
 				fail(w, http.StatusRequestEntityTooLarge, "Пакет ruleset превышает лимит 1 МиБ")
-				return nil, false
+				return rulesetPackage{}, false
 			}
 			files[file.Name] = file.Content
 		}
-		return files, true
+		return rulesetPackage{Files: files, Media: payload.Media}, true
 	}
 
 	data, ok := readDefinitionDocument(w, request)
 	if !ok {
-		return nil, false
+		return rulesetPackage{}, false
 	}
 	name := request.URL.Query().Get("filename")
 	if name == "" {
@@ -549,9 +573,9 @@ func readRulesetDocuments(w http.ResponseWriter, request *http.Request) (map[str
 	}
 	if err := validateRulesetFileName(name); err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
-		return nil, false
+		return rulesetPackage{}, false
 	}
-	return map[string]string{name: string(data)}, true
+	return rulesetPackage{Files: map[string]string{name: string(data)}}, true
 }
 
 func rulesetDocumentsDigest(files map[string]string) string {
@@ -637,6 +661,7 @@ func (s *Server) readDefinitions(w http.ResponseWriter, request *http.Request) {
 	reply(w, definitionRegistryResponse{
 		RegistryRevision: session.RegistryRevision,
 		Ruleset:          ruleset,
+		ArtworkWarnings:  rulesetArtworkWarnings(session.Ruleset, session.Assets),
 		Campaign:         cloneCampaignRegistry(session.CampaignDefinitions),
 		Effective:        effective,
 	})
@@ -686,17 +711,18 @@ func (s *Server) exportCampaignDefinitions(w http.ResponseWriter, request *http.
 }
 
 func rulesetInstalled(snapshot RulesetSnapshot) bool {
-	return len(snapshot.Files) != 0 || rulesetSnapshotHasContent(snapshot)
+	return len(snapshot.Files) != 0 || len(snapshot.Media) != 0 || rulesetSnapshotHasContent(snapshot)
 }
 
 func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Request) {
 	if !s.authorizeDefinitionsRequest(w, request) {
 		return
 	}
-	files, ok := readRulesetDocuments(w, request)
+	packageData, ok := readRulesetPackage(w, request)
 	if !ok {
 		return
 	}
+	requestDigest := rulesetPackageDigest(packageData)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, member := s.auth(request)
@@ -704,7 +730,10 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 		fail(w, http.StatusForbidden, "Нужны права ведущего")
 		return
 	}
-	snapshot, err := CompileRulesetFiles(files)
+	if packageData.Media == nil {
+		packageData.Media = session.Ruleset.Media // TOML-only clients preserve ownership.
+	}
+	snapshot, err := compileRulesetPackage(packageData)
 	if err == nil {
 		err = validateDefinitionState(session, snapshot, session.CampaignDefinitions)
 	}
@@ -720,10 +749,11 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 	copy := cloneRulesetSnapshot(snapshot)
 	diff := DiffRulesetRegistries(session.Ruleset.Registry, snapshot.Registry)
 	reply(w, definitionPreviewResponse{
-		Digest: rulesetDocumentsDigest(files),
+		Digest:           requestDigest,
 		RegistryRevision: session.RegistryRevision,
-		RulesetDiff: &diff,
-		Ruleset: &copy,
+		RulesetDiff:      &diff,
+		Ruleset:          &copy,
+		ArtworkWarnings:  rulesetArtworkWarnings(snapshot, session.Assets),
 	})
 }
 
@@ -852,15 +882,15 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 		return
 	}
 	var data []byte
-	var rulesetFiles map[string]string
+	var candidatePackage rulesetPackage
 	actualDigest := ""
 	if kind == definitionOperationRulesetInstall {
 		var ok bool
-		rulesetFiles, ok = readRulesetDocuments(w, request)
+		candidatePackage, ok = readRulesetPackage(w, request)
 		if !ok {
 			return
 		}
-		actualDigest = rulesetDocumentsDigest(rulesetFiles)
+		actualDigest = rulesetPackageDigest(candidatePackage)
 	} else {
 		var ok bool
 		data, ok = readDefinitionDocument(w, request)
@@ -904,7 +934,10 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	result := DefinitionApplyResult{Kind: kind}
 	switch kind {
 	case definitionOperationRulesetInstall:
-		snapshot, parseErr := CompileRulesetFiles(rulesetFiles)
+		if candidatePackage.Media == nil {
+			candidatePackage.Media = session.Ruleset.Media
+		}
+		snapshot, parseErr := compileRulesetPackage(candidatePackage)
 		var updates map[string]CharacterInstance
 		if parseErr == nil {
 			updates, parseErr = prepareDefinitionCharacters(session, snapshot, session.CampaignDefinitions)
@@ -918,11 +951,13 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 			}
 			return
 		}
+		oldAssets = cloneAssetRegistry(session.Assets)
 		session.Ruleset = cloneRulesetSnapshot(snapshot)
 		for characterID, next := range updates {
 			oldCharacters[characterID] = cloneCharacterInstance(session.CharacterInstances[characterID])
 			session.CharacterInstances[characterID] = next
 		}
+		refreshAssetOrphans(session, time.Now())
 		if snapshot.Metadata != (RulesetMetadata{}) {
 			metadata := snapshot.Metadata
 			result.RulesetMetadata = &metadata

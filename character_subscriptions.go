@@ -35,6 +35,9 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 		preset = &copy
 	}
 	effective := EffectiveCharacterState(instance, preset, registry)
+	effective.Artwork = resolveCharacterArtwork(session, instance, preset, session.Ruleset)
+	effective.AvatarAssetID = effective.Artwork.AssetID
+	effective.HasAvatar = effective.Artwork.AssetID != ""
 	stats := make(map[string]StatDefinition, len(effective.Stats))
 	for statID := range effective.Stats {
 		if definition, ok := registry.Stats[statID]; ok {

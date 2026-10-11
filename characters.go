@@ -211,6 +211,7 @@ type CharacterPresetDefinition struct {
 	Name          string               `json:"name"`
 	Kind          string               `json:"kind,omitempty"`
 	AvatarAssetID string               `json:"avatarAssetId,omitempty"`
+	Artwork       string               `json:"artwork,omitempty"`
 	Stats         map[string]StatValue `json:"stats,omitempty"`
 	ActionIDs     []string             `json:"actionIds,omitempty"`
 }
@@ -272,6 +273,7 @@ type EffectiveCharacter struct {
 	Name          string                       `json:"name"`
 	AvatarAssetID string                       `json:"avatarAssetId,omitempty"`
 	HasAvatar     bool                         `json:"hasAvatar"`
+	Artwork       ArtworkResolution            `json:"artwork"`
 	Stats         map[string]StatValue         `json:"stats"`
 	Resources     map[string]EffectiveResource `json:"resources"`
 	ActionIDs     []string                     `json:"actionIds"`
@@ -474,6 +476,8 @@ func EffectiveCharacterState(instance CharacterInstance, preset *CharacterPreset
 		}
 		effective.Resources[statID] = EffectiveResource{Current: current, Initial: initial}
 	}
+	// Legacy asset IDs can be presented without a session; ruleset logical
+	// artwork is resolved against committed media by the session caller.
 	if preset != nil && preset.AvatarAssetID != "" {
 		effective.AvatarAssetID = preset.AvatarAssetID
 		effective.HasAvatar = true
@@ -818,6 +822,11 @@ func validatePresetDefinition(definition CharacterPresetDefinition, registry Eff
 	case "", "character", "npc", "monster":
 	default:
 		return fmt.Errorf("preset %q has invalid kind %q", definition.ID, definition.Kind)
+	}
+	if definition.Artwork != "" {
+		if err := validateRulesetMediaPath(definition.Artwork); err != nil {
+			return fmt.Errorf("preset %q artwork: %w", definition.ID, err)
+		}
 	}
 	if len(definition.Stats) > MaxStatsPerCharacter || len(definition.ActionIDs) > MaxActionsPerCharacter {
 		return fmt.Errorf("preset %q exceeds domain limits", definition.ID)

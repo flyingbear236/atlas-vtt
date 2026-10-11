@@ -115,6 +115,7 @@ type RulesetSnapshot struct {
 	Metadata RulesetMetadata                `json:"metadata"`
 	Registry RulesetRegistry                `json:"registry"`
 	Files    map[string]RulesetFileManifest `json:"files,omitempty"`
+	Media    map[string]string              `json:"media,omitempty"`
 }
 
 type CharacterTokenReference struct {
@@ -156,6 +157,12 @@ func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 			manifest.Actions = append([]string(nil), manifest.Actions...)
 			manifest.Presets = append([]string(nil), manifest.Presets...)
 			result.Files[name] = manifest
+		}
+	}
+	if snapshot.Media != nil {
+		result.Media = make(map[string]string, len(snapshot.Media))
+		for path, assetID := range snapshot.Media {
+			result.Media[path] = assetID
 		}
 	}
 	return result
@@ -216,6 +223,17 @@ func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
 }
 
 func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
+	if len(snapshot.Media) > maxRulesetMediaEntries {
+		return errors.New("ruleset media entries exceed limit")
+	}
+	for path, assetID := range snapshot.Media {
+		if err := validateRulesetMediaPath(path); err != nil {
+			return err
+		}
+		if err := validateID(assetID); err != nil {
+			return fmt.Errorf("ruleset media %q asset id: %w", path, err)
+		}
+	}
 	if err := validateRulesetFileManifests(snapshot); err != nil {
 		return err
 	}
