@@ -101,7 +101,7 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 				if !exists {
 					return nil, fmt.Errorf("linked character %q references missing old preset %q", id, instance.PresetID)
 				}
-				instance = MaterializeCharacter(original, &oldPreset)
+				instance = MaterializeCharacter(original, &oldPreset, current)
 				updates[id] = instance
 			}
 		}
@@ -140,6 +140,9 @@ func definitionReferences(session *Session, registry EffectiveRegistry, kind, de
 			}
 		}
 		for instanceID, instance := range session.CharacterInstances {
+			if _, exists := instance.ResourceCurrent[definitionID]; exists {
+				add("character:" + instanceID)
+			}
 			if instance.Materialized != nil {
 				if _, exists := instance.Materialized.Stats[definitionID]; exists {
 					add("character:" + instanceID)

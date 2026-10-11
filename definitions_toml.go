@@ -52,7 +52,24 @@ type rulesetTOMLMetadata struct {
 type statTOMLDefinition struct {
 	Name    string `toml:"name,omitempty"`
 	Type    string `toml:"type"`
+	Kind    string `toml:"kind,omitempty"`
 	Default any    `toml:"default,omitempty"`
+}
+
+type statTOMLArrayDefinition struct {
+	ID      string `toml:"id"`
+	Name    string `toml:"name,omitempty"`
+	Type    string `toml:"type"`
+	Kind    string `toml:"kind,omitempty"`
+	Default any    `toml:"default,omitempty"`
+}
+
+type definitionsTOMLArrayDocument struct {
+	SchemaVersion int                             `toml:"schema_version"`
+	Ruleset       *rulesetTOMLMetadata            `toml:"ruleset,omitempty"`
+	Stats         []statTOMLArrayDefinition       `toml:"stats,omitempty"`
+	Actions       map[string]actionTOMLDefinition `toml:"actions,omitempty"`
+	Presets       map[string]presetTOMLDefinition `toml:"presets,omitempty"`
 }
 
 type actionTOMLDefinition struct {
@@ -136,6 +153,48 @@ func rulesetFileManifest(content string, document definitionsTOMLDocument) Rules
 	}
 }
 
+func usesStatArrayTables(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		header := strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		header = strings.ReplaceAll(strings.ReplaceAll(header, " ", ""), "\t", "")
+		if header == "[[stats]]" {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeDefinitionsTOMLDocument(data []byte) (definitionsTOMLDocument, error) {
+	if !usesStatArrayTables(data) {
+		var document definitionsTOMLDocument
+		decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
+		if err := decoder.Decode(&document); err != nil {
+			return definitionsTOMLDocument{}, err
+		}
+		return document, nil
+	}
+
+	var arrayDocument definitionsTOMLArrayDocument
+	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
+	if err := decoder.Decode(&arrayDocument); err != nil {
+		return definitionsTOMLDocument{}, err
+	}
+	document := definitionsTOMLDocument{
+		SchemaVersion: arrayDocument.SchemaVersion, Ruleset: arrayDocument.Ruleset,
+		Stats: map[string]statTOMLDefinition{}, Actions: arrayDocument.Actions, Presets: arrayDocument.Presets,
+	}
+	for _, raw := range arrayDocument.Stats {
+		if raw.ID == "" {
+			return definitionsTOMLDocument{}, fmt.Errorf("stat array entry requires id")
+		}
+		if _, duplicate := document.Stats[raw.ID]; duplicate {
+			return definitionsTOMLDocument{}, fmt.Errorf("duplicate stat %q", raw.ID)
+		}
+		document.Stats[raw.ID] = statTOMLDefinition{Name: raw.Name, Type: raw.Type, Kind: raw.Kind, Default: raw.Default}
+	}
+	return document, nil
+}
+
 func decodeRulesetSourceFile(name, content string) (definitionsTOMLDocument, error) {
 	if err := validateRulesetFileName(name); err != nil {
 		return definitionsTOMLDocument{}, err
@@ -143,9 +202,8 @@ func decodeRulesetSourceFile(name, content string) (definitionsTOMLDocument, err
 	if len(content) > MaxDefinitionDocumentBytes {
 		return definitionsTOMLDocument{}, fmt.Errorf("ruleset file %q exceeds %d bytes", name, MaxDefinitionDocumentBytes)
 	}
-	var document definitionsTOMLDocument
-	decoder := toml.NewDecoder(strings.NewReader(content)).DisallowUnknownFields()
-	if err := decoder.Decode(&document); err != nil {
+	document, err := decodeDefinitionsTOMLDocument([]byte(content))
+	if err != nil {
 		return definitionsTOMLDocument{}, fmt.Errorf("ruleset file %q: %w", name, err)
 	}
 	if document.SchemaVersion != DefinitionsSchemaVersion {
@@ -496,9 +554,8 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 	if len(data) > MaxDefinitionDocumentBytes {
 		return CampaignRegistry{}, nil, fmt.Errorf("definitions TOML exceeds %d bytes", MaxDefinitionDocumentBytes)
 	}
-	var document definitionsTOMLDocument
-	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
-	if err := decoder.Decode(&document); err != nil {
+	document, err := decodeDefinitionsTOMLDocument(data)
+	if err != nil {
 		return CampaignRegistry{}, nil, fmt.Errorf("definitions TOML: %w", err)
 	}
 	if document.SchemaVersion != DefinitionsSchemaVersion {
@@ -518,7 +575,7 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 		knownStats[id] = cloneStatDefinition(definition)
 	}
 	for id, raw := range document.Stats {
-		definition := StatDefinition{ID: id, Name: raw.Name, Type: StatType(raw.Type)}
+		definition := StatDefinition{ID: id, Name: raw.Name, Type: StatType(raw.Type), Kind: StatKind(raw.Kind)}
 		if raw.Default != nil {
 			value, err := tomlStatValue(raw.Default, definition.Type)
 			if err != nil {
@@ -588,7 +645,7 @@ func encodeDefinitionsDocumentTOML(registry CampaignRegistry, metadata *RulesetM
 		document.Ruleset = &rulesetTOMLMetadata{ID: metadata.ID, Name: metadata.Name, Version: metadata.Version}
 	}
 	for id, definition := range registry.Stats {
-		raw := statTOMLDefinition{Name: definition.Name, Type: string(definition.Type)}
+		raw := statTOMLDefinition{Name: definition.Name, Type: string(definition.Type), Kind: string(definition.Kind)}
 		if definition.Default != nil {
 			raw.Default = definition.Default.Interface()
 		}
@@ -672,7 +729,7 @@ func sortImportDiff(diff *CampaignImportDiff) {
 }
 
 func equalStatDefinition(left, right StatDefinition) bool {
-	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type {
+	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type || left.Kind != right.Kind {
 		return false
 	}
 	if left.Default == nil || right.Default == nil {

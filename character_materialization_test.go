@@ -32,14 +32,14 @@ func TestCharacterMechanicalMaterializationLifecycle(t *testing.T) {
 	preset.Name = "New preset name"
 	preset.Stats["hp"] = IntegerStatValue(12)
 	preset.ActionIDs = append(preset.ActionIDs, "claw")
-	if linked.Name != "Personal name" || EffectiveCharacterState(linked, &preset).Stats["hp"].Integer() != 12 {
+	if linked.Name != "Personal name" || EffectiveCharacterState(linked, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).Stats["hp"].Integer() != 12 {
 		t.Fatal("name or linked mechanics incorrectly followed the preset")
 	}
-	if len(EffectiveCharacterState(linked, &preset).ActionIDs) != 3 {
+	if len(EffectiveCharacterState(linked, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).ActionIDs) != 3 {
 		t.Fatal("linked character did not receive preset action")
 	}
 
-	edited := MaterializeCharacter(linked, &preset)
+	edited := MaterializeCharacter(linked, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
 	edited = WithStatOverride(edited, "hp", IntegerStatValue(3))
 	if edited.Materialized.Stats["dex"].Integer() != 14 ||
 		!reflect.DeepEqual(edited.Materialized.ActionIDs, []string{"bite", "dash", "claw"}) {
@@ -50,7 +50,7 @@ func TestCharacterMechanicalMaterializationLifecycle(t *testing.T) {
 	}
 	preset.Stats["dex"] = IntegerStatValue(99)
 	preset.ActionIDs = []string{"bite"}
-	effective := EffectiveCharacterState(edited, &preset)
+	effective := EffectiveCharacterState(edited, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
 	if effective.Stats["dex"].Integer() != 14 || len(effective.ActionIDs) != 3 ||
 		effective.AvatarAssetID != "own-avatar" || effective.Name != "Personal name" {
 		t.Fatalf("materialized character changed with preset: %#v", effective)
@@ -122,7 +122,7 @@ func TestRulesetPresetRemovalProjectionGuardsGlobals(t *testing.T) {
 		Actions: map[string]ActionDefinition{"bite": {ID: "bite", Name: "Bite"}},
 		Presets: map[string]CharacterPresetDefinition{"wolf": preset},
 	}}
-	materialized := MaterializeCharacter(NewCharacterInstance("custom", &preset), &preset)
+	materialized := MaterializeCharacter(NewCharacterInstance("custom", &preset), &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
 	materialized.Materialized.Stats["hp"] = IntegerStatValue(3)
 	session := &Session{
 		Ruleset: old, CampaignDefinitions: emptyCampaignRegistry(),
@@ -189,7 +189,7 @@ func TestRulesetPresetRemovalSaveRollbackAndCommit(t *testing.T) {
 	linked := NewCharacterInstance("linked", &preset)
 	linked.Name = "Unique name"
 	linked.Persistent = true
-	custom := MaterializeCharacter(NewCharacterInstance("custom", &preset), &preset)
+	custom := MaterializeCharacter(NewCharacterInstance("custom", &preset), &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
 	custom.Materialized.Stats["hp"] = IntegerStatValue(7)
 	session.CharacterInstances[linked.ID] = linked
 	session.CharacterInstances[custom.ID] = custom
