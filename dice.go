@@ -262,7 +262,7 @@ func resolveRollCharacter(session *Session, scene *Scene, member *Member, regist
 			preset = &value
 		}
 	}
-	return EffectiveCharacterState(instance, preset), nil
+	return EffectiveCharacterState(instance, preset, registry), nil
 }
 
 func characterHasControllableToken(session *Session, scene *Scene, member *Member, characterID string) bool {
@@ -287,6 +287,11 @@ func resolveRollModifier(character EffectiveCharacter, spec RollSpec) (float64, 
 		return modifier, nil
 	}
 	value, exists := character.Stats[spec.ModifierStat]
+	if !exists {
+		if resource, resourceExists := character.Resources[spec.ModifierStat]; resourceExists {
+			value, exists = resource.Current, true
+		}
+	}
 	if !exists {
 		return 0, fmt.Errorf("character %q has no value for modifier stat %q", character.ID, spec.ModifierStat)
 	}

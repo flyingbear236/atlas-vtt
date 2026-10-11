@@ -448,8 +448,8 @@ func stringPointer(value string) *string          { return &value }
 
 func effectiveCharacterForTest(instance CharacterInstance, registry EffectiveRegistry) EffectiveCharacter {
 	if instance.PresetID == "" {
-		return EffectiveCharacterState(instance, nil)
+		return EffectiveCharacterState(instance, nil, registry)
 	}
 	preset := registry.Presets[instance.PresetID]
-	return EffectiveCharacterState(instance, &preset)
+	return EffectiveCharacterState(instance, &preset, registry)
 }

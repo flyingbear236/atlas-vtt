@@ -13,7 +13,8 @@ import (
 func characterCommandType(commandType string) bool {
 	switch commandType {
 	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
-		"characterStatSet", "characterStatReset", "characterAvatarSet", "characterAvatarReset",
+		"characterStatSet", "characterStatReset", "characterResourceCurrentSet", "characterResourceCurrentReset",
+		"characterResourceInitialSet", "characterAvatarSet", "characterAvatarReset",
 		"characterActionAdd", "characterActionRemove":
 		return true
 	default:
@@ -186,7 +187,8 @@ func nextCharacterID(session *Session) string {
 
 func applyCharacterCommand(session *Session, member *Member, sceneID string, command Command, mutation *characterMutation) error {
 	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
-		command.Type == "characterSetPersistent" || command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
+		command.Type == "characterSetPersistent" || command.Type == "characterResourceInitialSet" ||
+		command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
 	}
@@ -271,12 +273,20 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if !memberCanAccessCharacter(session, member, command.CharacterID) {
 			return errors.New("character access denied")
 		}
+		if definition, exists := registry.Stats[command.StatID]; exists && definition.IsResource() {
+			return fmt.Errorf("stat %q is a resource; change current or initial explicitly", command.StatID)
+		}
 		instance := session.CharacterInstances[command.CharacterID]
 		campaign, err := WithInferredStatDefinitions(sessionRegistries(session), map[string]StatValue{command.StatID: *command.StatValue})
 		if err != nil {
 			return err
 		}
 		mutation.setCampaign(campaign)
+		if nextRegistry, mergeErr := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign}); mergeErr == nil {
+			registry = nextRegistry
+		} else {
+			return mergeErr
+		}
 		var preset *CharacterPresetDefinition
 		if instance.PresetID != "" {
 			definition, ok := registry.Presets[instance.PresetID]
@@ -284,7 +294,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 				preset = &definition
 			}
 		}
-		instance = MaterializeCharacter(instance, preset)
+		instance = MaterializeCharacter(instance, preset, registry)
 		instance = WithStatOverride(instance, command.StatID, *command.StatValue)
 		mutation.setInstance(instance)
 		mutation.resultCharacterID = command.CharacterID
@@ -295,12 +305,89 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if !memberCanAccessCharacter(session, member, command.CharacterID) {
 			return errors.New("character access denied")
 		}
+		if definition, exists := registry.Stats[command.StatID]; exists && definition.IsResource() {
+			return fmt.Errorf("stat %q is a resource", command.StatID)
+		}
 		instance := session.CharacterInstances[command.CharacterID]
 		if instance.Materialized != nil {
 			if _, exists := instance.Materialized.Stats[command.StatID]; exists {
 				mutation.setInstance(ResetStatOverride(instance, command.StatID))
 			}
 		}
+		mutation.resultCharacterID = command.CharacterID
+	case "characterResourceCurrentSet":
+		if command.StatValue == nil {
+			return errors.New("resource current value is required")
+		}
+		if !memberCanAccessCharacter(session, member, command.CharacterID) {
+			return errors.New("character access denied")
+		}
+		definition, exists := registry.Stats[command.StatID]
+		if !exists || !definition.IsResource() {
+			return fmt.Errorf("unknown resource %q", command.StatID)
+		}
+		if err := ValidateStatValueForDefinition(definition, *command.StatValue); err != nil {
+			return err
+		}
+		instance := session.CharacterInstances[command.CharacterID]
+		var preset *CharacterPresetDefinition
+		if instance.Materialized == nil && instance.PresetID != "" {
+			definition, ok := registry.Presets[instance.PresetID]
+			if !ok {
+				return fmt.Errorf("unknown preset %q", instance.PresetID)
+			}
+			preset = &definition
+		}
+		effective := EffectiveCharacterState(instance, preset, registry)
+		if _, exists := effective.Resources[command.StatID]; !exists {
+			return fmt.Errorf("character has no initial value for resource %q", command.StatID)
+		}
+		if current, exists := instance.ResourceCurrent[command.StatID]; !exists || current != *command.StatValue {
+			mutation.setInstance(WithResourceCurrent(instance, command.StatID, *command.StatValue))
+		}
+		mutation.resultCharacterID = command.CharacterID
+	case "characterResourceCurrentReset":
+		if err := validateID(command.StatID); err != nil {
+			return fmt.Errorf("resource id: %w", err)
+		}
+		if !memberCanAccessCharacter(session, member, command.CharacterID) {
+			return errors.New("character access denied")
+		}
+		definition, exists := registry.Stats[command.StatID]
+		if !exists || !definition.IsResource() {
+			return fmt.Errorf("unknown resource %q", command.StatID)
+		}
+		instance := session.CharacterInstances[command.CharacterID]
+		if _, exists := instance.ResourceCurrent[command.StatID]; exists {
+			mutation.setInstance(ResetResourceCurrent(instance, command.StatID))
+		}
+		mutation.resultCharacterID = command.CharacterID
+	case "characterResourceInitialSet":
+		if command.StatValue == nil {
+			return errors.New("resource initial value is required")
+		}
+		definition, exists := registry.Stats[command.StatID]
+		if !exists || !definition.IsResource() {
+			return fmt.Errorf("unknown resource %q", command.StatID)
+		}
+		if err := ValidateStatValueForDefinition(definition, *command.StatValue); err != nil {
+			return err
+		}
+		instance, exists := session.CharacterInstances[command.CharacterID]
+		if !exists {
+			return errors.New("character not found")
+		}
+		var preset *CharacterPresetDefinition
+		if instance.Materialized == nil && instance.PresetID != "" {
+			definition, ok := registry.Presets[instance.PresetID]
+			if !ok {
+				return fmt.Errorf("unknown preset %q", instance.PresetID)
+			}
+			preset = &definition
+		}
+		instance = MaterializeCharacter(instance, preset, registry)
+		instance = WithResourceInitial(instance, command.StatID, *command.StatValue)
+		mutation.setInstance(instance)
 		mutation.resultCharacterID = command.CharacterID
 	case "characterAvatarSet":
 		if command.AvatarAssetID == nil {
@@ -339,7 +426,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			if !ok {
 				return fmt.Errorf("unknown preset %q", instance.PresetID)
 			}
-			instance = MaterializeCharacter(instance, &definition)
+			instance = MaterializeCharacter(instance, &definition, registry)
 		}
 		if command.Type == "characterActionAdd" {
 			instance = WithActionAdded(instance, command.ActionID)

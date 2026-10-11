@@ -34,9 +34,14 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 		copy := clonePresetDefinition(definition)
 		preset = &copy
 	}
-	effective := EffectiveCharacterState(instance, preset)
+	effective := EffectiveCharacterState(instance, preset, registry)
 	stats := make(map[string]StatDefinition, len(effective.Stats))
 	for statID := range effective.Stats {
+		if definition, ok := registry.Stats[statID]; ok {
+			stats[statID] = cloneStatDefinition(definition)
+		}
+	}
+	for statID := range effective.Resources {
 		if definition, ok := registry.Stats[statID]; ok {
 			stats[statID] = cloneStatDefinition(definition)
 		}

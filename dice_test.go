@@ -150,7 +150,11 @@ func TestActionRollUsesEffectiveServerDefinitionAndModifiers(t *testing.T) {
 
 	character := fixture.session.CharacterInstances["hero-1"]
 	preset := fixture.session.CampaignDefinitions.Presets["hero"]
-	character = MaterializeCharacter(character, &preset)
+	registry, err := rollRegistry(fixture.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	character = MaterializeCharacter(character, &preset, registry)
 	character.Materialized.Stats["agility"] = IntegerStatValue(-3)
 	fixture.session.CharacterInstances[character.ID] = character
 	fixture.rng.next = 0

@@ -175,12 +175,19 @@ func (v *StatValue) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type StatKind string
+
+const StatKindResource StatKind = "resource"
+
 type StatDefinition struct {
 	ID      string     `json:"id"`
 	Name    string     `json:"name"`
 	Type    StatType   `json:"type"`
+	Kind    StatKind   `json:"kind,omitempty"`
 	Default *StatValue `json:"default,omitempty"`
 }
+
+func (definition StatDefinition) IsResource() bool { return definition.Kind == StatKindResource }
 
 type RollSpec struct {
 	ID            string  `json:"id"`
@@ -209,7 +216,8 @@ type CharacterPresetDefinition struct {
 }
 
 // CharacterMechanicalState is a complete, independent mechanical snapshot.
-// ResourceInitial is reserved for resource definitions in the next stage.
+// Resource current values stay on CharacterInstance and are intentionally not
+// part of materialization.
 type CharacterMechanicalState struct {
 	Stats           map[string]StatValue `json:"stats,omitempty"`
 	ResourceInitial map[string]StatValue `json:"resourceInitial,omitempty"`
@@ -217,16 +225,17 @@ type CharacterMechanicalState struct {
 }
 
 type CharacterInstance struct {
-	ID               string                    `json:"id"`
-	PresetID         string                    `json:"presetId,omitempty"`
-	Name             string                    `json:"name"`
-	AvatarAssetID    *string                   `json:"avatarAssetId,omitempty"`
-	Materialized     *CharacterMechanicalState `json:"materialized,omitempty"`
+	ID              string                    `json:"id"`
+	PresetID        string                    `json:"presetId,omitempty"`
+	Name            string                    `json:"name"`
+	AvatarAssetID   *string                   `json:"avatarAssetId,omitempty"`
+	Materialized    *CharacterMechanicalState `json:"materialized,omitempty"`
+	ResourceCurrent map[string]StatValue      `json:"resourceCurrent,omitempty"`
 	// Legacy fields are read only during saved-session migration.
-	StatOverrides    map[string]StatValue      `json:"statOverrides,omitempty"`
-	AddedActionIDs   []string                  `json:"addedActionIds,omitempty"`
-	RemovedActionIDs []string                  `json:"removedActionIds,omitempty"`
-	Persistent       bool                      `json:"persistent,omitempty"`
+	StatOverrides    map[string]StatValue `json:"statOverrides,omitempty"`
+	AddedActionIDs   []string             `json:"addedActionIds,omitempty"`
+	RemovedActionIDs []string             `json:"removedActionIds,omitempty"`
+	Persistent       bool                 `json:"persistent,omitempty"`
 }
 
 type RulesetRegistry struct {
@@ -252,15 +261,21 @@ type EffectiveRegistry struct {
 	Presets map[string]CharacterPresetDefinition `json:"presets"`
 }
 
+type EffectiveResource struct {
+	Current StatValue `json:"current"`
+	Initial StatValue `json:"initial"`
+}
+
 type EffectiveCharacter struct {
-	ID            string               `json:"id"`
-	PresetID      string               `json:"presetId,omitempty"`
-	Name          string               `json:"name"`
-	AvatarAssetID string               `json:"avatarAssetId,omitempty"`
-	HasAvatar     bool                 `json:"hasAvatar"`
-	Stats         map[string]StatValue `json:"stats"`
-	ActionIDs     []string             `json:"actionIds"`
-	Persistent    bool                 `json:"persistent"`
+	ID            string                       `json:"id"`
+	PresetID      string                       `json:"presetId,omitempty"`
+	Name          string                       `json:"name"`
+	AvatarAssetID string                       `json:"avatarAssetId,omitempty"`
+	HasAvatar     bool                         `json:"hasAvatar"`
+	Stats         map[string]StatValue         `json:"stats"`
+	Resources     map[string]EffectiveResource `json:"resources"`
+	ActionIDs     []string                     `json:"actionIds"`
+	Persistent    bool                         `json:"persistent"`
 }
 
 func NewCharacterInstance(instanceID string, preset *CharacterPresetDefinition) CharacterInstance {
@@ -269,7 +284,7 @@ func NewCharacterInstance(instanceID string, preset *CharacterPresetDefinition) 
 		instance.PresetID = preset.ID
 		instance.Name = preset.Name
 	} else {
-		instance.Materialized = &CharacterMechanicalState{Stats: map[string]StatValue{}}
+		instance.Materialized = &CharacterMechanicalState{Stats: map[string]StatValue{}, ResourceInitial: map[string]StatValue{}}
 	}
 	return instance
 }
@@ -290,8 +305,13 @@ func MergeDefinitionRegistries(registries DefinitionRegistries) (EffectiveRegist
 		merged.Presets[id] = clonePresetDefinition(definition)
 	}
 	for id, definition := range registries.Campaign.Stats {
-		if ruleset, exists := registries.Ruleset.Stats[id]; exists && ruleset.Type != definition.Type {
-			return EffectiveRegistry{}, fmt.Errorf("stat %q cannot override ruleset type %q with %q", id, ruleset.Type, definition.Type)
+		if ruleset, exists := registries.Ruleset.Stats[id]; exists {
+			if ruleset.Type != definition.Type {
+				return EffectiveRegistry{}, fmt.Errorf("stat %q cannot override ruleset type %q with %q", id, ruleset.Type, definition.Type)
+			}
+			if ruleset.Kind != definition.Kind {
+				return EffectiveRegistry{}, fmt.Errorf("stat %q cannot override ruleset kind %q with %q", id, ruleset.Kind, definition.Kind)
+			}
 		}
 		merged.Stats[id] = cloneStatDefinition(definition)
 	}
@@ -358,15 +378,22 @@ func (r EffectiveRegistry) LookupPreset(id string) (CharacterPresetDefinition, b
 }
 
 // MaterializeCharacter freezes every effective mechanical field at once.
-// The preset ID is preserved as provenance; name and artwork stay independent.
-func MaterializeCharacter(instance CharacterInstance, preset *CharacterPresetDefinition) CharacterInstance {
+// The preset ID is preserved as provenance; name, artwork and resource current
+// stay independent.
+func MaterializeCharacter(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) CharacterInstance {
 	result := cloneCharacterInstance(instance)
 	if result.Materialized != nil {
 		return result
 	}
-	snapshot := &CharacterMechanicalState{Stats: map[string]StatValue{}}
+	snapshot := &CharacterMechanicalState{Stats: map[string]StatValue{}, ResourceInitial: map[string]StatValue{}}
 	if preset != nil {
-		snapshot.Stats = cloneStatValues(preset.Stats)
+		for statID, value := range preset.Stats {
+			if definition, ok := registry.Stats[statID]; ok && definition.IsResource() {
+				snapshot.ResourceInitial[statID] = value
+			} else {
+				snapshot.Stats[statID] = value
+			}
+		}
 		snapshot.ActionIDs = appendUnique(nil, preset.ActionIDs...)
 	}
 	result.Materialized = snapshot
@@ -402,9 +429,13 @@ func migrateLegacyCharacterMechanics(session *Session) (bool, error) {
 			}
 			preset = &definition
 		}
-		instance := MaterializeCharacter(original, preset)
+		instance := MaterializeCharacter(original, preset, registry)
 		for statID, value := range original.StatOverrides {
-			instance.Materialized.Stats[statID] = value
+			if definition, ok := registry.Stats[statID]; ok && definition.IsResource() {
+				instance.Materialized.ResourceInitial[statID] = value
+			} else {
+				instance.Materialized.Stats[statID] = value
+			}
 		}
 		instance.Materialized.ActionIDs = appendUnique(instance.Materialized.ActionIDs, original.AddedActionIDs...)
 		for _, actionID := range original.RemovedActionIDs {
@@ -416,17 +447,32 @@ func migrateLegacyCharacterMechanics(session *Session) (bool, error) {
 	return changed, nil
 }
 
-func EffectiveCharacterState(instance CharacterInstance, preset *CharacterPresetDefinition) EffectiveCharacter {
+func EffectiveCharacterState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) EffectiveCharacter {
 	effective := EffectiveCharacter{
 		ID: instance.ID, PresetID: instance.PresetID, Name: instance.Name,
-		Stats: map[string]StatValue{}, Persistent: instance.Persistent,
+		Stats: map[string]StatValue{}, Resources: map[string]EffectiveResource{}, Persistent: instance.Persistent,
 	}
+	resourceInitial := map[string]StatValue{}
 	if instance.Materialized != nil {
 		effective.Stats = cloneStatValues(instance.Materialized.Stats)
+		resourceInitial = cloneStatValues(instance.Materialized.ResourceInitial)
 		effective.ActionIDs = append([]string(nil), instance.Materialized.ActionIDs...)
 	} else if preset != nil {
-		effective.Stats = cloneStatValues(preset.Stats)
+		for statID, value := range preset.Stats {
+			if definition, ok := registry.Stats[statID]; ok && definition.IsResource() {
+				resourceInitial[statID] = value
+			} else {
+				effective.Stats[statID] = value
+			}
+		}
 		effective.ActionIDs = appendUnique(nil, preset.ActionIDs...)
+	}
+	for statID, initial := range resourceInitial {
+		current := initial
+		if explicit, exists := instance.ResourceCurrent[statID]; exists {
+			current = explicit
+		}
+		effective.Resources[statID] = EffectiveResource{Current: current, Initial: initial}
 	}
 	if preset != nil && preset.AvatarAssetID != "" {
 		effective.AvatarAssetID = preset.AvatarAssetID
@@ -455,6 +501,33 @@ func ResetStatOverride(instance CharacterInstance, id string) CharacterInstance 
 	if result.Materialized != nil {
 		delete(result.Materialized.Stats, id)
 	}
+	return result
+}
+
+func WithResourceInitial(instance CharacterInstance, id string, value StatValue) CharacterInstance {
+	result := cloneCharacterInstance(instance)
+	if result.Materialized == nil {
+		panic("WithResourceInitial requires a materialized character")
+	}
+	if result.Materialized.ResourceInitial == nil {
+		result.Materialized.ResourceInitial = map[string]StatValue{}
+	}
+	result.Materialized.ResourceInitial[id] = value
+	return result
+}
+
+func WithResourceCurrent(instance CharacterInstance, id string, value StatValue) CharacterInstance {
+	result := cloneCharacterInstance(instance)
+	if result.ResourceCurrent == nil {
+		result.ResourceCurrent = map[string]StatValue{}
+	}
+	result.ResourceCurrent[id] = value
+	return result
+}
+
+func ResetResourceCurrent(instance CharacterInstance, id string) CharacterInstance {
+	result := cloneCharacterInstance(instance)
+	delete(result.ResourceCurrent, id)
 	return result
 }
 
@@ -542,20 +615,47 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 	if err := validateText("character name", instance.Name, MaxDefinitionNameRunes, true); err != nil {
 		return err
 	}
+	var linkedPreset *CharacterPresetDefinition
 	if instance.PresetID != "" {
 		if err := validateID(instance.PresetID); err != nil {
 			return fmt.Errorf("preset id: %w", err)
 		}
 		if instance.Materialized == nil {
-			if _, ok := registry.Presets[instance.PresetID]; !ok {
+			preset, ok := registry.Presets[instance.PresetID]
+			if !ok {
 				return fmt.Errorf("linked character references unknown preset %q", instance.PresetID)
 			}
+			linkedPreset = &preset
 		}
 	} else if instance.Materialized == nil {
 		return errors.New("standalone character requires materialized state")
 	}
 	if len(instance.StatOverrides) != 0 || len(instance.AddedActionIDs) != 0 || len(instance.RemovedActionIDs) != 0 {
 		return errors.New("legacy mechanical overrides require migration")
+	}
+	if len(instance.ResourceCurrent) > MaxStatsPerCharacter {
+		return errors.New("character resource current values exceed domain limits")
+	}
+	for id, value := range instance.ResourceCurrent {
+		definition, ok := registry.Stats[id]
+		if !ok {
+			return fmt.Errorf("unknown resource current stat %q", id)
+		}
+		if !definition.IsResource() {
+			return fmt.Errorf("stat %q is not a resource", id)
+		}
+		if err := ValidateStatValueForDefinition(definition, value); err != nil {
+			return err
+		}
+		if instance.Materialized != nil {
+			if _, exists := instance.Materialized.ResourceInitial[id]; !exists {
+				return fmt.Errorf("resource %q current has no materialized initial value", id)
+			}
+		} else if linkedPreset != nil {
+			if _, exists := linkedPreset.Stats[id]; !exists {
+				return fmt.Errorf("resource %q current has no preset initial value", id)
+			}
+		}
 	}
 	if instance.Materialized == nil {
 		return nil
@@ -569,6 +669,9 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 		if !ok {
 			return fmt.Errorf("unknown stat %q", id)
 		}
+		if definition.IsResource() {
+			return fmt.Errorf("resource stat %q must be stored as resource initial", id)
+		}
 		if err := ValidateStatValueForDefinition(definition, value); err != nil {
 			return err
 		}
@@ -577,6 +680,9 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 		definition, ok := registry.Stats[id]
 		if !ok {
 			return fmt.Errorf("unknown resource initial stat %q", id)
+		}
+		if !definition.IsResource() {
+			return fmt.Errorf("stat %q is not a resource", id)
 		}
 		if err := ValidateStatValueForDefinition(definition, value); err != nil {
 			return err
@@ -606,6 +712,11 @@ func ValidateStatDefinition(definition StatDefinition) error {
 	case StatTypeNumber, StatTypeInteger, StatTypeBoolean, StatTypeString:
 	default:
 		return fmt.Errorf("stat %q has invalid type %q", definition.ID, definition.Type)
+	}
+	switch definition.Kind {
+	case "", StatKindResource:
+	default:
+		return fmt.Errorf("stat %q has invalid kind %q", definition.ID, definition.Kind)
 	}
 	if definition.Default != nil {
 		if err := ValidateStatValueForDefinition(definition, *definition.Default); err != nil {
@@ -779,6 +890,7 @@ func cloneCharacterInstance(instance CharacterInstance) CharacterInstance {
 		snapshot.ActionIDs = append([]string(nil), snapshot.ActionIDs...)
 		instance.Materialized = &snapshot
 	}
+	instance.ResourceCurrent = cloneStatValues(instance.ResourceCurrent)
 	instance.StatOverrides = cloneStatValues(instance.StatOverrides)
 	instance.AddedActionIDs = append([]string(nil), instance.AddedActionIDs...)
 	instance.RemovedActionIDs = append([]string(nil), instance.RemovedActionIDs...)
