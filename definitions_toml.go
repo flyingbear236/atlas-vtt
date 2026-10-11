@@ -52,6 +52,7 @@ type rulesetTOMLMetadata struct {
 type statTOMLDefinition struct {
 	Name    string `toml:"name,omitempty"`
 	Type    string `toml:"type"`
+	Kind    string `toml:"kind,omitempty"`
 	Default any    `toml:"default,omitempty"`
 }
 
@@ -75,6 +76,7 @@ type presetTOMLDefinition struct {
 	Name   string         `toml:"name"`
 	Kind   string         `toml:"kind,omitempty"`
 	Avatar string         `toml:"avatar,omitempty"`
+	Artwork string        `toml:"artwork,omitempty"`
 	Stats  map[string]any `toml:"stats,omitempty"`
 	// The exchange format uses "actions" while runtime explicitly uses
 	// CharacterPresetDefinition.ActionIDs.
@@ -518,7 +520,7 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 		knownStats[id] = cloneStatDefinition(definition)
 	}
 	for id, raw := range document.Stats {
-		definition := StatDefinition{ID: id, Name: raw.Name, Type: StatType(raw.Type)}
+		definition := StatDefinition{ID: id, Name: raw.Name, Type: StatType(raw.Type), Kind: raw.Kind}
 		if raw.Default != nil {
 			value, err := tomlStatValue(raw.Default, definition.Type)
 			if err != nil {
@@ -550,7 +552,7 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 	}
 	for id, raw := range document.Presets {
 		definition := CharacterPresetDefinition{
-			ID: id, Name: raw.Name, Kind: raw.Kind, AvatarAssetID: raw.Avatar,
+			ID: id, Name: raw.Name, Kind: raw.Kind, AvatarAssetID: raw.Avatar, Artwork: raw.Artwork,
 			Stats: make(map[string]StatValue, len(raw.Stats)), ActionIDs: append([]string(nil), raw.Actions...),
 		}
 		for statID, rawValue := range raw.Stats {
@@ -588,7 +590,7 @@ func encodeDefinitionsDocumentTOML(registry CampaignRegistry, metadata *RulesetM
 		document.Ruleset = &rulesetTOMLMetadata{ID: metadata.ID, Name: metadata.Name, Version: metadata.Version}
 	}
 	for id, definition := range registry.Stats {
-		raw := statTOMLDefinition{Name: definition.Name, Type: string(definition.Type)}
+		raw := statTOMLDefinition{Name: definition.Name, Type: string(definition.Type), Kind: definition.Kind}
 		if definition.Default != nil {
 			raw.Default = definition.Default.Interface()
 		}
@@ -609,7 +611,7 @@ func encodeDefinitionsDocumentTOML(registry CampaignRegistry, metadata *RulesetM
 	}
 	for id, definition := range registry.Presets {
 		raw := presetTOMLDefinition{
-			Name: definition.Name, Kind: definition.Kind, Avatar: definition.AvatarAssetID,
+			Name: definition.Name, Kind: definition.Kind, Avatar: definition.AvatarAssetID, Artwork: definition.Artwork,
 			Stats: make(map[string]any, len(definition.Stats)), Actions: append([]string(nil), definition.ActionIDs...),
 		}
 		for statID, value := range definition.Stats {
@@ -672,7 +674,7 @@ func sortImportDiff(diff *CampaignImportDiff) {
 }
 
 func equalStatDefinition(left, right StatDefinition) bool {
-	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type {
+	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type || left.Kind != right.Kind {
 		return false
 	}
 	if left.Default == nil || right.Default == nil {
@@ -687,7 +689,7 @@ func equalActionDefinition(left, right ActionDefinition) bool {
 }
 
 func equalPresetDefinition(left, right CharacterPresetDefinition) bool {
-	return left.ID == right.ID && left.Name == right.Name && left.Kind == right.Kind && left.AvatarAssetID == right.AvatarAssetID &&
+	return left.ID == right.ID && left.Name == right.Name && left.Kind == right.Kind && left.AvatarAssetID == right.AvatarAssetID && left.Artwork == right.Artwork &&
 		maps.Equal(left.Stats, right.Stats) && slices.Equal(left.ActionIDs, right.ActionIDs)
 }
 

@@ -13,7 +13,7 @@ import (
 func characterCommandType(commandType string) bool {
 	switch commandType {
 	case "characterCreate", "characterLink", "characterSetPersistent",
-		"characterStatSet", "characterStatReset", "characterAvatarSet", "characterAvatarReset",
+		"characterStatSet", "characterResourceInitialSet", "characterStatReset", "characterAvatarSet", "characterAvatarReset",
 		"characterActionAdd", "characterActionRemove":
 		return true
 	default:
@@ -186,7 +186,7 @@ func nextCharacterID(session *Session) string {
 
 func applyCharacterCommand(session *Session, member *Member, sceneID string, command Command, mutation *characterMutation) error {
 	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
-		command.Type == "characterSetPersistent" || command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
+		command.Type == "characterSetPersistent" || command.Type == "characterActionAdd" || command.Type == "characterActionRemove" || command.Type == "characterResourceInitialSet"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
 	}
@@ -254,20 +254,29 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			mutation.gcCharacter(command.CharacterID)
 		}
 		mutation.resultCharacterID = command.CharacterID
-	case "characterStatSet":
-		if command.StatValue == nil {
-			return errors.New("stat value is required")
-		}
-		if !memberCanAccessCharacter(session, member, command.CharacterID) {
-			return errors.New("character access denied")
-		}
+	case "characterStatSet", "characterResourceInitialSet":
+		if command.StatValue == nil { return errors.New("stat value is required") }
+		if !memberCanAccessCharacter(session, member, command.CharacterID) { return errors.New("character access denied") }
 		instance := session.CharacterInstances[command.CharacterID]
-		campaign, err := WithInferredStatDefinitions(sessionRegistries(session), map[string]StatValue{command.StatID: *command.StatValue})
-		if err != nil {
-			return err
+		definition, known := registry.Stats[command.StatID]
+		if command.Type == "characterResourceInitialSet" {
+			if !known || definition.Kind != "resource" { return errors.New("resource stat not found") }
+		} else if !known {
+			campaign, err := WithInferredStatDefinitions(sessionRegistries(session), map[string]StatValue{command.StatID: *command.StatValue})
+			if err != nil { return err }
+			mutation.setCampaign(campaign)
+			definition = campaign.Stats[command.StatID]
 		}
-		mutation.setCampaign(campaign)
-		instance = WithStatOverride(instance, command.StatID, *command.StatValue)
+		if err := ValidateStatValueForDefinition(definition, *command.StatValue); err != nil { return err }
+		if definition.Kind == "resource" && command.Type == "characterStatSet" {
+			instance = cloneCharacterInstance(instance)
+			if instance.ResourceCurrent == nil { instance.ResourceCurrent = map[string]StatValue{} }
+			instance.ResourceCurrent[command.StatID] = *command.StatValue
+		} else {
+			var preset *CharacterPresetDefinition
+			if definition, ok := registry.Presets[instance.PresetID]; ok { preset = &definition }
+			instance = WithStatOverride(MaterializeCharacter(instance, preset), command.StatID, *command.StatValue)
+		}
 		mutation.setInstance(instance)
 		mutation.resultCharacterID = command.CharacterID
 	case "characterStatReset":
@@ -278,7 +287,11 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			return errors.New("character access denied")
 		}
 		instance := session.CharacterInstances[command.CharacterID]
-		if _, exists := instance.StatOverrides[command.StatID]; exists {
+		if instance.Materialized != nil {
+			if _, exists := instance.Materialized.Stats[command.StatID]; exists {
+				mutation.setInstance(ResetStatOverride(instance, command.StatID))
+			}
+		} else if _, exists := instance.StatOverrides[command.StatID]; exists {
 			mutation.setInstance(ResetStatOverride(instance, command.StatID))
 		}
 		mutation.resultCharacterID = command.CharacterID
@@ -314,6 +327,9 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if !exists {
 			return errors.New("character not found")
 		}
+		var preset *CharacterPresetDefinition
+		if definition, ok := registry.Presets[instance.PresetID]; ok { preset = &definition }
+		instance = MaterializeCharacter(instance, preset)
 		if command.Type == "characterActionAdd" {
 			instance = WithActionAdded(instance, command.ActionID)
 		} else {

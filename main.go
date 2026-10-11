@@ -408,6 +408,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/definitions/ruleset/export", s.exportRulesetDefinitions)
 	mux.HandleFunc("GET /api/definitions/campaign/export", s.exportCampaignDefinitions)
 	mux.HandleFunc("GET /api/characters", s.readCharacterCatalog)
+	mux.HandleFunc("GET /api/media", s.readCampaignMedia)
+	mux.HandleFunc("POST /api/definitions/preset/apply", s.applyPresetEdit)
 	mux.HandleFunc("POST /api/definitions/ruleset/preview", s.previewRulesetInstall)
 	mux.HandleFunc("POST /api/definitions/ruleset/apply", s.applyRulesetInstall)
 	mux.HandleFunc("POST /api/definitions/campaign/preview", s.previewCampaignImport)
@@ -707,6 +709,10 @@ func validNumber(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && math.Abs(v) <= 1000000
 }
 func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("kind") == "media" {
+		s.uploadCampaignMedia(w, r)
+		return
+	}
 	if r.URL.Query().Get("kind") == assetKindAvatar {
 		s.uploadAvatar(w, r)
 		return

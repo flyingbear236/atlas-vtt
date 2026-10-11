@@ -31,10 +31,23 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	instance := cloneCharacterInstance(session.CharacterInstances[characterID])
 	var preset *CharacterPresetDefinition
 	if instance.PresetID != "" {
-		definition := clonePresetDefinition(registry.Presets[instance.PresetID])
-		preset = &definition
+		if found, ok := registry.Presets[instance.PresetID]; ok {
+			definition := clonePresetDefinition(found)
+			preset = &definition
+		}
 	}
 	effective := EffectiveCharacterState(instance, preset)
+	if preset != nil && instance.AvatarAssetID == nil && preset.Artwork != "" {
+		assetID := session.Ruleset.Media[preset.Artwork]
+		if isCharacterArtworkAsset(session.Assets[assetID]) {
+			effective.AvatarAssetID = assetID
+			effective.HasAvatar = true
+		} else {
+			effective.AvatarAssetID = ""
+			effective.HasAvatar = false
+			effective.ArtworkMissing = true
+		}
+	}
 	stats := make(map[string]StatDefinition, len(effective.Stats))
 	for statID := range effective.Stats {
 		if definition, ok := registry.Stats[statID]; ok {

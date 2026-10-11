@@ -74,6 +74,10 @@ func (s *Server) discardPreparedAssetLocked(assetID string) {
 
 func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	target, err := avatarTargetFromRequest(request)
+	if err == nil && target.presetID != "" {
+		fail(w, http.StatusBadRequest, "Artwork preset изменяется через редактор ruleset")
+		return
+	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
@@ -202,37 +206,21 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 
 func avatarAssetVisibleTo(session *Session, member *Member, assetID string) bool {
 	asset, exists := session.Assets[assetID]
-	if !exists || !isCharacterArtworkAsset(asset) {
-		return false
-	}
+	if !exists || !isCharacterArtworkAsset(asset) { return false }
+	if memberIsGM(member) { return true }
 	registry, err := MergeDefinitionRegistries(sessionRegistries(session))
-	if err != nil {
-		return false
-	}
-	if memberIsGM(member) {
-		for _, preset := range session.CampaignDefinitions.Presets {
-			if preset.AvatarAssetID == assetID {
-				return true
-			}
-		}
-		for _, instance := range session.CharacterInstances {
-			if effectiveCharacterAvatar(instance, registry) == assetID {
-				return true
-			}
-		}
-		return false
-	}
+	if err != nil { return false }
 	for characterID, instance := range session.CharacterInstances {
-		if memberCanAccessCharacter(session, member, characterID) && effectiveCharacterAvatar(instance, registry) == assetID {
-			return true
-		}
+		if memberCanAccessCharacter(session, member, characterID) &&
+			effectiveCharacterAvatar(session, instance, registry) == assetID { return true }
 	}
 	return false
 }
 
-func effectiveCharacterAvatar(instance CharacterInstance, registry EffectiveRegistry) string {
-	if instance.AvatarAssetID != nil {
-		return *instance.AvatarAssetID
-	}
-	return registry.Presets[instance.PresetID].AvatarAssetID
+func effectiveCharacterAvatar(session *Session, instance CharacterInstance, registry EffectiveRegistry) string {
+	if instance.AvatarAssetID != nil { return *instance.AvatarAssetID }
+	preset, ok := registry.Presets[instance.PresetID]
+	if !ok { return "" }
+	if preset.Artwork != "" { return session.Ruleset.Media[preset.Artwork] }
+	return preset.AvatarAssetID
 }

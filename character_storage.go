@@ -115,6 +115,7 @@ type RulesetSnapshot struct {
 	Metadata RulesetMetadata                `json:"metadata"`
 	Registry RulesetRegistry                `json:"registry"`
 	Files    map[string]RulesetFileManifest `json:"files,omitempty"`
+	Media    map[string]string              `json:"media,omitempty"`
 }
 
 type CharacterTokenReference struct {
@@ -157,6 +158,10 @@ func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 			manifest.Presets = append([]string(nil), manifest.Presets...)
 			result.Files[name] = manifest
 		}
+	}
+	if snapshot.Media != nil {
+		result.Media = make(map[string]string, len(snapshot.Media))
+		for path, assetID := range snapshot.Media { result.Media[path] = assetID }
 	}
 	return result
 }
@@ -218,6 +223,11 @@ func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
 func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
 	if err := validateRulesetFileManifests(snapshot); err != nil {
 		return err
+	}
+	for path, assetID := range snapshot.Media {
+		if path == "" || assetID == "" { return errors.New("ruleset media entry requires path and asset id") }
+		if err := validateRulesetArtworkPath(path); err != nil { return err }
+		if err := validateID(assetID); err != nil { return fmt.Errorf("ruleset media %q: %w", path, err) }
 	}
 	if snapshot.Metadata != (RulesetMetadata{}) {
 		if snapshot.Metadata.ID == "" || snapshot.Metadata.Name == "" || snapshot.Metadata.Version == "" {
@@ -288,6 +298,22 @@ func initializeSessionCharacterCollections(session *Session) bool {
 	if session.CharacterInstances == nil {
 		session.CharacterInstances = map[string]CharacterInstance{}
 		changed = true
+	}
+	// Upgrade legacy per-field inheritance to an all-or-nothing mechanical
+	// snapshot, preserving effective values at the moment of migration.
+	for id, instance := range session.CharacterInstances {
+		if instance.Materialized != nil { continue }
+		if instance.PresetID == "" || len(instance.StatOverrides) != 0 ||
+			len(instance.AddedActionIDs) != 0 || len(instance.RemovedActionIDs) != 0 {
+			var preset *CharacterPresetDefinition
+			if definition, ok := session.CampaignDefinitions.Presets[instance.PresetID]; ok {
+				preset = &definition
+			} else if definition, ok := session.Ruleset.Registry.Presets[instance.PresetID]; ok {
+				preset = &definition
+			}
+			session.CharacterInstances[id] = MaterializeCharacter(instance, preset)
+			changed = true
+		}
 	}
 	return changed
 }

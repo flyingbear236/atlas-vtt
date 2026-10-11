@@ -672,6 +672,7 @@ func refreshAssetOrphans(session *Session, now time.Time) bool {
 			references[preset.AvatarAssetID]++
 		}
 	}
+	for _, assetID := range session.Ruleset.Media { references[assetID]++ }
 	for _, instance := range session.CharacterInstances {
 		if instance.AvatarAssetID != nil && *instance.AvatarAssetID != "" {
 			references[*instance.AvatarAssetID]++
