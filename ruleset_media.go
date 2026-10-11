@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -283,4 +284,32 @@ func (s *Server) uploadRulesetMedia(w http.ResponseWriter, r *http.Request) {
 	path := suggestMediaPath(r.URL.Query().Get("filename"), session.Ruleset.Media)
 	s.mu.Unlock()
 	reply(w, map[string]any{"asset": asset, "suggestedPath": path})
+}
+
+// The shared campaign picker can display any registered image to a GM, even
+// if the image is not yet referenced by a token, character or ruleset.
+func (s *Server) readRulesetMediaImage(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	session, member := s.auth(r)
+	assetID := r.PathValue("id")
+	allowed := memberIsGM(member) && isCharacterArtworkAsset(session.Assets[assetID])
+	asset := Asset{}
+	if session != nil {
+		asset = session.Assets[assetID]
+	}
+	s.mu.Unlock()
+	if !allowed {
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
+		return
+	}
+	if err := validateID(assetID); err != nil {
+		fail(w, http.StatusBadRequest, "Некорректный asset ID")
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	filename := "avatar.png"
+	if asset.Kind == assetKindToken {
+		filename = "token.png"
+	}
+	http.ServeFile(w, r, filepath.Join(s.root, "assets", assetID, filename))
 }
