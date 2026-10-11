@@ -121,6 +121,7 @@ type Session struct {
 	Ruleset              RulesetSnapshot                       `json:"rulesetSnapshot"`
 	CampaignDefinitions  CampaignRegistry                      `json:"campaignDefinitions"`
 	CharacterInstances   map[string]CharacterInstance          `json:"characterInstances"`
+	ResourceOverlays     []ResourceOverlayConfig               `json:"resourceOverlays,omitempty"`
 
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
 }

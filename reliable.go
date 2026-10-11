@@ -176,6 +176,7 @@ type Command struct {
 	ActionID                 string                     `json:"actionId,omitempty"`
 	Persistent               *bool                      `json:"persistent,omitempty"`
 	AvatarAssetID            *string                    `json:"avatarAssetId,omitempty"`
+	ResourceOverlays         []ResourceOverlayConfig    `json:"resourceOverlays,omitempty"`
 	Roll                     *RollRequest               `json:"roll,omitempty"`
 	wireBytes                int
 }
@@ -194,6 +195,10 @@ func (command *Command) UnmarshalJSON(data []byte) error {
 func (s *Server) command(ss *Session, p *peer, c Command) {
 	if c.Type == "roll" {
 		s.diceCommand(ss, p, c)
+		return
+	}
+	if c.Type == "resourceOverlayConfigSet" {
+		s.resourceOverlayCommand(ss, p, c)
 		return
 	}
 	if characterCommandType(c.Type) {
@@ -926,6 +931,9 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 					if asset, ok := ss.Assets[presented.Asset]; ok {
 						v["asset"] = publicAsset(asset)
 					}
+				}
+				if display, ok := characterDisplayForConfig(ss, registry, t.CharacterInstanceID); ok {
+					v["characterDisplay"] = display
 				}
 			}
 		}

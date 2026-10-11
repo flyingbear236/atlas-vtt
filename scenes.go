@@ -438,7 +438,8 @@ func (s *Server) sceneList(ss *Session, member *Member) []SceneSummary {
 }
 
 func (s *Server) snapshotCampaign(ss *Session, member *Member) any {
-	return map[string]any{
+	registry, _ := MergeDefinitionRegistries(sessionRegistries(ss))
+	snapshot := map[string]any{
 		"type":             "campaignSnapshot",
 		"id":               ss.ID,
 		"name":             ss.Name,
@@ -447,6 +448,10 @@ func (s *Server) snapshotCampaign(ss *Session, member *Member) any {
 		"scenes":           s.sceneList(ss, member),
 		"you":              *member,
 	}
+	for key, value := range resourceOverlayPayload(ss, member, registry) {
+		snapshot[key] = value
+	}
+	return snapshot
 }
 
 func sceneEntryPoint(scene *Scene, member *Member) *ScenePoint {
@@ -618,24 +623,28 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		transitions = map[string]Transition{}
 	}
 	snapshot := map[string]any{
-		"type":           "snapshot",
-		"id":             ss.ID,
-		"name":           ss.Name,
-		"scene":          metadata,
-		"revision":       scene.Revision,
-		"currentFloorId": floorID,
-		"floors":         scene.Floors,
-		"layers":         layers,
-		"elements":       elements,
-		"tokens":         tokens,
-		"ownedTokens":    ownedTokenLocators(ss, registry, scene, member),
-		"transitions":    transitions,
-		"assets":         assets,
-		"members":        members,
-		"you":            *member,
-		"online":         online,
-		"region":         region,
-		"entry":          entry,
+		"type":              "snapshot",
+		"id":                ss.ID,
+		"name":              ss.Name,
+		"scene":             metadata,
+		"revision":          scene.Revision,
+		"currentFloorId":    floorID,
+		"floors":            scene.Floors,
+		"layers":            layers,
+		"elements":          elements,
+		"tokens":            tokens,
+		"characterDisplays": characterDisplaysForTokens(ss, registry, tokens),
+		"ownedTokens":       ownedTokenLocators(ss, registry, scene, member),
+		"transitions":       transitions,
+		"assets":            assets,
+		"members":           members,
+		"you":               *member,
+		"online":            online,
+		"region":            region,
+		"entry":             entry,
+	}
+	for key, value := range resourceOverlayPayload(ss, member, registry) {
+		snapshot[key] = value
 	}
 	if peer != nil {
 		snapshot["ownedTokens"] = tokenLocatorsForPeer(ss, registry, scene, peer)

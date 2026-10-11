@@ -83,6 +83,9 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 	if err != nil {
 		return nil, err
 	}
+	if err := validateResourceOverlayConfig(session.ResourceOverlays, next); err != nil {
+		return nil, fmt.Errorf("resource overlay config: %w", err)
+	}
 	current, err := MergeDefinitionRegistries(sessionRegistries(session))
 	if err != nil {
 		return nil, err
@@ -477,6 +480,7 @@ func (s *Server) publishRegistryChanged(session *Session) {
 			s.send(peer, map[string]any{"type": "registryChanged", "registryRevision": session.RegistryRevision})
 		}
 	}
+	s.publishResourceOverlayConfig(session)
 }
 
 func definitionsDigest(data []byte) string {
