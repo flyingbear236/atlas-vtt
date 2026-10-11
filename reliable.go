@@ -301,6 +301,11 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	gm := memberIsGM(p.member)
 	kind := "upsert"
 	var issue string
+	oldCharacterRevision := ss.CharacterRevision
+	createdCharacterID := ""
+	updatedCharacterID := ""
+	var updatedCharacterBefore CharacterInstance
+	characterStateChanged := false
 	switch c.Type {
 	case "move", "final":
 		if c.Type == "move" {
@@ -357,9 +362,60 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			}
 			t.OwnerIDs, _ = normalizeOwnerIDs(t.OwnerIDs)
 			t.legacyOwnerField = false
-			// Character assignment has its own validated commands in a later
-			// stage; generic token creation must not smuggle in a relationship.
-			t.CharacterInstanceID = ""
+			t.Name = ""
+			t.Asset = ""
+			if c.CharacterID != "" {
+				if ss.CharacterInstances[c.CharacterID].ID == "" {
+					issue = "Персонаж не найден"
+					break
+				}
+				t.CharacterInstanceID = c.CharacterID
+			} else {
+				registry, registryErr := MergeDefinitionRegistries(sessionRegistries(ss))
+				if registryErr != nil {
+					issue = registryErr.Error()
+					break
+				}
+				var preset *CharacterPresetDefinition
+				if c.PresetID != "" {
+					definition, found := registry.Presets[c.PresetID]
+					if !found {
+						issue = "Шаблон персонажа не найден"
+						break
+					}
+					definition = clonePresetDefinition(definition)
+					preset = &definition
+				}
+				createdCharacterID = nextCharacterID(ss)
+				instance := NewCharacterInstance(createdCharacterID, preset)
+				if preset == nil {
+					if name := strings.TrimSpace(c.CharacterName); name != "" {
+						instance.Name = name
+					} else if name = strings.TrimSpace(c.Token.Name); name != "" {
+						instance.Name = name
+					}
+				}
+				artworkID := ""
+				if c.AvatarAssetID != nil {
+					artworkID = *c.AvatarAssetID
+				} else {
+					artworkID = c.Token.Asset
+				}
+				if artworkID != "" {
+					if !isCharacterArtworkAsset(ss.Assets[artworkID]) {
+						issue = "Изображение персонажа не найдено"
+						break
+					}
+					instance.AvatarAssetID = &artworkID
+				}
+				if validationErr := ValidateCharacterInstance(instance, registry); validationErr != nil {
+					issue = validationErr.Error()
+					break
+				}
+				ss.CharacterInstances[createdCharacterID] = instance
+				t.CharacterInstanceID = createdCharacterID
+				characterStateChanged = true
+			}
 			if t.FloorID == "" {
 				t.FloorID = firstFloorID(scene)
 			}
@@ -371,7 +427,27 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 		if c.Type == "properties" {
 			v := c.Properties
 			if v.Name != nil {
-				t.Name = *v.Name
+				instance := ss.CharacterInstances[t.CharacterInstanceID]
+				if instance.ID == "" {
+					issue = "Персонаж не найден"
+					break
+				}
+				updatedCharacterID = instance.ID
+				updatedCharacterBefore = cloneCharacterInstance(instance)
+				instance.Name = strings.TrimSpace(*v.Name)
+				registry, registryErr := MergeDefinitionRegistries(sessionRegistries(ss))
+				if registryErr != nil {
+					issue = registryErr.Error()
+					break
+				}
+				if validationErr := ValidateCharacterInstance(instance, registry); validationErr != nil {
+					issue = validationErr.Error()
+					break
+				}
+				if instance.Name != updatedCharacterBefore.Name {
+					ss.CharacterInstances[instance.ID] = instance
+					characterStateChanged = true
+				}
 			}
 			if v.Size != nil {
 				t.Size = *v.Size
@@ -389,7 +465,8 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 				t.Hidden = *v.Hidden
 			}
 			if v.Asset != nil {
-				t.Asset = *v.Asset
+				issue = "Изображение принадлежит персонажу"
+				break
 			}
 			if v.FloorID != nil {
 				t.FloorID = *v.FloorID
@@ -397,7 +474,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			}
 		}
 		tokenLayer := scene.Layers[t.LayerID]
-		if !validNumber(t.X) || !validNumber(t.Y) || !validNumber(t.Size) || !validNumber(t.Rotation) || !validNumber(t.Opacity) || t.Opacity < 0 || t.Opacity > 1 || t.Size < 16 || t.Size > 1024 || utf8.RuneCountInString(t.Name) > 80 || len(t.Color) > 32 || scene.Floors[t.FloorID].ID == "" || tokenLayer.Kind != layerKindTokens || tokenLayer.FloorID != t.FloorID {
+		if !validNumber(t.X) || !validNumber(t.Y) || !validNumber(t.Size) || !validNumber(t.Rotation) || !validNumber(t.Opacity) || t.Opacity < 0 || t.Opacity > 1 || t.Size < 16 || t.Size > 1024 || len(t.Color) > 32 || scene.Floors[t.FloorID].ID == "" || tokenLayer.Kind != layerKindTokens || tokenLayer.FloorID != t.FloorID || t.CharacterInstanceID == "" || ss.CharacterInstances[t.CharacterInstanceID].ID == "" {
 			issue = "Некорректные свойства токена"
 			break
 		}
@@ -422,7 +499,7 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	default:
 		issue = "Неизвестное событие"
 	}
-	revision, characterRevision, dirty := scene.Revision, ss.CharacterRevision, s.dirty
+	revision, dirty := scene.Revision, s.dirty
 	changed := false
 	characterWatchChanged := false
 	var assetsBeforeReferences map[string]Asset
@@ -441,12 +518,10 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 			s.dirty = true
 			scene.applyTokenRuntimeChange(old, exists, t, kind != "delete")
 			updateCharacterReference(ss, sceneID, old, exists, t, kind != "delete")
-			characterWatchChanged = old.CharacterInstanceID != "" && (kind == "delete" || old.Hidden != t.Hidden || !slices.Equal(old.OwnerIDs, t.OwnerIDs))
-			if characterWatchChanged {
-				ss.CharacterRevision++
-			}
+			characterWatchChanged = (old.CharacterInstanceID != "" || t.CharacterInstanceID != "") && (!exists || kind == "delete" || old.Hidden != t.Hidden || !slices.Equal(old.OwnerIDs, t.OwnerIDs))
 			if kind == "delete" && old.CharacterInstanceID != "" {
 				collectedCharacter, collectedCharacterExists = gcCharacterIfUnreferenced(ss, old.CharacterInstanceID)
+				characterStateChanged = characterStateChanged || collectedCharacterExists
 			}
 			if c.Type == "create" || c.Type == "delete" || old.Asset != t.Asset {
 				assetsBeforeReferences = make(map[string]Asset, len(ss.Assets))
@@ -456,6 +531,23 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 				refreshAssetOrphans(ss, time.Now())
 			}
 		}
+		if characterWatchChanged || characterStateChanged {
+			ss.CharacterRevision++
+		}
+		if characterStateChanged && !changed {
+			scene.Revision++
+			s.dirty = true
+			changed = true
+		}
+	}
+	if issue != "" {
+		if createdCharacterID != "" {
+			delete(ss.CharacterInstances, createdCharacterID)
+		}
+		if updatedCharacterID != "" {
+			ss.CharacterInstances[updatedCharacterID] = updatedCharacterBefore
+		}
+		ss.CharacterRevision = oldCharacterRevision
 	}
 	if c.Seq > 0 {
 		ss.Receipts[stream] = Receipt{Seq: c.Seq, Error: issue, Digest: digest, Updated: time.Now().Unix()}
@@ -478,11 +570,17 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 					delete(scene.Tokens, t.ID)
 				}
 			}
+			if createdCharacterID != "" {
+				delete(ss.CharacterInstances, createdCharacterID)
+			}
+			if updatedCharacterID != "" {
+				ss.CharacterInstances[updatedCharacterID] = updatedCharacterBefore
+			}
 			if assetsBeforeReferences != nil {
 				ss.Assets = assetsBeforeReferences
 			}
 			scene.Revision = revision
-			ss.CharacterRevision = characterRevision
+			ss.CharacterRevision = oldCharacterRevision
 			scene.rebuildRuntime()
 			rebuildCharacterReferences(ss)
 			s.dirty = dirty
@@ -505,7 +603,10 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	}
 	if issue == "" && changed {
 		s.publish(ss, sceneID, kind, old, exists, t)
-		if characterWatchChanged {
+		if updatedCharacterID != "" {
+			s.publishCharacterTokens(ss, map[string]bool{updatedCharacterID: false})
+		}
+		if characterWatchChanged || characterStateChanged {
 			s.refreshCharacterWatches(ss, nil, true)
 		}
 	} else if issue != "" && c.Seq == 0 {
@@ -780,6 +881,9 @@ func tokenHasLocatorForPeer(token Token, peer *peer) bool {
 }
 
 func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed bool, t Token) {
+	registry, _ := MergeDefinitionRegistries(sessionRegistries(ss))
+	presentedOld := presentToken(ss, registry, old)
+	presented := presentToken(ss, registry, t)
 	for p := range s.peers {
 		if p.session != ss.ID || p.sceneID != sceneID {
 			continue
@@ -788,7 +892,7 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 		if scene == nil {
 			continue
 		}
-		s.publishTokenLocator(p, sceneID, kind, old, existed, t, scene.Revision)
+		s.publishTokenLocator(p, sceneID, kind, presentedOld, existed, presented, scene.Revision)
 
 		previousFloor, previousActive := p.floorID, p.activeTokenID
 		p.floorID = currentFloorForPeer(p, scene)
@@ -817,9 +921,9 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 				v["y"] = t.Y
 			} else {
 				v["type"] = "upsert"
-				v["token"] = t
-				if t.Asset != "" {
-					if asset, ok := ss.Assets[t.Asset]; ok {
+				v["token"] = presented
+				if presented.Asset != "" {
+					if asset, ok := ss.Assets[presented.Asset]; ok {
 						v["asset"] = publicAsset(asset)
 					}
 				}

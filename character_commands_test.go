@@ -91,6 +91,7 @@ func newCharacterCommandFixture(t *testing.T) characterCommandFixture {
 	addToken(sceneB, "return", []string{aliceID})
 	sceneA.rebuildRuntime()
 	sceneB.rebuildRuntime()
+	migrateLegacyTokenCharacters(session)
 	rebuildCharacterReferences(session)
 	server.dirty = true
 	if err := server.saveLocked(); err != nil {
@@ -262,9 +263,13 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 		t.Fatal("stat reset did not remove only the instance override")
 	}
 
-	writeCharacterCommand(t, gmWS, Command{Type: "characterCreate", Client: "lancelot", Seq: 1, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["lancelot"], CharacterName: "Sir Lancelot", Persistent: boolPointer(true)})
+	writeCharacterCommand(t, gmWS, Command{Type: "characterCreate", Client: "lancelot", Seq: 1, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["lancelot"], CharacterName: "Sir Lancelot"})
 	lancelotID := characterIDFromACK(t, read(t, gmWS, "ack"))
 	writeCharacterCommand(t, gmWS, Command{Type: "characterStatSet", Client: "lancelot", Seq: 2, CharacterID: lancelotID, StatID: "hp", StatValue: statValuePointer(IntegerStatValue(7))})
+	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
+		t.Fatal(issue)
+	}
+	writeCharacterCommand(t, gmWS, Command{Type: "characterSetPersistent", Client: "lancelot", Seq: 3, CharacterID: lancelotID, Persistent: boolPointer(true)})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}
@@ -272,7 +277,7 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}
-	writeCharacterCommand(t, gmWS, Command{Type: "characterLink", Client: "lancelot", Seq: 3, SceneID: fixture.sceneB.ID, TokenID: fixture.tokens["return"], CharacterID: lancelotID})
+	writeCharacterCommand(t, gmWS, Command{Type: "characterLink", Client: "lancelot", Seq: 4, SceneID: fixture.sceneB.ID, TokenID: fixture.tokens["return"], CharacterID: lancelotID})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}
@@ -325,8 +330,12 @@ func TestCharacterGCIndexRelinkSceneDeleteAndSaveRollback(t *testing.T) {
 	}
 	fixture.server.mu.Unlock()
 
-	writeCharacterCommand(t, gmWS, Command{Type: "characterCreate", Client: "persistent", Seq: 1, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["lancelot"], CharacterName: "Persistent", Persistent: boolPointer(true)})
+	writeCharacterCommand(t, gmWS, Command{Type: "characterCreate", Client: "persistent", Seq: 1, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["lancelot"], CharacterName: "Persistent"})
 	persistentID := characterIDFromACK(t, read(t, gmWS, "ack"))
+	writeCharacterCommand(t, gmWS, Command{Type: "characterSetPersistent", Client: "persistent-flag", Seq: 1, CharacterID: persistentID, Persistent: boolPointer(true)})
+	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
+		t.Fatal(issue)
+	}
 
 	root := fixture.server.root
 	blocker := filepath.Join(root, "sessions.json.tmp")
@@ -387,11 +396,11 @@ func TestCharacterGCIndexRelinkSceneDeleteAndSaveRollback(t *testing.T) {
 		t.Fatal(issue)
 	}
 
-	writeCharacterCommand(t, gmWS, Command{Type: "characterUnlink", Client: "persistent", Seq: 2, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["lancelot"]})
+	writeCharacterCommand(t, gmWS, Command{Type: "delete", Client: "persistent", Seq: 2, SceneID: fixture.sceneA.ID, Token: Token{ID: fixture.tokens["lancelot"]}})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}
-	writeCharacterCommand(t, gmWS, Command{Type: "characterUnlink", Client: "persistent", Seq: 3, SceneID: fixture.sceneB.ID, TokenID: fixture.tokens["cross-b"]})
+	writeCharacterCommand(t, gmWS, Command{Type: "delete", Client: "persistent", Seq: 3, SceneID: fixture.sceneB.ID, Token: Token{ID: fixture.tokens["cross-b"]}})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}
@@ -401,7 +410,7 @@ func TestCharacterGCIndexRelinkSceneDeleteAndSaveRollback(t *testing.T) {
 	if !kept {
 		t.Fatal("persistent character was collected without references")
 	}
-	writeCharacterCommand(t, gmWS, Command{Type: "characterSetPersistent", Client: "persistent", Seq: 4, CharacterID: persistentID, Persistent: boolPointer(false)})
+	writeCharacterCommand(t, gmWS, Command{Type: "characterSetPersistent", Client: "persistent-flag", Seq: 2, CharacterID: persistentID, Persistent: boolPointer(false)})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}

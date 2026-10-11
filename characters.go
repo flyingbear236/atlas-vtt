@@ -15,6 +15,7 @@ import (
 // Character-domain limits are kept together so import, commands and UI can use
 // the same contract in later stages.
 const (
+	defaultCharacterName                = "Новый персонаж"
 	MaxDefinitionIDRunes                = 128
 	MaxDefinitionNameRunes              = 200
 	MaxDefinitionDescriptionRunes       = 2000
@@ -255,6 +256,7 @@ type EffectiveCharacter struct {
 func NewCharacterInstance(instanceID string, preset *CharacterPresetDefinition) CharacterInstance {
 	instance := CharacterInstance{
 		ID:            instanceID,
+		Name:          defaultCharacterName,
 		StatOverrides: make(map[string]StatValue),
 	}
 	if preset != nil {

@@ -193,6 +193,7 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		s.publishRegistryChanged(session)
 		s.refreshCharacterWatches(session, nil, true)
 	} else {
+		s.publishCharacterTokens(session, map[string]bool{target.characterID: false})
 		s.refreshCharacterWatches(session, map[string]bool{target.characterID: false}, false)
 	}
 	s.mu.Unlock()
@@ -201,7 +202,7 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 
 func avatarAssetVisibleTo(session *Session, member *Member, assetID string) bool {
 	asset, exists := session.Assets[assetID]
-	if !exists || asset.Kind != assetKindAvatar {
+	if !exists || !isCharacterArtworkAsset(asset) {
 		return false
 	}
 	registry, err := MergeDefinitionRegistries(sessionRegistries(session))

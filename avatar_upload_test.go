@@ -174,7 +174,11 @@ func TestAvatarPresetOverlayAndPersistentGMAccess(t *testing.T) {
 	}
 	writeCharacterCommand(t, gmWS, Command{Type: "characterCreate", Client: "persistent-avatar", Seq: 1, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["lancelot"], CharacterName: "Persistent", Persistent: boolPointer(true)})
 	characterID := characterIDFromACK(t, read(t, gmWS, "ack"))
-	writeCharacterCommand(t, gmWS, Command{Type: "characterUnlink", Client: "persistent-avatar", Seq: 2, SceneID: fixture.sceneA.ID, TokenID: fixture.tokens["lancelot"]})
+	writeCharacterCommand(t, gmWS, Command{Type: "characterSetPersistent", Client: "persistent-avatar", Seq: 2, CharacterID: characterID, Persistent: boolPointer(true)})
+	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
+		t.Fatal(issue)
+	}
+	writeCharacterCommand(t, gmWS, Command{Type: "delete", Client: "persistent-avatar", Seq: 3, SceneID: fixture.sceneA.ID, Token: Token{ID: fixture.tokens["lancelot"]}})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
 		t.Fatal(issue)
 	}

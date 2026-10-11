@@ -209,6 +209,8 @@ func TestSceneSnapshotDiscoversOnlyRequiredAssets(t *testing.T) {
 	}
 	scene.Tokens["visible"] = Token{ID: "visible", Name: "Visible", Size: 80, Asset: "visible"}
 	scene.Tokens["hidden"] = Token{ID: "hidden", Name: "Hidden", Size: 80, Asset: "hidden", Hidden: true}
+	migrateLegacyTokenCharacters(ss)
+	rebuildCharacterReferences(ss)
 	s.mu.Unlock()
 
 	gc := dial(t, ts.URL, gm)
@@ -266,6 +268,8 @@ func TestUnpublishAndDeleteReturnSubscribersHome(t *testing.T) {
 	ss := s.sessions[gm["session"]]
 	ss.Assets["shared"] = Asset{ID: "shared", Width: 32, Height: 32, Kind: "token"}
 	ss.Scenes[sceneID].Tokens["shared"] = Token{ID: "shared", Name: "Shared", Size: 80, Asset: "shared"}
+	migrateLegacyTokenCharacters(ss)
+	rebuildCharacterReferences(ss)
 	s.mu.Unlock()
 	published := true
 	gc.WriteJSON(Command{Type: "sceneUpdate", Client: "scene-admin", Seq: 2, SceneID: sceneID, Published: &published})
@@ -445,8 +449,10 @@ func TestRegionSnapshotLoadsOnlyRequestedStateAndAssets(t *testing.T) {
 	scene.Tokens["near"] = Token{ID: "near", Name: "Near", X: 100, Y: 100, Size: 80, Asset: "near"}
 	scene.Tokens["far"] = Token{ID: "far", Name: "Far", X: 20000, Y: 20000, Size: 80, Asset: "far"}
 	scene.Tokens["hidden"] = Token{ID: "hidden", Name: "Hidden", X: 150, Y: 150, Size: 80, Asset: "hidden", Hidden: true}
+	migrateLegacyTokenCharacters(ss)
 	scene.Revision++
 	scene.rebuildRuntime()
+	rebuildCharacterReferences(ss)
 	s.mu.Unlock()
 
 	pc := dialRaw(t, ts.URL, player)
@@ -558,6 +564,8 @@ func TestOwnedTokenLocatorsUpdateOutsideSpatialRegion(t *testing.T) {
 	token := Token{ID: "far-owned", Name: "Far companion", FloorID: floorID, LayerID: layerIDByKind(scene, floorID, layerKindTokens), X: 50000, Y: 50000, Size: 80, Color: "#c2d89b", OwnerIDs: []string{}, Asset: asset.ID}
 	ss.Assets[asset.ID] = asset
 	scene.Tokens[token.ID] = token
+	migrateLegacyTokenCharacters(ss)
+	rebuildCharacterReferences(ss)
 	scene.Revision++
 	scene.rebuildRuntime()
 	s.mu.Unlock()

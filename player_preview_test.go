@@ -48,8 +48,10 @@ func TestGMPlayerPreviewIsPerPeerFilteredAndMovementBound(t *testing.T) {
 	visualLayerID := firstLayerID(scene, floorID)
 	scene.Elements["public"] = SceneElement{ID: "public", FloorID: floorID, LayerID: visualLayerID, AssetID: "public-background", Transform: Transform{X: 10, Y: 10, Width: 20, Height: 20}, Visible: true, Opacity: 1}
 	scene.Elements["private"] = SceneElement{ID: "private", FloorID: floorID, LayerID: visualLayerID, AssetID: "private-background", Transform: Transform{X: 4990, Y: 4990, Width: 40, Height: 40}, Visible: false, Opacity: 1}
+	migrateLegacyTokenCharacters(session)
 	scene.Revision++
 	scene.rebuildRuntime()
+	rebuildCharacterReferences(session)
 	server.mu.Unlock()
 
 	preview := dialRaw(t, httpServer.URL, gm)

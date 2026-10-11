@@ -218,9 +218,7 @@ func TestRollHistoryBoundedAndReceiptSurvivesEviction(t *testing.T) {
 		if scene == fixture.sceneB {
 			tokenID = "token-b"
 		}
-		token := scene.Tokens[tokenID]
-		token.CharacterInstanceID = ""
-		scene.Tokens[tokenID] = token
+		delete(scene.Tokens, tokenID)
 	}
 	rebuildCharacterReferences(fixture.session)
 	if _, collected := gcCharacterIfUnreferenced(fixture.session, fixture.characterID); !collected {

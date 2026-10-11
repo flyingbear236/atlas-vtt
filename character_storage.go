@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 func loadRulesetSnapshotFile(path string) (RulesetSnapshot, error) {
@@ -111,9 +112,9 @@ type RulesetFileManifest struct {
 }
 
 type RulesetSnapshot struct {
-	Metadata RulesetMetadata                  `json:"metadata"`
-	Registry RulesetRegistry                  `json:"registry"`
-	Files    map[string]RulesetFileManifest   `json:"files,omitempty"`
+	Metadata RulesetMetadata                `json:"metadata"`
+	Registry RulesetRegistry                `json:"registry"`
+	Files    map[string]RulesetFileManifest `json:"files,omitempty"`
 }
 
 type CharacterTokenReference struct {
@@ -291,6 +292,61 @@ func initializeSessionCharacterCollections(session *Session) bool {
 	return changed
 }
 
+func isCharacterArtworkAsset(asset Asset) bool {
+	return asset.ID != "" && (asset.Kind == assetKindAvatar || asset.Kind == assetKindToken)
+}
+
+// migrateLegacyTokenCharacters converts the old token-owned name/artwork model.
+// Stable ordering makes the chosen artwork deterministic when legacy tokens
+// sharing one character happened to contain different images.
+func migrateLegacyTokenCharacters(session *Session) bool {
+	sceneIDs := make([]string, 0, len(session.Scenes))
+	for sceneID := range session.Scenes {
+		sceneIDs = append(sceneIDs, sceneID)
+	}
+	sort.Strings(sceneIDs)
+	changed := false
+	for _, sceneID := range sceneIDs {
+		scene := session.Scenes[sceneID]
+		tokenIDs := make([]string, 0, len(scene.Tokens))
+		for tokenID := range scene.Tokens {
+			tokenIDs = append(tokenIDs, tokenID)
+		}
+		sort.Strings(tokenIDs)
+		for _, tokenID := range tokenIDs {
+			token := scene.Tokens[tokenID]
+			instance, exists := session.CharacterInstances[token.CharacterInstanceID]
+			if token.CharacterInstanceID == "" {
+				instance = NewCharacterInstance(nextCharacterID(session), nil)
+				if token.Name != "" {
+					instance.Name = token.Name
+				}
+				token.CharacterInstanceID = instance.ID
+				session.CharacterInstances[instance.ID] = instance
+				changed = true
+			} else if !exists {
+				continue
+			}
+			if instance.AvatarAssetID == nil && token.Asset != "" && isCharacterArtworkAsset(session.Assets[token.Asset]) {
+				artworkID := token.Asset
+				instance.AvatarAssetID = &artworkID
+				session.CharacterInstances[instance.ID] = instance
+				changed = true
+			}
+			if token.Name != "" || token.Asset != "" {
+				token.Name = ""
+				token.Asset = ""
+				changed = true
+			}
+			scene.Tokens[tokenID] = token
+		}
+	}
+	if changed {
+		session.CharacterRevision++
+	}
+	return changed
+}
+
 func validateSessionCharacterState(session *Session) error {
 	if session == nil {
 		return errors.New("session is nil")
@@ -324,7 +380,7 @@ func validateSessionCharacterState(session *Session) error {
 			return fmt.Errorf("character instance %q: %w", id, err)
 		}
 		if instance.AvatarAssetID != nil && *instance.AvatarAssetID != "" {
-			if asset, exists := session.Assets[*instance.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
+			if asset, exists := session.Assets[*instance.AvatarAssetID]; !exists || !isCharacterArtworkAsset(asset) {
 				return fmt.Errorf("character instance %q references unknown avatar asset %q", id, *instance.AvatarAssetID)
 			}
 		}
@@ -341,10 +397,11 @@ func validateSessionCharacterState(session *Session) error {
 			if !validateTokenOwners(token, session.Members) {
 				return fmt.Errorf("scene %q token %q has invalid owners", sceneID, tokenID)
 			}
-			if token.CharacterInstanceID != "" {
-				if _, exists := session.CharacterInstances[token.CharacterInstanceID]; !exists {
-					return fmt.Errorf("scene %q token %q references unknown character instance %q", sceneID, tokenID, token.CharacterInstanceID)
-				}
+			if token.CharacterInstanceID == "" {
+				return fmt.Errorf("scene %q token %q has no character instance", sceneID, tokenID)
+			}
+			if _, exists := session.CharacterInstances[token.CharacterInstanceID]; !exists {
+				return fmt.Errorf("scene %q token %q references unknown character instance %q", sceneID, tokenID, token.CharacterInstanceID)
 			}
 		}
 	}
