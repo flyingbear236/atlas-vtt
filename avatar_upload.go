@@ -41,11 +41,9 @@ func avatarTargetAllowed(session *Session, member *Member, target avatarUploadTa
 	if !memberIsGM(member) {
 		return false
 	}
-	registry, err := MergeDefinitionRegistries(sessionRegistries(session))
-	if err != nil {
-		return false
-	}
-	_, exists := registry.Presets[target.presetID]
+	// Ruleset presets are edited through the TOML + media candidate API.
+	// Uploading their artwork must never create a campaign preset override.
+	_, exists := session.CampaignDefinitions.Presets[target.presetID]
 	return exists
 }
 
@@ -210,29 +208,20 @@ func avatarAssetVisibleTo(session *Session, member *Member, assetID string) bool
 		return false
 	}
 	if memberIsGM(member) {
-		for _, preset := range session.CampaignDefinitions.Presets {
-			if preset.AvatarAssetID == assetID {
-				return true
-			}
-		}
-		for _, instance := range session.CharacterInstances {
-			if effectiveCharacterAvatar(instance, registry) == assetID {
-				return true
-			}
-		}
-		return false
+		return true // GM can inspect the campaign artwork catalog, including draft uploads.
 	}
 	for characterID, instance := range session.CharacterInstances {
-		if memberCanAccessCharacter(session, member, characterID) && effectiveCharacterAvatar(instance, registry) == assetID {
+		if memberCanAccessCharacter(session, member, characterID) && effectiveCharacterAvatar(session, instance, registry) == assetID {
 			return true
 		}
 	}
 	return false
 }
 
-func effectiveCharacterAvatar(instance CharacterInstance, registry EffectiveRegistry) string {
-	if instance.AvatarAssetID != nil {
-		return *instance.AvatarAssetID
+func effectiveCharacterAvatar(session *Session, instance CharacterInstance, registry EffectiveRegistry) string {
+	var preset *CharacterPresetDefinition
+	if p, ok := registry.Presets[instance.PresetID]; ok {
+		preset = &p
 	}
-	return registry.Presets[instance.PresetID].AvatarAssetID
+	return resolveCharacterArtwork(session, instance, preset, session.Ruleset).AssetID
 }

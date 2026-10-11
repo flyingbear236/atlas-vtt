@@ -152,16 +152,30 @@ func TestAvatarPresetOverlayAndPersistentGMAccess(t *testing.T) {
 	}
 	fixture.server.mu.Unlock()
 
-	status, presetAsset, message := uploadAvatarRequest(t, fixture, fixture.gm, "presetId", "ruleset_hero", pipelinePNG(t, 40, 50))
-	if status != http.StatusOK {
-		t.Fatalf("preset avatar upload: %d %s", status, message)
+	status, _, message := uploadAvatarRequest(t, fixture, fixture.gm, "presetId", "ruleset_hero", pipelinePNG(t, 40, 50))
+	if status != http.StatusForbidden {
+		t.Fatalf("ruleset preset upload bypassed draft: %d %s", status, message)
+	}
+	presetAsset, err := prepare(fixture.server.root, pipelinePNG(t, 40, 50), assetKindAvatar)
+	if err != nil {
+		t.Fatal(err)
 	}
 	fixture.server.mu.Lock()
-	overlay := fixture.session.CampaignDefinitions.Presets["ruleset_hero"]
-	fixture.server.mu.Unlock()
-	if overlay.ID != "ruleset_hero" || overlay.AvatarAssetID != presetAsset.ID {
-		t.Fatalf("ruleset preset did not receive campaign overlay: %#v", overlay)
+	if _, created := fixture.session.CampaignDefinitions.Presets["ruleset_hero"]; created {
+		fixture.server.mu.Unlock()
+		t.Fatal("ruleset avatar created a campaign preset override")
 	}
+	fixture.session.Assets[presetAsset.ID] = presetAsset
+	preset := fixture.session.Ruleset.Registry.Presets["ruleset_hero"]
+	preset.Artwork = "media/ruleset-hero.png"
+	fixture.session.Ruleset.Registry.Presets["ruleset_hero"] = preset
+	fixture.session.Ruleset.Media = map[string]string{"media/ruleset-hero.png": presetAsset.ID}
+	fixture.server.dirty = true
+	if err := fixture.server.saveLocked(); err != nil {
+		fixture.server.mu.Unlock()
+		t.Fatal(err)
+	}
+	fixture.server.mu.Unlock()
 
 	gmWS := dialRaw(t, fixture.host.URL, fixture.gm)
 	read(t, gmWS, "campaignSnapshot")
