@@ -255,10 +255,12 @@ func resolveRollCharacter(session *Session, scene *Scene, member *Member, regist
 	var preset *CharacterPresetDefinition
 	if instance.PresetID != "" {
 		value, ok := registry.Presets[instance.PresetID]
-		if !ok {
+		if !ok && instance.Materialized == nil {
 			return EffectiveCharacter{}, fmt.Errorf("character %q references unknown preset %q", characterID, instance.PresetID)
 		}
-		preset = &value
+		if ok {
+			preset = &value
+		}
 	}
 	return EffectiveCharacterState(instance, preset), nil
 }

@@ -258,6 +258,13 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 		if migrateLegacyTokenCharacters(ss) {
 			migrated = true
 		}
+		mechanicsMigrated, migrationErr := migrateLegacyCharacterMechanics(ss)
+		if migrationErr != nil {
+			return nil, fmt.Errorf("invalid saved character mechanics in session %s: %w", sessionID, migrationErr)
+		}
+		if mechanicsMigrated {
+			migrated = true
+		}
 		for sceneID, scene := range ss.Scenes {
 			if scene == nil || scene.ID != sceneID || scene.Name == "" {
 				return nil, fmt.Errorf("invalid scene in session %s", sessionID)

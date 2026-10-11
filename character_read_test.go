@@ -42,7 +42,7 @@ func TestCharacterCatalogIsGMOnlyPagedSummary(t *testing.T) {
 		avatar := "avatar"
 		fixture.session.CharacterInstances[characterID] = CharacterInstance{
 			ID: characterID, Name: fmt.Sprintf("Character %03d", index), Persistent: true, PresetID: "wolf",
-			AvatarAssetID: &avatar, StatOverrides: map[string]StatValue{"hp": IntegerStatValue(int64(index))},
+			AvatarAssetID: &avatar, Materialized: &CharacterMechanicalState{Stats: map[string]StatValue{"hp": IntegerStatValue(int64(index))}},
 		}
 	}
 	fixture.server.mu.Unlock()

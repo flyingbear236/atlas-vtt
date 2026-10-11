@@ -149,7 +149,9 @@ func TestActionRollUsesEffectiveServerDefinitionAndModifiers(t *testing.T) {
 	}
 
 	character := fixture.session.CharacterInstances["hero-1"]
-	character.StatOverrides["agility"] = IntegerStatValue(-3)
+	preset := fixture.session.CampaignDefinitions.Presets["hero"]
+	character = MaterializeCharacter(character, &preset)
+	character.Materialized.Stats["agility"] = IntegerStatValue(-3)
 	fixture.session.CharacterInstances[character.ID] = character
 	fixture.rng.next = 0
 	event, err = fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage"})
@@ -163,19 +165,19 @@ func TestActionRollRejectsMissingOrWrongStatAndAction(t *testing.T) {
 	request := RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage"}
 	character := fixture.session.CharacterInstances["hero-1"]
 	character.PresetID = ""
-	character.AddedActionIDs = []string{"strike"}
+	character.Materialized = &CharacterMechanicalState{Stats: map[string]StatValue{}, ActionIDs: []string{"strike"}}
 	fixture.session.CharacterInstances[character.ID] = character
 	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil || !strings.Contains(err.Error(), "no value") {
 		t.Fatalf("missing modifier stat error = %v", err)
 	}
 
-	character.StatOverrides["agility"] = StringStatValue("fast")
+	character.Materialized.Stats["agility"] = StringStatValue("fast")
 	fixture.session.CharacterInstances[character.ID] = character
 	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil || !strings.Contains(err.Error(), "not numeric") {
 		t.Fatalf("wrong modifier stat error = %v", err)
 	}
 
-	character.StatOverrides["agility"] = NumberStatValue(1)
+	character.Materialized.Stats["agility"] = NumberStatValue(1)
 	fixture.session.CharacterInstances[character.ID] = character
 	for _, bad := range []RollRequest{
 		{CharacterInstanceID: "hero-1", ActionID: "missing", RollSpecID: "damage"},

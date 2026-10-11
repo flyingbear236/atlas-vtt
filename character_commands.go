@@ -12,7 +12,7 @@ import (
 
 func characterCommandType(commandType string) bool {
 	switch commandType {
-	case "characterCreate", "characterLink", "characterSetPersistent",
+	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
 		"characterStatSet", "characterStatReset", "characterAvatarSet", "characterAvatarReset",
 		"characterActionAdd", "characterActionRemove":
 		return true
@@ -238,6 +238,16 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		mutation.setToken(sceneID, scene, old, token)
 		mutation.gcCharacter(oldCharacterID)
 		mutation.resultCharacterID = command.CharacterID
+	case "characterNameSet":
+		if !memberCanAccessCharacter(session, member, command.CharacterID) {
+			return errors.New("character access denied")
+		}
+		instance := session.CharacterInstances[command.CharacterID]
+		if instance.Name != command.CharacterName {
+			instance.Name = command.CharacterName
+			mutation.setInstance(instance)
+		}
+		mutation.resultCharacterID = command.CharacterID
 	case "characterSetPersistent":
 		if command.Persistent == nil {
 			return errors.New("persistent value is required")
@@ -267,6 +277,14 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			return err
 		}
 		mutation.setCampaign(campaign)
+		var preset *CharacterPresetDefinition
+		if instance.PresetID != "" {
+			definition, ok := registry.Presets[instance.PresetID]
+			if ok {
+				preset = &definition
+			}
+		}
+		instance = MaterializeCharacter(instance, preset)
 		instance = WithStatOverride(instance, command.StatID, *command.StatValue)
 		mutation.setInstance(instance)
 		mutation.resultCharacterID = command.CharacterID
@@ -278,8 +296,10 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			return errors.New("character access denied")
 		}
 		instance := session.CharacterInstances[command.CharacterID]
-		if _, exists := instance.StatOverrides[command.StatID]; exists {
-			mutation.setInstance(ResetStatOverride(instance, command.StatID))
+		if instance.Materialized != nil {
+			if _, exists := instance.Materialized.Stats[command.StatID]; exists {
+				mutation.setInstance(ResetStatOverride(instance, command.StatID))
+			}
 		}
 		mutation.resultCharacterID = command.CharacterID
 	case "characterAvatarSet":
@@ -313,6 +333,13 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		instance, exists := session.CharacterInstances[command.CharacterID]
 		if !exists {
 			return errors.New("character not found")
+		}
+		if instance.Materialized == nil {
+			definition, ok := registry.Presets[instance.PresetID]
+			if !ok {
+				return fmt.Errorf("unknown preset %q", instance.PresetID)
+			}
+			instance = MaterializeCharacter(instance, &definition)
 		}
 		if command.Type == "characterActionAdd" {
 			instance = WithActionAdded(instance, command.ActionID)
