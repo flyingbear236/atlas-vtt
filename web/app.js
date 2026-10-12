@@ -14,9 +14,61 @@ const $ = id => document.getElementById(id);
 const isGM=member=>!!(member?.gm||member?.role==='gm');
 const isEditorView=()=>!!state&&isGM(state.you)&&!state.playerPreview&&!previewSwitchPending;
 const usesPlayerInteraction=()=>!!state&&!isEditorView();
-const characterPanel=document.createElement('section');characterPanel.id='characterPanel';characterPanel.hidden=true;characterPanel.innerHTML=`<div id="characterPending" class="muted" hidden>Загрузка персонажа…</div><div id="characterUnavailable" class="muted" hidden>Персонаж недоступен.</div><div id="characterSummary" hidden><div class="character-avatar"><img id="characterAvatar" alt="" hidden><span id="characterAvatarEmpty">◇</span></div><h2 id="characterName"></h2><label id="characterRenameRow">Имя персонажа<input id="characterRename" maxlength="200"></label><p id="characterMeta" class="muted"></p><button id="editCharacterPreset" class="subtle wide" type="button" hidden>Редактировать шаблон</button><div id="characterAvatarControls"><label class="file-button">Загрузить avatar<input id="characterAvatarUpload" type="file" accept="image/png,image/jpeg" hidden></label><button id="characterAvatarReset" class="subtle wide" type="button">Сбросить avatar</button></div><h3>Характеристики</h3><div id="characterStats"></div><h3>Ресурсы</h3><div id="characterResources"></div><form id="characterStatAdd"><div class="character-add-stat"><input id="characterStatID" placeholder="ID характеристики" maxlength="128" required><select id="characterStatType"><option value="integer">Целое</option><option value="number">Число</option><option value="boolean">Да / нет</option><option value="string">Строка</option></select></div><input id="characterStatValue" placeholder="Значение"><label id="characterStatBooleanLabel" class="check" hidden><input id="characterStatBoolean" type="checkbox"> Значение</label><button class="subtle wide" type="submit">Добавить характеристику</button></form><h3>Действия</h3><div id="characterActions"></div><div id="characterActionManage" hidden><select id="characterActionAdd"></select><button id="characterActionAddButton" class="subtle wide" type="button">Добавить действие</button><button id="characterActionMore" class="subtle wide" type="button" hidden>Ещё действия</button></div></div><div id="characterGM" class="gm character-gm"><label>Создать из пресета<select id="characterPreset"></select></label><button id="characterCreatePreset" class="primary wide" type="button">Назначить новый instance</button><button id="characterPresetMore" class="subtle wide" type="button" hidden>Ещё пресеты</button><div class="divider"></div><label>Сохранённый персонаж<select id="characterRoster"></select></label><button id="characterLink" class="subtle wide" type="button">Назначить сохранённого</button><button id="characterRosterMore" class="subtle wide" type="button" hidden>Показать ещё</button><label id="characterPersistentLabel" class="check" hidden><input id="characterPersistent" type="checkbox"> Сохранить в кампании</label></div>`;document.querySelector('.inspector .panel-heading').after(characterPanel);
-const tokenCreateControls=document.createElement('div');tokenCreateControls.className='gm character-gm';tokenCreateControls.innerHTML=`<select id="tokenCreatePreset"></select><button id="addPresetToken" class="subtle wide" type="button">Создать из шаблона</button><select id="tokenCreateCharacter"></select><button id="addCharacterToken" class="subtle wide" type="button">Создать для существующего персонажа</button>`;$('emptyTokens').after(tokenCreateControls);$('characterCreatePreset').textContent='Сменить персонажа: новый из шаблона';$('characterLink').textContent='Сменить на существующего персонажа';$('tokenName').maxLength=200;$('tokenName').closest('label').firstChild.textContent='Имя персонажа';
-const characterIDToggle=document.createElement('button');characterIDToggle.id='characterIDToggle';characterIDToggle.className='subtle gm';characterIDToggle.type='button';characterIDToggle.title='Показывать короткие Character ID';characterIDToggle.textContent='ID';$('viewMode').after(characterIDToggle);const characterCopyID=document.createElement('button');characterCopyID.id='characterCopyID';characterCopyID.className='subtle character-copy-id';characterCopyID.type='button';characterCopyID.textContent='Копировать ID';$('characterName').after(characterCopyID);
+const characterPanel=document.createElement('section');
+characterPanel.id='characterPanel';
+characterPanel.hidden=true;
+characterPanel.innerHTML=`
+  <div id="characterPending" class="muted" hidden>Загрузка персонажа…</div>
+  <div id="characterUnavailable" class="muted" hidden>Персонаж недоступен.</div>
+  <div id="characterSummary" hidden>
+    <div class="character-head">
+      <div class="character-avatar"><img id="characterAvatar" alt="" hidden><span id="characterAvatarEmpty">◇</span></div>
+      <div class="character-head-text"><h2 id="characterName"></h2><p id="characterSubtitle" class="muted"></p></div>
+      <div class="character-head-tools">
+        <button id="characterMechanicsToggle" type="button" class="subtle character-tool" title="Редактировать механику" aria-label="Редактировать механику" aria-expanded="false">✎</button>
+        <button id="characterSettingsToggle" type="button" class="subtle character-tool" title="Настройки персонажа" aria-label="Настройки персонажа" aria-expanded="false">⚙</button>
+      </div>
+    </div>
+    <div class="character-tabs" role="tablist" aria-label="Разделы персонажа">
+      <button id="characterTabStats" type="button" role="tab" aria-controls="characterStatsTab">Статы</button>
+      <button id="characterTabActions" type="button" role="tab" aria-controls="characterActionsTab">Действия</button>
+    </div>
+    <div id="characterStatsTab" role="tabpanel" aria-labelledby="characterTabStats">
+      <section class="character-section"><h3>Характеристики</h3><div id="characterStats" class="character-stat-grid"></div></section>
+      <section class="character-section"><h3>Ресурсы</h3><div id="characterResources" class="character-resource-list"></div></section>
+    </div>
+    <div id="characterActionsTab" role="tabpanel" aria-labelledby="characterTabActions" hidden>
+      <div id="characterActions" class="character-action-grid"></div>
+    </div>
+    <div id="characterSettingsPanel" class="character-settings" hidden>
+      <h3>Настройки персонажа</h3>
+      <details id="characterIdentitySection" class="character-settings-section"><summary>Персонаж</summary>
+        <label id="characterRenameRow">Имя персонажа<input id="characterRename" maxlength="200"></label>
+        <div id="characterAvatarControls"><label class="file-button">Загрузить avatar<input id="characterAvatarUpload" type="file" accept="image/png,image/jpeg" hidden></label><button id="characterAvatarReset" class="subtle wide" type="button">Сбросить avatar</button></div>
+        <label id="characterPersistentLabel" class="check gm" hidden><input id="characterPersistent" type="checkbox"> Сохранить в кампании</label>
+      </details>
+      <details id="characterMechanicsSection" class="character-settings-section" hidden><summary>Редактирование механики</summary>
+        <h4>Характеристики</h4><div id="characterStatEditor"></div>
+        <form id="characterStatAdd"><div class="character-add-stat"><input id="characterStatID" placeholder="ID характеристики" maxlength="128" required><select id="characterStatType"><option value="integer">Целое</option><option value="number">Число</option><option value="boolean">Да / нет</option><option value="string">Строка</option></select></div><input id="characterStatValue" placeholder="Значение"><label id="characterStatBooleanLabel" class="check" hidden><input id="characterStatBoolean" type="checkbox"> Значение</label><button class="subtle wide" type="submit">Добавить характеристику</button></form>
+        <h4>Начальные значения ресурсов</h4><div id="characterResourceInitialEditor"></div>
+        <h4>Действия</h4><div id="characterActionRemoveList"></div>
+        <div id="characterActionManage" hidden><select id="characterActionAdd"></select><button id="characterActionAddButton" class="subtle wide" type="button">Добавить действие</button><button id="characterActionMore" class="subtle wide" type="button" hidden>Ещё действия</button></div>
+        <button id="editCharacterPreset" class="subtle wide" type="button" hidden>Редактировать шаблон</button>
+      </details>
+      <details id="characterLinkSection" class="character-settings-section gm" hidden><summary>Связь токена с персонажем</summary>
+        <div id="characterGM" class="character-gm"><label>Создать из пресета<select id="characterPreset"></select></label><button id="characterCreatePreset" class="primary wide" type="button">Сменить персонажа: новый из шаблона</button><button id="characterPresetMore" class="subtle wide" type="button" hidden>Ещё пресеты</button><div class="divider"></div><label>Сохранённый персонаж<select id="characterRoster"></select></label><button id="characterLink" class="subtle wide" type="button">Сменить на существующего персонажа</button><button id="characterRosterMore" class="subtle wide" type="button" hidden>Показать ещё</button></div>
+      </details>
+      <details id="characterTechnicalSection" class="character-settings-section gm" hidden><summary>Техническая информация</summary><dl class="character-technical"><dt>Character ID</dt><dd id="characterTechnicalID"></dd><dt>Пресет</dt><dd id="characterTechnicalPreset"></dd><dt>Механика</dt><dd id="characterTechnicalMechanics"></dd><dt>Artwork</dt><dd id="characterTechnicalArtwork"></dd></dl></details>
+    </div>
+  </div>`;
+document.querySelector('.inspector .panel-heading').after(characterPanel);
+// Settings remain reachable if a linked character becomes unavailable.
+$('characterSummary').after($('characterSettingsPanel'));
+const characterRecoveryToggle=document.createElement('button');characterRecoveryToggle.id='characterRecoveryToggle';characterRecoveryToggle.type='button';characterRecoveryToggle.className='subtle wide';characterRecoveryToggle.textContent='Сменить персонажа';characterRecoveryToggle.hidden=true;$('characterUnavailable').after(characterRecoveryToggle);characterRecoveryToggle.onclick=()=>{characterSettingsOpen=!characterSettingsOpen;$('characterSettingsPanel').hidden=!characterSettingsOpen;};
+const tokenCreateControls=document.createElement('div');tokenCreateControls.className='gm character-gm';tokenCreateControls.innerHTML=`<select id="tokenCreatePreset"></select><button id="addPresetToken" class="subtle wide" type="button">Создать из шаблона</button><select id="tokenCreateCharacter"></select><button id="addCharacterToken" class="subtle wide" type="button">Создать для существующего персонажа</button>`;
+$('emptyTokens').after(tokenCreateControls);
+$('tokenName').maxLength=200;$('tokenName').closest('label').firstChild.textContent='Имя персонажа';
+const characterIDToggle=document.createElement('button');characterIDToggle.id='characterIDToggle';characterIDToggle.className='subtle gm';characterIDToggle.type='button';characterIDToggle.title='Показывать короткие Character ID';characterIDToggle.textContent='ID';$('viewMode').after(characterIDToggle);
 const resourceOverlaySettings=document.createElement('details');resourceOverlaySettings.id='resourceOverlaySettings';resourceOverlaySettings.className='gm resource-overlay-settings';resourceOverlaySettings.innerHTML=`<summary>Ресурсы на токенах</summary><p class="muted">До двух сверху и двух снизу.</p><div id="resourceOverlayRows"></div>`;tokenCreateControls.after(resourceOverlaySettings);
 const CONTENT_COMMANDS=new Set(['move','final','properties','create','delete','floorCreate','floorUpdate','floorDelete','layerCreate','layerUpdate','layerDelete','elementCreate','elementUpdate','elementDelete','elementPreview','elementTransform','transitionCreate','transitionUpdate','transitionDelete','assetRetention','addWalkableRect','subtractWalkableRect','moveWalkableComponent','deleteWalkableComponent','setWalkableMode','setRenderBounds','clearRenderBounds']);
 const UPLOAD_LIMIT_BYTES=256*1024*1024;
@@ -133,6 +185,24 @@ function finishSidebarDrag(e){if(!sidebarDrag||sidebarDrag.pointerId!==e.pointer
 sidebarResize.onpointerup=finishSidebarDrag;sidebarResize.onpointercancel=finishSidebarDrag;
 sidebarResize.onkeydown=e=>{if(e.key==='ArrowLeft'){const {min}=sidebarLimits();if(sidebarWidth<=min)setSidebarCollapsed(true);else setSidebarWidth(sidebarWidth-16);e.preventDefault();}else if(e.key==='ArrowRight'){setSidebarCollapsed(false);setSidebarWidth(sidebarWidth+16);e.preventDefault();}};
 window.addEventListener('resize',()=>{if(!sidebarFrame.classList.contains('collapsed'))setSidebarWidth(sidebarWidth,false);});
+
+// Keep the inspector frame outside its scrollable contents so the drag handle never scrolls away.
+const inspector=document.querySelector('.inspector'),inspectorFrame=document.createElement('div'),inspectorResize=document.createElement('div');
+inspectorFrame.className='inspector-frame';inspectorResize.className='inspector-resize';
+inspectorResize.tabIndex=0;inspectorResize.setAttribute('role','separator');inspectorResize.setAttribute('aria-orientation','vertical');inspectorResize.setAttribute('aria-label','Изменить ширину правой панели');
+inspector.before(inspectorFrame);inspectorFrame.append(inspector,inspectorResize);
+const INSPECTOR_WIDTH_KEY='atlas-inspector-width-v1';let inspectorWidth=360,inspectorDrag=null;
+function inspectorLimits(){const sidebar=sidebarFrame.classList.contains('collapsed')?0:sidebarFrame.getBoundingClientRect().width;return {min:280,max:Math.max(280,Math.min(600,window.innerWidth-sidebar-260))};}
+function setInspectorWidth(value,persist=true){const {min,max}=inspectorLimits();inspectorWidth=Math.min(max,Math.max(min,Number(value)||360));inspectorFrame.style.setProperty('--inspector-width',`${inspectorWidth}px`);inspectorResize.setAttribute('aria-valuenow',String(Math.round(inspectorWidth)));inspectorResize.setAttribute('aria-valuemin',String(min));inspectorResize.setAttribute('aria-valuemax',String(max));if(persist)storeSidebarSetting(INSPECTOR_WIDTH_KEY,String(Math.round(inspectorWidth)));}
+try{const stored=Number(localStorage.getItem(INSPECTOR_WIDTH_KEY));if(Number.isFinite(stored)&&stored>0)inspectorWidth=stored;}catch{}
+setInspectorWidth(inspectorWidth,false);
+inspectorResize.onpointerdown=e=>{if(e.button!==0||window.innerWidth<=800)return;inspectorDrag={pointerId:e.pointerId,startX:e.clientX,startWidth:inspectorFrame.getBoundingClientRect().width};inspectorResize.setPointerCapture(e.pointerId);document.body.classList.add('inspector-resizing');e.preventDefault();};
+inspectorResize.onpointermove=e=>{if(!inspectorDrag||inspectorDrag.pointerId!==e.pointerId)return;setInspectorWidth(inspectorDrag.startWidth+inspectorDrag.startX-e.clientX,false);};
+function finishInspectorDrag(e){if(!inspectorDrag||inspectorDrag.pointerId!==e.pointerId)return;inspectorDrag=null;document.body.classList.remove('inspector-resizing');setInspectorWidth(inspectorWidth);}
+inspectorResize.onpointerup=finishInspectorDrag;inspectorResize.onpointercancel=e=>{if(!inspectorDrag||inspectorDrag.pointerId!==e.pointerId)return;const previous=inspectorDrag.startWidth;inspectorDrag=null;document.body.classList.remove('inspector-resizing');setInspectorWidth(previous,false);};
+inspectorResize.onkeydown=e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){setInspectorWidth(inspectorWidth+(e.key==='ArrowLeft'?16:-16));e.preventDefault();}};
+window.addEventListener('resize',()=>setInspectorWidth(inspectorWidth,false));
+
 let bytesIn = 0, bytesOut = 0, tileBytes = 0, stopped = false, toastTimer, retry = 0;
 let wanted = new Set(), activeLoads = 0, cacheHits = 0;
 const visuals = new Map(), memory = new Map(), failures = new Map(), pending = new Map();
@@ -439,56 +509,137 @@ async function showCharacterAvatar(assetID,characterID){
 function confirmMechanicalEdit(snapshot){if(!snapshot?.permissions?.manage)return false;const instance=snapshot.instance;if(!instance?.presetId||instance.materialized||confirmedMechanicalEdits.has(instance.id))return true;if(!confirm('Изменение механики создаст самостоятельный снимок персонажа. Дальнейшие изменения механики шаблона перестанут применяться. Продолжить?'))return false;confirmedMechanicalEdits.add(instance.id);return true;}
 function queueCharacterStat(characterID,statID,value,isNew=false){if(!confirmMechanicalEdit(characterWatch.snapshot))return false;if(!characterWatch.snapshot?.permissions?.edit||characterWatch.characterId!==characterID)return false;if(outbox?.data.queue.some(command=>command.type==='characterStatSet'&&command.characterId===characterID&&command.statId===statID&&sameValue(command.statValue,value)))return true;if(isNew)pendingNewStats.add(`${characterID}/${statID}`);return queueCommand('characterStatSet',{characterId:characterID,statId:statID,statValue:value});}
 function scheduleCharacterStat(characterID,statID,value){characterDrafts.set(characterID,statID,value);const key=`${characterID}/${statID}`;clearTimeout(characterStatTimers.get(key));characterStatTimers.set(key,setTimeout(()=>{characterStatTimers.delete(key);if(characterWatch.characterId===characterID&&characterWatch.snapshot?.permissions?.edit)queueCharacterStat(characterID,statID,value);},FORM_AUTOSAVE_DELAY));}
+function makeCharacterStatInput(snapshot,statID,definition,value){
+ const input=document.createElement('input');input.dataset.statId=statID;
+ input.disabled=!snapshot.permissions?.manage||!isEditorView();
+ if(definition.type==='boolean'){input.type='checkbox';input.checked=!!value.value;}
+ else{input.type=definition.type==='string'?'text':'number';input.value=statInputValue(value);if(definition.type==='integer')input.step='1';else if(definition.type==='number')input.step='any';}
+ const remember=()=>{try{const next=statValueFromInput(definition.type,input.value,input.checked);scheduleCharacterStat(snapshot.characterId,statID,next);}catch(error){input.setCustomValidity(error.message);return false;}input.setCustomValidity('');return true;};
+ input.addEventListener('input',remember);
+ input.addEventListener('change',()=>{if(remember()){const key=`${snapshot.characterId}/${statID}`;clearTimeout(characterStatTimers.get(key));characterStatTimers.delete(key);queueCharacterStat(snapshot.characterId,statID,characterDrafts.get(snapshot.characterId)[statID]);}});
+ input.addEventListener('blur',()=>{if(input.checkValidity()&&Object.hasOwn(characterDrafts.get(snapshot.characterId),statID))queueCharacterStat(snapshot.characterId,statID,characterDrafts.get(snapshot.characterId)[statID]);});
+ return input;
+}
 function renderCharacterStats(snapshot){
- const container=$('characterStats');container.replaceChildren();const effective=snapshot.effective?.stats||{},drafts=characterDrafts.get(snapshot.characterId),ids=Object.keys(effective).sort((a,b)=>(snapshot.statDefinitions?.[a]?.name||a).localeCompare(snapshot.statDefinitions?.[b]?.name||b));
- for(const statID of ids){const definition=snapshot.statDefinitions?.[statID]||{id:statID,name:statID,type:effective[statID].type},server=effective[statID],value=Object.hasOwn(drafts,statID)?drafts[statID]:server,override=Object.hasOwn(snapshot.instance?.statOverrides||{},statID),row=document.createElement('div');row.className='character-stat';const heading=document.createElement('div');heading.className='character-stat-heading';const name=document.createElement('strong');name.textContent=definition.name||statID;const source=document.createElement('small');source.textContent=snapshot.instance?.materialized?'Самостоятельная механика':'Следует шаблону';heading.append(name,source);const input=document.createElement('input');input.dataset.statId=statID;input.disabled=!snapshot.permissions?.manage;if(definition.type==='boolean'){input.type='checkbox';input.checked=!!value.value;}else{input.type=definition.type==='string'?'text':'number';input.value=statInputValue(value);if(definition.type==='integer')input.step='1';else if(definition.type==='number')input.step='any';}
-  const remember=()=>{try{const next=statValueFromInput(definition.type,input.value,input.checked);scheduleCharacterStat(snapshot.characterId,statID,next);}catch(error){input.setCustomValidity(error.message);return false;}input.setCustomValidity('');return true;};input.addEventListener('input',()=>{remember();});input.addEventListener('change',()=>{if(remember()){const key=`${snapshot.characterId}/${statID}`;clearTimeout(characterStatTimers.get(key));characterStatTimers.delete(key);queueCharacterStat(snapshot.characterId,statID,characterDrafts.get(snapshot.characterId)[statID]);}});input.addEventListener('blur',()=>{if(input.checkValidity()&&Object.hasOwn(characterDrafts.get(snapshot.characterId),statID))queueCharacterStat(snapshot.characterId,statID,characterDrafts.get(snapshot.characterId)[statID]);});row.append(heading,input);
-  if(override){const reset=document.createElement('button');reset.type='button';reset.className='subtle character-stat-reset';reset.textContent='Сбросить к пресету';reset.disabled=!snapshot.permissions?.manage;reset.onclick=()=>{const key=`${snapshot.characterId}/${statID}`;clearTimeout(characterStatTimers.get(key));characterStatTimers.delete(key);characterDrafts.confirm(snapshot.characterId,{[statID]:characterDrafts.get(snapshot.characterId)[statID]});if(!confirmMechanicalEdit(snapshot))return;queueCommand('characterStatReset',{characterId:snapshot.characterId,statId:statID});};row.append(reset);}container.append(row);
+ const container=$('characterStats'),editor=$('characterStatEditor');container.replaceChildren();editor.replaceChildren();
+ const effective=snapshot.effective?.stats||{},drafts=characterDrafts.get(snapshot.characterId),ids=Object.keys(effective).sort((a,b)=>(snapshot.statDefinitions?.[a]?.name||a).localeCompare(snapshot.statDefinitions?.[b]?.name||b)||a.localeCompare(b));
+ for(const statID of ids){
+  const definition=snapshot.statDefinitions?.[statID]||{id:statID,name:statID,type:effective[statID].type},server=effective[statID],value=Object.hasOwn(drafts,statID)?drafts[statID]:server;
+  const card=document.createElement('div');card.className='character-stat-card';const name=document.createElement('span');name.className='character-stat-name';name.textContent=definition.name||statID;
+  const output=document.createElement('strong');output.className='character-stat-value';output.textContent=definition.type==='boolean'?(value.value?'Да':'Нет'):String(value.value??'');card.title=definition.name||statID;card.append(name,output);container.append(card);
+  if(!snapshot.permissions?.manage||!isEditorView())continue;
+  const row=document.createElement('div');row.className='character-stat-edit';const label=document.createElement('label');label.textContent=definition.name||statID;label.append(makeCharacterStatInput(snapshot,statID,definition,value));row.append(label);
+  if(Object.hasOwn(snapshot.instance?.statOverrides||{},statID)){
+   const reset=document.createElement('button');reset.type='button';reset.className='subtle character-stat-reset';reset.textContent='Сбросить к пресету';reset.onclick=()=>{const key=`${snapshot.characterId}/${statID}`;clearTimeout(characterStatTimers.get(key));characterStatTimers.delete(key);characterDrafts.confirm(snapshot.characterId,{[statID]:characterDrafts.get(snapshot.characterId)[statID]});if(!confirmMechanicalEdit(snapshot))return;queueCommand('characterStatReset',{characterId:snapshot.characterId,statId:statID});};row.append(reset);
+  }
+  editor.append(row);
  }
- $('characterStatAdd').hidden=!snapshot.permissions?.manage;
+ if(!ids.length)container.textContent='Нет характеристик.';
+ $('characterStatAdd').hidden=!snapshot.permissions?.manage||!isEditorView();
+}
+function createCharacterResourceInput(snapshot,statID,definition,resource,field){
+ const input=document.createElement('input');input.type=definition.type==='boolean'?'checkbox':definition.type==='string'?'text':'number';
+ if(input.type==='number')input.step=definition.type==='integer'?'1':'any';
+ if(input.type==='checkbox')input.checked=!!resource[field].value;else input.value=statInputValue(resource[field]);
+ input.disabled=field==='current'?!snapshot.permissions?.edit:!snapshot.permissions?.manage||!isEditorView();
+ input.setAttribute('aria-label',`${definition.name||statID}: ${field==='current'?'текущее':'начальное'} значение`);
+ input.onchange=()=>{try{const value=statValueFromInput(definition.type,input.value,input.checked);if(field==='initial'&&!confirmMechanicalEdit(snapshot))return;queueCommand(field==='current'?'characterResourceCurrentSet':'characterResourceInitialSet',{characterId:snapshot.characterId,statId:statID,statValue:value});}catch(error){toast(error.message);}};
+ return input;
 }
 function renderCharacterResources(snapshot){
- const container=$('characterResources');container.replaceChildren();
+ const container=$('characterResources'),editor=$('characterResourceInitialEditor');container.replaceChildren();editor.replaceChildren();
  const resources=snapshot.effective?.resources||{};
- for(const [statID,resource] of Object.entries(resources).sort(([a],[b])=>a.localeCompare(b))){
-   const definition=snapshot.statDefinitions?.[statID]||{type:resource.initial.type,name:statID};
-   const row=document.createElement('section');row.className='character-stat character-resource';
-   const title=document.createElement('strong');title.textContent=definition.name||statID;row.append(title);
-   const values=document.createElement('div');values.className='resource-values';
-   for(const field of ['current','initial']){
-     const label=document.createElement('label');label.textContent=field;const input=document.createElement('input');
-     input.type=definition.type==='boolean'?'checkbox':definition.type==='string'?'text':'number';if(input.type==='number')input.step=definition.type==='integer'?'1':'any';
-     if(input.type==='checkbox')input.checked=!!resource[field].value;else input.value=statInputValue(resource[field]);
-     input.disabled=field==='current'?!snapshot.permissions?.edit:!snapshot.permissions?.manage;
-     input.onchange=()=>{try{const value=statValueFromInput(definition.type,input.value,input.checked);if(field==='initial'&&!confirmMechanicalEdit(snapshot))return;queueCommand(field==='current'?'characterResourceCurrentSet':'characterResourceInitialSet',{characterId:snapshot.characterId,statId:statID,statValue:value});}catch(error){toast(error.message);}};
-     label.append(input);values.append(label);
-   }
-   const divider=document.createElement('span');divider.className='resource-divider';divider.textContent='/';row.append(divider,values);
-   if(Object.hasOwn(snapshot.instance?.resourceCurrent||{},statID)&&snapshot.permissions?.edit){const reset=document.createElement('button');reset.type='button';reset.className='subtle';reset.textContent='Вернуть current к initial';reset.onclick=()=>queueCommand('characterResourceCurrentReset',{characterId:snapshot.characterId,statId:statID});row.append(reset);}
-   container.append(row);
+ for(const [statID,resource] of Object.entries(resources).sort(([a],[b])=>(snapshot.statDefinitions?.[a]?.name||a).localeCompare(snapshot.statDefinitions?.[b]?.name||b)||a.localeCompare(b))){
+  const definition=snapshot.statDefinitions?.[statID]||{type:resource.initial.type,name:statID};
+  const row=document.createElement('section');row.className='character-resource-card';
+  const head=document.createElement('div');head.className='character-resource-head';const title=document.createElement('strong');title.textContent=definition.name||statID;
+  const count=document.createElement('span');count.className='character-resource-count';count.textContent=`${resource.current.value} / ${resource.initial.value}`;head.append(title,count);row.append(head);
+  const edit=document.createElement('div');edit.className='character-resource-controls';
+  const input=createCharacterResourceInput(snapshot,statID,definition,resource,'current');
+  if(input.type==='number'){
+   const decrement=document.createElement('button'),increment=document.createElement('button');
+   for(const [button,delta,text] of [[decrement,-1,'−'],[increment,1,'+']]){button.type='button';button.className='subtle character-resource-step';button.textContent=text;button.disabled=input.disabled;button.setAttribute('aria-label',`${definition.name||statID}: ${delta>0?'увеличить':'уменьшить'} на 1`);button.onclick=()=>{const next=Number(input.value)+delta;if(!Number.isFinite(next)||(definition.type==='integer'&&!Number.isSafeInteger(next)))return;input.value=String(next);input.onchange();};}
+   edit.append(decrement,input,increment);
+  }else edit.append(input);
+  row.append(edit);
+  if(Object.hasOwn(snapshot.instance?.resourceCurrent||{},statID)&&snapshot.permissions?.edit){const reset=document.createElement('button');reset.type='button';reset.className='subtle character-resource-reset';reset.textContent='Восстановить начальное';reset.onclick=()=>queueCommand('characterResourceCurrentReset',{characterId:snapshot.characterId,statId:statID});row.append(reset);}
+  container.append(row);
+  if(snapshot.permissions?.manage&&isEditorView()){
+   const label=document.createElement('label');label.className='character-resource-initial';label.textContent=definition.name||statID;label.append(createCharacterResourceInput(snapshot,statID,definition,resource,'initial'));editor.append(label);
+  }
  }
  if(!container.children.length)container.textContent='Нет ресурсов.';
 }
 function formatRoll(roll){const modifier=[roll.modifierStat,roll.modifierFixed?String(roll.modifierFixed):''].filter(Boolean).join(' + ');return `${roll.count}d${roll.sides}${modifier?` + ${modifier}`:''}`;}
-function renderCharacterActions(snapshot){const container=$('characterActions');container.replaceChildren();for(const actionID of snapshot.effective?.actionIds||[]){const action=snapshot.actions?.[actionID],row=document.createElement('div');row.className='character-action';const title=document.createElement('strong');title.textContent=action?.name||actionID;row.append(title);if(action?.description){const description=document.createElement('p');description.textContent=action.description;row.append(description);}for(const roll of action?.rolls||[]){const button=document.createElement('button');button.type='button';button.className='subtle character-roll';button.textContent=`${roll.name||roll.id}: ${formatRoll(roll)}`;button.onclick=()=>dice.rollAction(snapshot.characterId,actionID,roll.id);row.append(button);}if(snapshot.permissions?.manage&&isEditorView()){const remove=document.createElement('button');remove.type='button';remove.className='danger';remove.textContent='Убрать';remove.onclick=()=>confirmMechanicalEdit(snapshot)&&queueCommand('characterActionRemove',{characterId:snapshot.characterId,actionId:actionID});row.append(remove);}container.append(row);}if(!container.children.length)container.textContent='Нет действий.';
- const effective=new Set(snapshot.effective?.actionIds||[]),available=characterCatalog.actions.filter(action=>!effective.has(action.id));fillCatalogSelect($('characterActionAdd'),available,characterCatalog.loading.has('actions')?'Загрузка…':'Выберите действие');const manage=snapshot.permissions?.manage&&isEditorView();$('characterActionManage').hidden=!manage;$('characterActionAddButton').disabled=!$('characterActionAdd').value;$('characterActionMore').hidden=!manage||!characterCatalog.next.actions;$('characterActionMore').disabled=characterCatalog.loading.has('actions');
+function renderCharacterActions(snapshot){
+ const container=$('characterActions'),removal=$('characterActionRemoveList');container.replaceChildren();removal.replaceChildren();
+ const ids=[...(snapshot.effective?.actionIds||[])].sort((a,b)=>(snapshot.actions?.[a]?.name||a).localeCompare(snapshot.actions?.[b]?.name||b)||a.localeCompare(b));
+ for(const actionID of ids){
+  const action=snapshot.actions?.[actionID],row=document.createElement('section');row.className='character-action-card';const title=document.createElement('strong');title.textContent=action?.name||actionID;row.append(title);
+  if(action?.description){const description=document.createElement('p');description.className='character-action-description';description.textContent=action.description;row.append(description);if(action.description.length>120){description.classList.add('collapsed');const toggle=document.createElement('button');toggle.type='button';toggle.className='character-description-toggle subtle';toggle.textContent='Подробнее';toggle.onclick=()=>{const collapsed=description.classList.toggle('collapsed');toggle.textContent=collapsed?'Подробнее':'Свернуть';};row.append(toggle);}}
+  for(const roll of action?.rolls||[]){const button=document.createElement('button');button.type='button';button.className='subtle character-roll';button.textContent=`${roll.name||roll.id}: ${formatRoll(roll)}`;button.onclick=()=>dice.rollAction(snapshot.characterId,actionID,roll.id);row.append(button);}
+  container.append(row);
+  if(snapshot.permissions?.manage&&isEditorView()){
+   const removeRow=document.createElement('div');removeRow.className='character-action-remove';const name=document.createElement('span');name.textContent=action?.name||actionID;const remove=document.createElement('button');remove.type='button';remove.className='danger';remove.textContent='Убрать';remove.onclick=()=>confirmMechanicalEdit(snapshot)&&queueCommand('characterActionRemove',{characterId:snapshot.characterId,actionId:actionID});removeRow.append(name,remove);removal.append(removeRow);
+  }
+ }
+ if(!ids.length)container.textContent='Нет действий.';
+ const effective=new Set(ids),available=characterCatalog.actions.filter(action=>!effective.has(action.id));fillCatalogSelect($('characterActionAdd'),available,characterCatalog.loading.has('actions')?'Загрузка…':'Выберите действие');const manage=snapshot.permissions?.manage&&isEditorView();$('characterActionManage').hidden=!manage;$('characterActionAddButton').disabled=!$('characterActionAdd').value;$('characterActionMore').hidden=!manage||!characterCatalog.next.actions;$('characterActionMore').disabled=characterCatalog.loading.has('actions');
 }
+let characterActiveTab='stats',characterSettingsOpen=false,characterMechanicsOpen=false,characterDisplayedID='';
+function updateCharacterPanelMode(){
+ $('characterTabStats').setAttribute('aria-selected',String(characterActiveTab==='stats'));
+ $('characterTabActions').setAttribute('aria-selected',String(characterActiveTab==='actions'));
+ $('characterStatsTab').hidden=characterActiveTab!=='stats';$('characterActionsTab').hidden=characterActiveTab!=='actions';
+ $('characterSettingsPanel').hidden=!characterSettingsOpen;
+ $('characterSettingsToggle').setAttribute('aria-expanded',String(characterSettingsOpen));
+ $('characterMechanicsToggle').setAttribute('aria-expanded',String(characterSettingsOpen&&characterMechanicsOpen));
+ $('characterMechanicsToggle').classList.toggle('active',characterSettingsOpen&&characterMechanicsOpen);
+
+}
+$('characterTabStats').onclick=()=>{characterActiveTab='stats';updateCharacterPanelMode();};
+$('characterTabActions').onclick=()=>{characterActiveTab='actions';updateCharacterPanelMode();};
+$('characterSettingsToggle').onclick=()=>{characterSettingsOpen=!characterSettingsOpen;if(!characterSettingsOpen)characterMechanicsOpen=false;updateCharacterPanelMode();};
+$('characterMechanicsToggle').onclick=()=>{characterMechanicsOpen=!$('characterMechanicsSection').open;characterSettingsOpen=true;$('characterMechanicsSection').open=characterMechanicsOpen;updateCharacterPanelMode();};
 function renderCharacterPanel(){
- const token=state?.tokens?.[selected],snapshot=characterWatch.snapshot,linkedID=token?.characterInstanceId||'',gm=isEditorView();characterPanel.hidden=!token;characterPanel.dataset.characterId=linkedID;
-	fillCatalogSelect($('tokenCreatePreset'),characterCatalog.presets,characterCatalog.loading.has('presets')?'Загрузка…':'Шаблон для нового токена');fillCatalogSelect($('tokenCreateCharacter'),characterCatalog.roster,characterCatalog.loading.has('roster')?'Загрузка…':'Существующий персонаж');$('addPresetToken').disabled=!gm||!$('tokenCreatePreset').value;$('addCharacterToken').disabled=!gm||!$('tokenCreateCharacter').value;
- if(!token){characterCopyID.hidden=true;showCharacterAvatar('','');return;}
+ const token=state?.tokens?.[selected],snapshot=characterWatch.snapshot,linkedID=token?.characterInstanceId||'',gm=isEditorView();characterPanel.hidden=!token;
+ if(characterDisplayedID!==linkedID){characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';$('characterMechanicsSection').open=false;}
+ characterPanel.dataset.characterId=linkedID;
+ fillCatalogSelect($('tokenCreatePreset'),characterCatalog.presets,characterCatalog.loading.has('presets')?'Загрузка…':'Шаблон для нового токена');fillCatalogSelect($('tokenCreateCharacter'),characterCatalog.roster,characterCatalog.loading.has('roster')?'Загрузка…':'Существующий персонаж');$('addPresetToken').disabled=!gm||!$('tokenCreatePreset').value;$('addCharacterToken').disabled=!gm||!$('tokenCreateCharacter').value;
+ if(!token){$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;showCharacterAvatar('','');return;}
  const ready=!!linkedID&&snapshot?.characterId===linkedID,instance=ready?snapshot.instance:null;
-	const unavailable=!!linkedID&&!ready&&['accessRevoked','unavailable','closed'].includes(characterWatchReason);$('characterUnavailable').hidden=!unavailable;$('characterPending').hidden=ready||unavailable;$('characterSummary').hidden=!ready;
- if(ready){$('editCharacterPreset').hidden=!gm||!instance.presetId;$('characterName').textContent=characterDisplayTitle(snapshot.effective?.name||instance.name||'Без имени',snapshot.characterId);characterCopyID.hidden=!isGM(state?.you);$('characterRenameRow').hidden=!snapshot.permissions?.edit;if(document.activeElement!==$('characterRename'))$('characterRename').value=instance.name||'';const preset=snapshot.preset?.name||instance.presetId,avatarOverride=Object.hasOwn(instance,'avatarAssetId');$('characterMeta').textContent=[preset?`Пресет: ${preset}`:'Без пресета',instance.materialized?'Механика самостоятельная':'Механика следует шаблону',snapshot.effective?.artwork?.source==='character'?'Собственный artwork':snapshot.effective?.artwork?.status==='missing'?'Artwork отсутствует':snapshot.effective?.artwork?.source==='preset'?'Artwork шаблона':'Placeholder'].join(' · ');renderCharacterStats(snapshot);renderCharacterResources(snapshot);renderCharacterActions(snapshot);$('characterAvatarControls').hidden=!snapshot.permissions?.edit;$('characterAvatarReset').disabled=!snapshot.permissions?.edit||!avatarOverride;showCharacterAvatar(snapshot.effective?.hasAvatar?snapshot.effective.avatarAssetId:'',snapshot.characterId);}else{characterCopyID.hidden=true;showCharacterAvatar('','');}
+ const unavailable=!!linkedID&&!ready&&['accessRevoked','unavailable','closed'].includes(characterWatchReason);$('characterUnavailable').hidden=!unavailable;$('characterPending').hidden=ready||unavailable;$('characterSummary').hidden=!ready;characterRecoveryToggle.hidden=!unavailable||!gm;$('characterIdentitySection').hidden=!ready;$('characterLinkSection').hidden=!gm;$('characterTechnicalSection').hidden=!gm||!ready;$('characterMechanicsSection').hidden=!ready||!gm;if(!ready)$('characterSettingsPanel').hidden=!gm||!characterSettingsOpen;
+ if(ready){
+  const canManage=!!snapshot.permissions?.manage&&gm;
+  $('editCharacterPreset').hidden=!canManage||!instance.presetId;
+  $('characterMechanicsToggle').hidden=!canManage;
+  $('characterMechanicsSection').hidden=!canManage;
+  $('characterLinkSection').hidden=!gm;
+  $('characterTechnicalSection').hidden=!gm;
+  $('characterName').textContent=characterDisplayTitle(snapshot.effective?.name||instance.name||'Без имени',snapshot.characterId);
+  $('characterSubtitle').textContent=snapshot.preset?.name||'';
+  $('characterRenameRow').hidden=!snapshot.permissions?.edit;
+  if(document.activeElement!==$('characterRename'))$('characterRename').value=instance.name||'';
+  $('characterTechnicalID').textContent=snapshot.characterId;
+  $('characterTechnicalPreset').textContent=instance.presetId?`${snapshot.preset?.name||instance.presetId} (${instance.presetId})`:'Без пресета';
+  $('characterTechnicalMechanics').textContent=instance.materialized?'Самостоятельная (materialized)':instance.presetId?'Следует шаблону':'Самостоятельная';
+  $('characterTechnicalArtwork').textContent=snapshot.effective?.artwork?.source==='character'?'Собственный artwork':snapshot.effective?.artwork?.status==='missing'?'Artwork отсутствует':snapshot.effective?.artwork?.source==='preset'?'Artwork шаблона':'Placeholder';
+  renderCharacterStats(snapshot);renderCharacterResources(snapshot);renderCharacterActions(snapshot);
+  $('characterAvatarControls').hidden=!snapshot.permissions?.edit;
+  $('characterAvatarReset').disabled=!snapshot.permissions?.edit||!Object.hasOwn(instance,'avatarAssetId');
+  showCharacterAvatar(snapshot.effective?.hasAvatar?snapshot.effective.avatarAssetId:'',snapshot.characterId);
+  if(!canManage){characterMechanicsOpen=false;$('characterMechanicsSection').open=false;}
+  updateCharacterPanelMode();
+ }else{showCharacterAvatar('','');}
  fillCatalogSelect($('characterPreset'),characterCatalog.presets,characterCatalog.loading.has('presets')?'Загрузка…':'Выберите пресет');
  fillCatalogSelect($('characterRoster'),characterCatalog.roster,characterCatalog.loading.has('roster')?'Загрузка…':'Выберите персонажа');
-	$('characterCreatePreset').disabled=!gm||!$('characterPreset').value;$('characterLink').disabled=!gm||!$('characterRoster').value;
+ $('characterCreatePreset').disabled=!gm||!$('characterPreset').value;$('characterLink').disabled=!gm||!$('characterRoster').value;
  $('characterPresetMore').hidden=!gm||!characterCatalog.next.presets;$('characterPresetMore').disabled=characterCatalog.loading.has('presets');
  $('characterRosterMore').hidden=!gm||!characterCatalog.next.roster;$('characterRosterMore').disabled=characterCatalog.loading.has('roster');
-	$('characterPersistentLabel').hidden=!gm||!ready;$('characterPersistent').checked=!!instance?.persistent;
+ $('characterPersistentLabel').hidden=!gm||!ready;$('characterPersistent').checked=!!instance?.persistent;
 }
 function hasTransitionSelection(){return isEditorView()&&(!!transitionDraft||!!state?.transitions?.[selectedTransition]);}
-function updateInspectorState(){const visible=!!state?.tokens?.[selected]||!!state?.elements?.[selectedElement]||isEditorView()&&!!state?.elementCatalog?.[selectedElement]||hasTransitionSelection();$('noSelection').hidden=visible;document.querySelector('.inspector').classList.toggle('has-selection',visible);renderCharacterPanel();}
+function updateInspectorState(){document.querySelector('.inspector .panel-heading').textContent=state?.tokens?.[selected]?'ПЕРСОНАЖ':'СВОЙСТВА ОБЪЕКТА';const visible=!!state?.tokens?.[selected]||!!state?.elements?.[selectedElement]||isEditorView()&&!!state?.elementCatalog?.[selectedElement]||hasTransitionSelection();$('noSelection').hidden=visible;document.querySelector('.inspector').classList.toggle('has-selection',visible);inspectorFrame.classList.toggle('has-selection',visible);renderCharacterPanel();}
 function elementRotationAllowed(element){if(!element)return false;const lowest=orderedLayers(state,element.floorId).find(layer=>layer.kind==='visual');return lowest?.id!==element.layerId||rotationOverrides.has(element.id);}
 function cancelTransitionDraft(){transitionDraft=null;transitionCursor=null;if(drag?.type?.startsWith('transition'))drag=null;fillTransitionProperties();if(state)sceneTree.update(state,selectedElement,selectedTransition,isEditorView());dirty=true;}
 function beginTransition(){if(!isEditorView())return;select(null);selectElement(null);selectedTransition='';transitionDraft={phase:'placingA',endpointA:null,endpointB:null,direction:'bidirectional'};transitionCursor=null;fillTransitionProperties();sceneTree.update(state,selectedElement,selectedTransition,true);canvas.focus();toast('Поставьте точку A перехода');dirty=true;}
@@ -542,7 +693,6 @@ $('characterStatType').onchange=updateNewStatInput;updateNewStatInput();
 $('characterStatAdd').onsubmit=e=>{e.preventDefault();const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage)return;const statId=$('characterStatID').value.trim();try{const type=$('characterStatType').value,value=statValueFromInput(type,$('characterStatValue').value,$('characterStatBoolean').checked),isNew=!Object.hasOwn(snapshot.statDefinitions||{},statId);characterDrafts.set(snapshot.characterId,statId,value);if(queueCharacterStat(snapshot.characterId,statId,value,isNew)){$('characterStatID').value='';$('characterStatValue').value='';$('characterStatBoolean').checked=false;renderCharacterPanel();}}catch(error){toast(error.message);}};
 $('characterAvatarUpload').onchange=async e=>{const control=e.target,file=control.files[0],snapshot=characterWatch.snapshot;if(!file||!snapshot?.permissions?.edit)return;if(file.size>10*1024*1024){toast('Avatar не должен превышать 10 МиБ');control.value='';return;}const characterID=snapshot.characterId,controller=new AbortController();characterAvatarUploads.get(characterID)?.abort();characterAvatarUploads.set(characterID,controller);uploadControllers.add(controller);control.disabled=true;try{const query=new URLSearchParams({session:credentials.session,kind:'avatar',characterId:characterID});await api(`/api/upload?${query}`,file,true,controller.signal);if(!controller.signal.aborted&&characterWatch.characterId===characterID)toast('Avatar обновлён');}catch(error){if(error.name!=='AbortError')toast(error.message);}finally{uploadControllers.delete(controller);if(characterAvatarUploads.get(characterID)===controller)characterAvatarUploads.delete(characterID);control.disabled=false;control.value='';}};
 $('characterRename').onchange=()=>{const snapshot=characterWatch.snapshot;if(snapshot?.permissions?.edit&&$('characterRename').value.trim())queueCommand('characterNameSet',{characterId:snapshot.characterId,characterName:$('characterRename').value.trim()});};
-characterCopyID.onclick=async()=>{const id=characterWatch.snapshot?.characterId;if(!id||!isGM(state?.you))return;try{await navigator.clipboard.writeText(id);toast('Character ID скопирован');}catch{prompt('Скопируйте Character ID',id);}};
 $('characterAvatarReset').onclick=()=>{const snapshot=characterWatch.snapshot;if(snapshot?.permissions?.edit)queueCommand('characterAvatarReset',{characterId:snapshot.characterId});};
 function rememberElementField(id,field){const element=state?.elements?.[selectedElement]||state?.elementCatalog?.[selectedElement];if(!element)return;const control=$(id);let value=control.type==='checkbox'?control.checked:control.type==='number'||control.type==='range'?Number(control.value):control.value;if(field==='layerId'){const layer=state.layers[value];if(!layer)return;elementDrafts.set(element.id,'floorId',layer.floorId);}elementDrafts.set(element.id,field,value);}
 function commitElementProperties(id=selectedElement){clearTimeout(elementAutosaveTimer);elementAutosaveTimer=null;const loaded=state?.elements?.[id],element=loaded||state?.elementCatalog?.[id];if(!element||!isEditorView()||!$('elementProperties').checkValidity())return;const draft={...elementDrafts.get(id)},properties={},transform={},unchanged={},unavailable={};for(const [field,raw] of Object.entries(draft)){const transformField=field in element.transform;if(transformField&&!loaded){unavailable[field]=raw;continue;}const value=field==='name'?String(raw).trim():raw,base=transformField?element.transform[field]:element[field],type=transformField?'elementTransform':'elementUpdate',box=transformField?positionOutbox:outbox;if(value!==raw)elementDrafts.set(id,field,value);if(base===value)unchanged[field]=value;else if(!commandAlreadyQueued(box,type,id,field,value))(transformField?transform:properties)[field]=value;}if(Object.keys(unavailable).length)elementDrafts.confirm(id,unavailable);if(Object.keys(unchanged).length)elementDrafts.confirm(id,unchanged);if(Object.keys(properties).length)queueCommand('elementUpdate',{element:{id},elementProperties:properties});if(Object.keys(transform).length)queueTransform('elementTransform',{element:{id,transform:{...element.transform,...transform}}});if(!Object.keys(properties).length&&!Object.keys(transform).length&&id===selectedElement)fillElementProperties();}
