@@ -184,6 +184,7 @@ type StatDefinition struct {
 	Name    string     `json:"name"`
 	Type    StatType   `json:"type"`
 	Kind    StatKind   `json:"kind,omitempty"`
+	Group   string     `json:"group,omitempty"`
 	Default *StatValue `json:"default,omitempty"`
 }
 
@@ -202,6 +203,7 @@ type ActionDefinition struct {
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
 	Description string     `json:"description,omitempty"`
+	Group       string     `json:"group,omitempty"`
 	Tags        []string   `json:"tags,omitempty"`
 	Rolls       []RollSpec `json:"rolls,omitempty"`
 }
@@ -712,6 +714,9 @@ func ValidateStatDefinition(definition StatDefinition) error {
 	if err := validateText("stat name", definition.Name, MaxDefinitionNameRunes, true); err != nil {
 		return err
 	}
+	if err := validateText("stat group", definition.Group, MaxDefinitionNameRunes, true); err != nil {
+		return err
+	}
 	switch definition.Type {
 	case StatTypeNumber, StatTypeInteger, StatTypeBoolean, StatTypeString:
 	default:
@@ -769,6 +774,9 @@ func validateActionDefinition(definition ActionDefinition, stats map[string]Stat
 		return err
 	}
 	if err := validateText("action description", definition.Description, MaxDefinitionDescriptionRunes, true); err != nil {
+		return err
+	}
+	if err := validateText("action group", definition.Group, MaxDefinitionNameRunes, true); err != nil {
 		return err
 	}
 	if len(definition.Tags) > MaxTagsPerAction || len(definition.Rolls) > MaxRollSpecsPerAction {

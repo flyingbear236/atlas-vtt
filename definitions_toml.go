@@ -53,6 +53,7 @@ type statTOMLDefinition struct {
 	Name    string `toml:"name,omitempty"`
 	Type    string `toml:"type"`
 	Kind    string `toml:"kind,omitempty"`
+	Group   string `toml:"group,omitempty"`
 	Default any    `toml:"default,omitempty"`
 }
 
@@ -61,6 +62,7 @@ type statTOMLArrayDefinition struct {
 	Name    string `toml:"name,omitempty"`
 	Type    string `toml:"type"`
 	Kind    string `toml:"kind,omitempty"`
+	Group   string `toml:"group,omitempty"`
 	Default any    `toml:"default,omitempty"`
 }
 
@@ -75,6 +77,7 @@ type definitionsTOMLArrayDocument struct {
 type actionTOMLDefinition struct {
 	Name        string         `toml:"name"`
 	Description string         `toml:"description,omitempty"`
+	Group       string         `toml:"group,omitempty"`
 	Tags        []string       `toml:"tags,omitempty"`
 	Rolls       []rollTOMLSpec `toml:"rolls,omitempty"`
 }
@@ -191,7 +194,7 @@ func decodeDefinitionsTOMLDocument(data []byte) (definitionsTOMLDocument, error)
 		if _, duplicate := document.Stats[raw.ID]; duplicate {
 			return definitionsTOMLDocument{}, fmt.Errorf("duplicate stat %q", raw.ID)
 		}
-		document.Stats[raw.ID] = statTOMLDefinition{Name: raw.Name, Type: raw.Type, Kind: raw.Kind, Default: raw.Default}
+		document.Stats[raw.ID] = statTOMLDefinition{Name: raw.Name, Type: raw.Type, Kind: raw.Kind, Group: raw.Group, Default: raw.Default}
 	}
 	return document, nil
 }
@@ -576,7 +579,7 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 		knownStats[id] = cloneStatDefinition(definition)
 	}
 	for id, raw := range document.Stats {
-		definition := StatDefinition{ID: id, Name: raw.Name, Type: StatType(raw.Type), Kind: StatKind(raw.Kind)}
+		definition := StatDefinition{ID: id, Name: raw.Name, Type: StatType(raw.Type), Kind: StatKind(raw.Kind), Group: raw.Group}
 		if raw.Default != nil {
 			value, err := tomlStatValue(raw.Default, definition.Type)
 			if err != nil {
@@ -594,9 +597,9 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 		definition := ActionDefinition{
 			ID:          id,
 			Name:        raw.Name,
-			Description: raw.Description,
-			Tags:        append([]string(nil), raw.Tags...),
-			Rolls:       make([]RollSpec, len(raw.Rolls)),
+			Description: raw.Description, Group: raw.Group,
+			Tags:  append([]string(nil), raw.Tags...),
+			Rolls: make([]RollSpec, len(raw.Rolls)),
 		}
 		for index, roll := range raw.Rolls {
 			definition.Rolls[index] = RollSpec{
@@ -646,7 +649,7 @@ func encodeDefinitionsDocumentTOML(registry CampaignRegistry, metadata *RulesetM
 		document.Ruleset = &rulesetTOMLMetadata{ID: metadata.ID, Name: metadata.Name, Version: metadata.Version}
 	}
 	for id, definition := range registry.Stats {
-		raw := statTOMLDefinition{Name: definition.Name, Type: string(definition.Type), Kind: string(definition.Kind)}
+		raw := statTOMLDefinition{Name: definition.Name, Type: string(definition.Type), Kind: string(definition.Kind), Group: definition.Group}
 		if definition.Default != nil {
 			raw.Default = definition.Default.Interface()
 		}
@@ -654,7 +657,7 @@ func encodeDefinitionsDocumentTOML(registry CampaignRegistry, metadata *RulesetM
 	}
 	for id, definition := range registry.Actions {
 		raw := actionTOMLDefinition{
-			Name: definition.Name, Description: definition.Description,
+			Name: definition.Name, Description: definition.Description, Group: definition.Group,
 			Tags: append([]string(nil), definition.Tags...), Rolls: make([]rollTOMLSpec, len(definition.Rolls)),
 		}
 		for index, roll := range definition.Rolls {
@@ -730,7 +733,7 @@ func sortImportDiff(diff *CampaignImportDiff) {
 }
 
 func equalStatDefinition(left, right StatDefinition) bool {
-	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type || left.Kind != right.Kind {
+	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type || left.Kind != right.Kind || left.Group != right.Group {
 		return false
 	}
 	if left.Default == nil || right.Default == nil {
@@ -740,7 +743,7 @@ func equalStatDefinition(left, right StatDefinition) bool {
 }
 
 func equalActionDefinition(left, right ActionDefinition) bool {
-	return left.ID == right.ID && left.Name == right.Name && left.Description == right.Description &&
+	return left.ID == right.ID && left.Name == right.Name && left.Description == right.Description && left.Group == right.Group &&
 		slices.Equal(left.Tags, right.Tags) && slices.Equal(left.Rolls, right.Rolls)
 }
 
