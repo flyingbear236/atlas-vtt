@@ -300,3 +300,18 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
   .inspector-frame > .inspector { position: static; display: block; padding: 16px; border: 1px solid var(--border); border-radius: 8px; width: 100%; height: 100%; max-height: none; pointer-events: auto; }
   .inspector-resize { display: none; }
 }
+/* Configurable character-sheet presentation */
+#characterLegacyTabs { display: none !important; }
+.character-layout-tabs { display:flex; flex-wrap:wrap; }
+.character-layout-tabs button { flex:1 1 auto; min-width:0; }
+.sheet-section { min-width:0; margin-bottom:14px; }
+.sheet-heading { display:flex; justify-content:space-between; align-items:center; gap:6px; border-bottom:1px solid var(--border); margin-bottom:9px; }
+.sheet-heading button { min-width:0; overflow-wrap:anywhere; text-align:left; }
+.sheet-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,135px),1fr)); gap:8px; }
+.sheet-list { display:flex; flex-direction:column; gap:8px; }
+.sheet-entry { position:relative; min-width:0; }
+.sheet-entry > .character-stat-card,.sheet-entry > .character-resource-card,.sheet-entry > .character-action-card { width:100%; height:100%; box-sizing:border-box; }
+.sheet-entry .sheet-handle,.sheet-entry .sheet-entry-menu { position:relative; padding:2px 7px; margin-bottom:3px; }
+.sheet-handle { cursor:grab; }
+.sheet-edit-toolbar { display:flex; gap:7px; flex-wrap:wrap; margin-bottom:10px; }
+.sheet-drop { outline:2px dashed var(--text); min-height:35px; border-radius:5px; }

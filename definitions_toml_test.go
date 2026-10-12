@@ -290,7 +290,6 @@ func TestExportCampaignDefinitionsAllowsRulesetReferences(t *testing.T) {
 	}
 }
 
-
 func TestCompileRulesetFilesMergesFragmentsAndRejectsDuplicateIDs(t *testing.T) {
 	core := `schema_version = 1
 [stats.strength]
@@ -379,7 +378,6 @@ name = "Strength check"
 	}
 }
 
-
 func TestRulesetSnapshotWithSourcesReconstructsLegacyManifest(t *testing.T) {
 	core := `schema_version = 1
 [stats.power]
@@ -434,5 +432,45 @@ modifier_stat = "power"
 	}
 	if !reflect.DeepEqual(rebuilt.Registry, legacy.Registry) {
 		t.Fatalf("legacy reconstruction changed registry\ngot: %#v\nwant: %#v", rebuilt.Registry, legacy.Registry)
+	}
+}
+
+func TestDefinitionGroupsRoundTripAndDiff(t *testing.T) {
+	original := selfContainedTOMLRegistry()
+	stat := original.Stats["speed"]
+	stat.Group = "Атрибуты"
+	original.Stats["speed"] = stat
+	action := original.Actions["bite"]
+	action.Group = "Атаки"
+	original.Actions["bite"] = action
+	data, err := ExportDefinitionsTOML(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("Атрибуты")) || !bytes.Contains(data, []byte("Атаки")) {
+		t.Fatalf("group missing from TOML: %s", data)
+	}
+	roundTrip, err := ParseDefinitionsTOML(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(original, roundTrip) {
+		t.Fatalf("group round trip mismatch: %#v", roundTrip)
+	}
+	stat.Group = "Изменено"
+	if equalStatDefinition(original.Stats["speed"], stat) {
+		t.Fatal("changed stat group considered equal")
+	}
+	action.Group = "Изменено"
+	if equalActionDefinition(original.Actions["bite"], action) {
+		t.Fatal("changed action group considered equal")
+	}
+	stat.Group = strings.Repeat("x", MaxDefinitionNameRunes+1)
+	if err := ValidateStatDefinition(stat); err == nil {
+		t.Fatal("oversized stat group accepted")
+	}
+	action.Group = strings.Repeat("x", MaxDefinitionNameRunes+1)
+	if err := validateActionDefinition(action, original.Stats); err == nil {
+		t.Fatal("oversized action group accepted")
 	}
 }

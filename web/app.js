@@ -1,3 +1,4 @@
+import {loadLayout,saveLayout,buildSheet,moveEntry,normalizeLayout} from './character-sheet-layout.js';
 import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
 import {drawTokens,shortCharacterID} from './token-renderer.js';
 import {Outbox, Drafts, CacheWriteBudget,blockedMoveCorrection,sameValue} from './reliability.js';
@@ -25,11 +26,14 @@ characterPanel.innerHTML=`
       <div class="character-avatar"><img id="characterAvatar" alt="" hidden><span id="characterAvatarEmpty">◇</span></div>
       <div class="character-head-text"><h2 id="characterName"></h2><p id="characterSubtitle" class="muted"></p></div>
       <div class="character-head-tools">
+        <button id="characterLayoutToggle" type="button" class="subtle character-tool" title="Настроить раскладку" aria-label="Настроить раскладку">☷</button>
         <button id="characterMechanicsToggle" type="button" class="subtle character-tool" title="Редактировать механику" aria-label="Редактировать механику" aria-expanded="false">✎</button>
         <button id="characterSettingsToggle" type="button" class="subtle character-tool" title="Настройки персонажа" aria-label="Настройки персонажа" aria-expanded="false">⚙</button>
       </div>
     </div>
-    <div class="character-tabs" role="tablist" aria-label="Разделы персонажа">
+    <div id="characterLayoutTabs" class="character-tabs character-layout-tabs" role="tablist"></div>
+    <div id="characterLayoutContent"></div>
+    <div class="character-tabs" id="characterLegacyTabs" hidden role="tablist" aria-label="Разделы персонажа">
       <button id="characterTabStats" type="button" role="tab" aria-controls="characterStatsTab">Статы</button>
       <button id="characterTabActions" type="button" role="tab" aria-controls="characterActionsTab">Действия</button>
     </div>
@@ -526,7 +530,7 @@ function renderCharacterStats(snapshot){
  for(const statID of ids){
   const definition=snapshot.statDefinitions?.[statID]||{id:statID,name:statID,type:effective[statID].type},server=effective[statID],value=Object.hasOwn(drafts,statID)?drafts[statID]:server;
   const card=document.createElement('div');card.className='character-stat-card';const name=document.createElement('span');name.className='character-stat-name';name.textContent=definition.name||statID;
-  const output=document.createElement('strong');output.className='character-stat-value';output.textContent=definition.type==='boolean'?(value.value?'Да':'Нет'):String(value.value??'');card.title=definition.name||statID;card.append(name,output);container.append(card);
+  const output=document.createElement('strong');output.className='character-stat-value';output.textContent=definition.type==='boolean'?(value.value?'Да':'Нет'):String(value.value??'');card.title=definition.name||statID;card.dataset.sheetItem=`stat:${statID}`;card.append(name,output);container.append(card);
   if(!snapshot.permissions?.manage||!isEditorView())continue;
   const row=document.createElement('div');row.className='character-stat-edit';const label=document.createElement('label');label.textContent=definition.name||statID;label.append(makeCharacterStatInput(snapshot,statID,definition,value));row.append(label);
   if(Object.hasOwn(snapshot.instance?.statOverrides||{},statID)){
@@ -561,7 +565,7 @@ function renderCharacterResources(snapshot){
    for(const [button,delta,text] of [[decrement,-1,'−'],[increment,1,'+']]){button.type='button';button.className='subtle character-resource-step';button.textContent=text;button.disabled=input.disabled;button.setAttribute('aria-label',`${definition.name||statID}: ${delta>0?'увеличить':'уменьшить'} на 1`);button.onclick=()=>{const next=Number(input.value)+delta;if(!Number.isFinite(next)||(definition.type==='integer'&&!Number.isSafeInteger(next)))return;input.value=String(next);input.onchange();};}
    edit.append(decrement,input,increment);
   }else edit.append(input);
-  row.append(edit);
+  row.append(edit);row.dataset.sheetItem=`stat:${statID}`;
   if(Object.hasOwn(snapshot.instance?.resourceCurrent||{},statID)&&snapshot.permissions?.edit){const reset=document.createElement('button');reset.type='button';reset.className='subtle character-resource-reset';reset.textContent='Восстановить начальное';reset.onclick=()=>queueCommand('characterResourceCurrentReset',{characterId:snapshot.characterId,statId:statID});row.append(reset);}
   container.append(row);
   if(snapshot.permissions?.manage&&isEditorView()){
@@ -575,7 +579,7 @@ function renderCharacterActions(snapshot){
  const container=$('characterActions'),removal=$('characterActionRemoveList');container.replaceChildren();removal.replaceChildren();
  const ids=[...(snapshot.effective?.actionIds||[])].sort((a,b)=>(snapshot.actions?.[a]?.name||a).localeCompare(snapshot.actions?.[b]?.name||b)||a.localeCompare(b));
  for(const actionID of ids){
-  const action=snapshot.actions?.[actionID],row=document.createElement('section');row.className='character-action-card';const title=document.createElement('strong');title.textContent=action?.name||actionID;row.append(title);
+  const action=snapshot.actions?.[actionID],row=document.createElement('section');row.className='character-action-card';row.dataset.sheetItem=`action:${actionID}`;const title=document.createElement('strong');title.textContent=action?.name||actionID;row.append(title);
   if(action?.description){const description=document.createElement('p');description.className='character-action-description';description.textContent=action.description;row.append(description);if(action.description.length>120){description.classList.add('collapsed');const toggle=document.createElement('button');toggle.type='button';toggle.className='character-description-toggle subtle';toggle.textContent='Подробнее';toggle.onclick=()=>{const collapsed=description.classList.toggle('collapsed');toggle.textContent=collapsed?'Подробнее':'Свернуть';};row.append(toggle);}}
   for(const roll of action?.rolls||[]){const button=document.createElement('button');button.type='button';button.className='subtle character-roll';button.textContent=`${roll.name||roll.id}: ${formatRoll(roll)}`;button.onclick=()=>dice.rollAction(snapshot.characterId,actionID,roll.id);row.append(button);}
   container.append(row);
@@ -587,26 +591,87 @@ function renderCharacterActions(snapshot){
  const effective=new Set(ids),available=characterCatalog.actions.filter(action=>!effective.has(action.id));fillCatalogSelect($('characterActionAdd'),available,characterCatalog.loading.has('actions')?'Загрузка…':'Выберите действие');const manage=snapshot.permissions?.manage&&isEditorView();$('characterActionManage').hidden=!manage;$('characterActionAddButton').disabled=!$('characterActionAdd').value;$('characterActionMore').hidden=!manage||!characterCatalog.next.actions;$('characterActionMore').disabled=characterCatalog.loading.has('actions');
 }
 let characterActiveTab='stats',characterSettingsOpen=false,characterMechanicsOpen=false,characterDisplayedID='';
+let sheetEdit=false,sheetScope='',sheetLayout=null,sheetDrag=null;
+const sheetSessionFingerprint=value=>{let hash=2166136261;for(const char of String(value||'')){hash=Math.imul(hash^char.charCodeAt(0),16777619);}return (hash>>>0).toString(16);};
+const sheetSavedScope=()=>{
+ // The browser profile owns these preferences; campaign scope is a safe fallback.
+ const metadata=state?.ruleset?.metadata||state?.rulesetMetadata||state?.definitions?.ruleset;
+ const rulesetID=metadata?.id||state?.ruleset?.id;
+ return rulesetID?`ruleset:${rulesetID}`:`campaign:${campaign?.id||state?.campaign?.id||state?.campaignId||sheetSessionFingerprint(credentials?.session)}`;
+};
+function sheetEntryList(snapshot){
+ const definitions=snapshot.statDefinitions||{},entries=[];
+ for(const [id,value] of Object.entries(snapshot.effective?.stats||{}))entries.push({key:`stat:${id}`,type:'stat',name:definitions[id]?.name||id,group:definitions[id]?.group||'',resource:false});
+ for(const id of Object.keys(snapshot.effective?.resources||{}))entries.push({key:`stat:${id}`,type:'stat',name:definitions[id]?.name||id,group:definitions[id]?.group||'',resource:true});
+ for(const id of snapshot.effective?.actionIds||[])entries.push({key:`action:${id}`,type:'action',name:snapshot.actions?.[id]?.name||id,group:snapshot.actions?.[id]?.group||'',resource:false});
+ return entries;
+}
+function sheetMutate(callback){if(!sheetLayout)return;sheetLayout=normalizeLayout(callback(sheetLayout));saveLayout(sheetScope,sheetLayout);if(characterWatch.snapshot)renderCharacterPanel();}
+function ensureSheetSection(layout,tab,section){const target=layout.tabs.find(t=>t.id===tab.id);if(target&&!target.sections.some(s=>s.id===section.id))target.sections.push({...section,items:[...section.items]});return layout;}
+function sheetSectionMenu(tab,section,entries){
+ const actions=['Переименовать','Список / сетка','Свернуть / развернуть','Переместить раздел','Удалить раздел'];
+ const answer=prompt(`Раздел «${section.name}»:\n${actions.map((name,i)=>`${i+1}. ${name}`).join('\n')}`);
+ if(!answer)return;
+ const index=Number(answer);
+ if(index===1){const name=prompt('Название раздела',section.name);if(name?.trim())sheetMutate(layout=>{ensureSheetSection(layout,tab,section);layout.tabs.find(t=>t.id===tab.id).sections.find(s=>s.id===section.id).name=name.trim().slice(0,120);return layout;});}
+ if(index===2)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const target=layout.tabs.find(t=>t.id===tab.id).sections.find(s=>s.id===section.id);target.view=target.view==='grid'?'list':'grid';return layout;});
+ if(index===3)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const target=layout.tabs.find(t=>t.id===tab.id).sections.find(s=>s.id===section.id);target.collapsed=!target.collapsed;return layout;});
+ if(index===4){const options=sheetLayout.tabs.map(t=>`${t.id}: ${t.name}`).join('\n');const destination=prompt(`Перенести в какую вкладку?\n${options}`,tab.id);if(destination&&destination!==tab.id)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const from=layout.tabs.find(t=>t.id===tab.id),to=layout.tabs.find(t=>t.id===destination);if(!to)return layout;const pos=from.sections.findIndex(s=>s.id===section.id);if(pos>=0)to.sections.push(...from.sections.splice(pos,1));return layout;});}
+ if(index===5)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const from=layout.tabs.find(t=>t.id===tab.id),old=from.sections.find(s=>s.id===section.id);if(!old)return layout;from.sections=from.sections.filter(s=>s!==old);const target=layout.tabs.find(t=>t.id==='stats'||t.id==='actions');for(const key of old.items){const destination=key.startsWith('action:')?'actions':'stats';const t=layout.tabs.find(t=>t.id===destination);let section=t.sections.find(s=>s.id===`auto:${destination}:${encodeURIComponent(destination==='stats'?'Характеристики':'Прочие действия')}`);if(!section){section={id:`auto:${destination}:${encodeURIComponent(destination==='stats'?'Характеристики':'Прочие действия')}`,name:destination==='stats'?'Характеристики':'Прочие действия',view:'grid',collapsed:false,items:[]};t.sections.push(section);}section.items.push(key);}return layout;});
+}
+function sheetEntryMenu(key,entries){
+ const options=buildSheet(sheetLayout,entries).tabs.flatMap(tab=>tab.sections.map(section=>({tab,section})));
+ const names=options.map((option,index)=>`${index+1}. ${option.tab.name} / ${option.section.name}`).join('\n');
+ const answer=prompt(`Элемент ${key}\n0. Скрыть\n${names}`);if(answer===null)return;
+ if(answer==='0')sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});
+ else{const option=options[Number(answer)-1];if(option)sheetMutate(layout=>{const tab=layout.tabs.find(t=>t.id===option.tab.id);if(!tab.sections.some(s=>s.id===option.section.id))tab.sections.push({...option.section,items:[]});return moveEntry(layout,key,option.tab.id,option.section.id);});}
+}
+function renderSheetLayout(snapshot){
+ const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';}
+ const entries=sheetEntryList(snapshot);
+ const full=buildSheet(sheetLayout,entries),tabs=$('characterLayoutTabs'),body=$('characterLayoutContent');
+ const elements=new Map([...document.querySelectorAll('#characterLayoutContent [data-sheet-item],#characterStats [data-sheet-item],#characterResources [data-sheet-item],#characterActions [data-sheet-item]')].map(node=>[node.dataset.sheetItem,node]));
+ tabs.replaceChildren();body.replaceChildren();
+ if(!full.tabs.some(tab=>tab.id===characterActiveTab))characterActiveTab='stats';
+ for(const tab of full.tabs){
+  const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;renderCharacterPanel();};
+  if(sheetEdit){button.draggable=true;button.ondragstart=event=>{sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};button.ondragover=event=>event.preventDefault();button.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='item')sheetMutate(layout=>{const t=layout.tabs.find(t=>t.id===tab.id);let bucket=t.sections.find(s=>s.id===`user:drop:${tab.id}`);if(!bucket){bucket={id:`user:drop:${tab.id}`,name:'Перемещённые',view:'list',collapsed:false,items:[]};t.sections.push(bucket);}characterActiveTab=tab.id;return moveEntry(layout,sheetDrag.key,tab.id,bucket.id);});else if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===sheetDrag.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});else if(sheetDrag?.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===sheetDrag.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});};button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
+  tabs.append(button);
+ }
+ if(sheetEdit){const add=document.createElement('button');add.type='button';add.textContent='+';add.title='Новая вкладка';add.onclick=()=>{const name=prompt('Название новой вкладки');if(name?.trim())sheetMutate(layout=>{const id=`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;layout.tabs.push({id,name:name.trim().slice(0,120),sections:[]});characterActiveTab=id;return layout;});};tabs.append(add);}
+ const selected=full.tabs.find(t=>t.id===characterActiveTab);
+ if(!selected)return;
+ if(sheetEdit){const toolbar=document.createElement('div');toolbar.className='sheet-edit-toolbar';const add=document.createElement('button');add.type='button';add.textContent='+ Раздел';add.onclick=()=>{const name=prompt('Название раздела');if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===selected.id).sections.push({id:`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`,name:name.trim().slice(0,120),view:'list',collapsed:false,items:[]});return layout;});};toolbar.append(add);const hidden=entries.filter(entry=>sheetLayout.hidden.includes(entry.key));if(hidden.length){const restore=document.createElement('button');restore.type='button';restore.textContent=`Скрытые (${hidden.length})`;restore.onclick=()=>{const answer=prompt(hidden.map((entry,i)=>`${i+1}. ${entry.name}`).join('\n'));const entry=hidden[Number(answer)-1];if(entry)sheetMutate(layout=>{layout.hidden=layout.hidden.filter(item=>item!==entry.key);return layout;});};toolbar.append(restore);}body.append(toolbar);}
+ for(const section of selected.sections){
+  const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
+  const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragstart=event=>{sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
+  if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
+  wrapper.append(heading);const listing=document.createElement('div');listing.className=section.view==='grid'?'sheet-grid':'sheet-list';listing.hidden=section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
+  if(sheetEdit){listing.ondragover=event=>{event.preventDefault();listing.classList.add('sheet-drop');};listing.ondragleave=()=>listing.classList.remove('sheet-drop');listing.ondrop=event=>{event.preventDefault();listing.classList.remove('sheet-drop');if(sheetDrag?.kind==='item')sheetMutate(layout=>{let target=layout.tabs.find(t=>t.id===selected.id).sections.find(s=>s.id===section.id);if(!target){target={...section};layout.tabs.find(t=>t.id===selected.id).sections.push(target);}return moveEntry(layout,sheetDrag.key,selected.id,section.id);});sheetDrag=null;};}
+  for(const key of section.items){const item=elements.get(key);if(!item)continue;const frame=document.createElement('div');frame.className='sheet-entry';frame.dataset.sheetItem=key;
+   if(sheetEdit){const drag=document.createElement('button');drag.type='button';drag.className='subtle sheet-handle';drag.textContent='⠿';drag.draggable=true;drag.title='Перетащить';drag.ondragstart=event=>{sheetDrag={kind:'item',key};event.dataTransfer.setData('text/plain',key);};const menu=document.createElement('button');menu.type='button';menu.className='subtle sheet-entry-menu';menu.textContent='⋯';menu.onclick=()=>sheetEntryMenu(key,entries);frame.append(drag,menu);frame.oncontextmenu=event=>{event.preventDefault();sheetEntryMenu(key,entries);};frame.ondragover=event=>event.preventDefault();frame.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='item')sheetMutate(layout=>moveEntry(layout,sheetDrag.key,selected.id,section.id,key));sheetDrag=null;};}
+   frame.append(item);listing.append(frame);
+  }
+  wrapper.append(listing);body.append(wrapper);
+ }
+}
 function updateCharacterPanelMode(){
- $('characterTabStats').setAttribute('aria-selected',String(characterActiveTab==='stats'));
- $('characterTabActions').setAttribute('aria-selected',String(characterActiveTab==='actions'));
- $('characterStatsTab').hidden=characterActiveTab!=='stats';$('characterActionsTab').hidden=characterActiveTab!=='actions';
+ $('characterStatsTab').hidden=true;$('characterActionsTab').hidden=true;
  $('characterSettingsPanel').hidden=!characterSettingsOpen;
  $('characterSettingsToggle').setAttribute('aria-expanded',String(characterSettingsOpen));
  $('characterMechanicsToggle').setAttribute('aria-expanded',String(characterSettingsOpen&&characterMechanicsOpen));
  $('characterMechanicsToggle').classList.toggle('active',characterSettingsOpen&&characterMechanicsOpen);
-
+ $('characterLayoutToggle').classList.toggle('active',sheetEdit);
 }
-$('characterTabStats').onclick=()=>{characterActiveTab='stats';updateCharacterPanelMode();};
-$('characterTabActions').onclick=()=>{characterActiveTab='actions';updateCharacterPanelMode();};
+$('characterLayoutToggle').onclick=()=>{sheetEdit=!sheetEdit;if(characterWatch.snapshot)renderCharacterPanel();};
 $('characterSettingsToggle').onclick=()=>{characterSettingsOpen=!characterSettingsOpen;if(!characterSettingsOpen)characterMechanicsOpen=false;updateCharacterPanelMode();};
 $('characterMechanicsToggle').onclick=()=>{characterMechanicsOpen=!$('characterMechanicsSection').open;characterSettingsOpen=true;$('characterMechanicsSection').open=characterMechanicsOpen;updateCharacterPanelMode();};
 function renderCharacterPanel(){
  const token=state?.tokens?.[selected],snapshot=characterWatch.snapshot,linkedID=token?.characterInstanceId||'',gm=isEditorView();characterPanel.hidden=!token;
- if(characterDisplayedID!==linkedID){characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';$('characterMechanicsSection').open=false;}
+ if(characterDisplayedID!==linkedID){characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';sheetEdit=false;$('characterMechanicsSection').open=false;}
  characterPanel.dataset.characterId=linkedID;
  fillCatalogSelect($('tokenCreatePreset'),characterCatalog.presets,characterCatalog.loading.has('presets')?'Загрузка…':'Шаблон для нового токена');fillCatalogSelect($('tokenCreateCharacter'),characterCatalog.roster,characterCatalog.loading.has('roster')?'Загрузка…':'Существующий персонаж');$('addPresetToken').disabled=!gm||!$('tokenCreatePreset').value;$('addCharacterToken').disabled=!gm||!$('tokenCreateCharacter').value;
- if(!token){$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;showCharacterAvatar('','');return;}
+ if(!token){sheetEdit=false;$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;showCharacterAvatar('','');return;}
  const ready=!!linkedID&&snapshot?.characterId===linkedID,instance=ready?snapshot.instance:null;
  const unavailable=!!linkedID&&!ready&&['accessRevoked','unavailable','closed'].includes(characterWatchReason);$('characterUnavailable').hidden=!unavailable;$('characterPending').hidden=ready||unavailable;$('characterSummary').hidden=!ready;characterRecoveryToggle.hidden=!unavailable||!gm;$('characterIdentitySection').hidden=!ready;$('characterLinkSection').hidden=!gm;$('characterTechnicalSection').hidden=!gm||!ready;$('characterMechanicsSection').hidden=!ready||!gm;if(!ready)$('characterSettingsPanel').hidden=!gm||!characterSettingsOpen;
  if(ready){
@@ -624,7 +689,7 @@ function renderCharacterPanel(){
   $('characterTechnicalPreset').textContent=instance.presetId?`${snapshot.preset?.name||instance.presetId} (${instance.presetId})`:'Без пресета';
   $('characterTechnicalMechanics').textContent=instance.materialized?'Самостоятельная (materialized)':instance.presetId?'Следует шаблону':'Самостоятельная';
   $('characterTechnicalArtwork').textContent=snapshot.effective?.artwork?.source==='character'?'Собственный artwork':snapshot.effective?.artwork?.status==='missing'?'Artwork отсутствует':snapshot.effective?.artwork?.source==='preset'?'Artwork шаблона':'Placeholder';
-  renderCharacterStats(snapshot);renderCharacterResources(snapshot);renderCharacterActions(snapshot);
+  renderCharacterStats(snapshot);renderCharacterResources(snapshot);renderCharacterActions(snapshot);renderSheetLayout(snapshot);
   $('characterAvatarControls').hidden=!snapshot.permissions?.edit;
   $('characterAvatarReset').disabled=!snapshot.permissions?.edit||!Object.hasOwn(instance,'avatarAssetId');
   showCharacterAvatar(snapshot.effective?.hasAvatar?snapshot.effective.avatarAssetId:'',snapshot.characterId);
