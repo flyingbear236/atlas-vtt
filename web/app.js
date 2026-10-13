@@ -8,6 +8,7 @@ import {SceneTreeRuntime} from './scene-tree.js';
 import {constrainTokenMovement} from './movement-geometry.js';
 import {CharacterCatalog,CharacterWatch,statInputValue,statValueFromInput} from './characters.js';
 import {DefinitionsEditor} from './definitions.js';
+import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
 import {createDicePanel,DiceAnimator,DiceRuntime} from './dice.js';
 import {DiceRendererAdapter} from './dice-renderer.js';
@@ -74,7 +75,6 @@ const tokenCreateControls=document.createElement('div');tokenCreateControls.clas
 $('emptyTokens').after(tokenCreateControls);
 $('tokenName').maxLength=200;$('tokenName').closest('label').firstChild.textContent='Имя персонажа';
 const characterIDToggle=document.createElement('button');characterIDToggle.id='characterIDToggle';characterIDToggle.className='subtle gm';characterIDToggle.type='button';characterIDToggle.title='Показывать короткие Character ID';characterIDToggle.textContent='ID';$('viewMode').after(characterIDToggle);
-const resourceOverlaySettings=document.createElement('details');resourceOverlaySettings.id='resourceOverlaySettings';resourceOverlaySettings.className='gm resource-overlay-settings';resourceOverlaySettings.innerHTML=`<summary>Ресурсы на токенах</summary><p class="muted">До двух сверху и двух снизу.</p><div id="resourceOverlayRows"></div>`;tokenCreateControls.after(resourceOverlaySettings);
 const CONTENT_COMMANDS=new Set(['move','final','properties','create','delete','floorCreate','floorUpdate','floorDelete','layerCreate','layerUpdate','layerDelete','elementCreate','elementUpdate','elementDelete','elementPreview','elementTransform','transitionCreate','transitionUpdate','transitionDelete','assetRetention','addWalkableRect','subtractWalkableRect','moveWalkableComponent','deleteWalkableComponent','setWalkableMode','setRenderBounds','clearRenderBounds']);
 const UPLOAD_LIMIT_BYTES=256*1024*1024;
 // Mutable only so the isolated profiler can compare Canvas lifecycles. Normal
@@ -102,7 +102,7 @@ function initOutbox(){
         if(cmd.type.startsWith('character')){if(cmd.statId&&sameValue(characterDrafts.get(cmd.characterId)[cmd.statId],cmd.statValue))pendingNewStats.delete(`${cmd.characterId}/${cmd.statId}`);renderCharacterPanel();}
         if(cmd.type==='transitionCreate'&&transitionDraft?.phase==='awaitingCreate'){transitionDraft={...transitionDraft,phase:'editingB'};delete transitionDraft.priorIds;fillTransitionProperties();}
         if(cmd.type==='transitionUpdate')send({type:'sync'});
-		if(cmd.type==='resourceOverlayConfigSet'){resourceOverlayDraft=null;renderResourceOverlaySettings();}
+		if(cmd.type==='resourceOverlayConfigSet')resourceOverlayEditor.onSaved(error,resourceOverlayState().resourceOverlays);
       }else if(cmd.type==='properties'){drafts.confirm(cmd.token.id,cmd.properties);if(cmd.sceneId===state?.scene?.id)fillProperties();}
       else if(cmd.type==='elementUpdate'){elementDrafts.confirm(cmd.element.id,cmd.elementProperties);if(cmd.sceneId===state?.scene?.id)fillElementProperties();}
       else if(cmd.type==='elementTransform'){elementDrafts.confirm(cmd.element.id,cmd.element.transform);if(cmd.sceneId===state?.scene?.id)fillElementProperties();}
@@ -123,7 +123,7 @@ function initOutbox(){
 function queueCommand(type,payload){if(stopped||!outbox)return false;if(CONTENT_COMMANDS.has(type)){if(!state?.scene?.id)return false;payload={...payload,sceneId:state.scene.id};}try{outbox.enqueue(type,payload);return true;}catch(e){fatal('Не удалось сохранить команду в браузере. Изменение не отправлено');return false;}}
 function queueTransform(type,payload){if(stopped||!positionOutbox||!state?.scene?.id)return false;try{positionOutbox.enqueue(type,{...payload,sceneId:state.scene.id});return true;}catch(e){fatal('Не удалось сохранить положение в браузере. Изменение не отправлено');return false;}}
 function queuePosition(payload){return queueTransform('final',{...payload,previewRevision:state?.previewRevision||0});}
-let credentials, state, campaign, desiredSceneID='', socket, reconnectTimer, selected, selectedElement, selectedTransition='', transitionDraft=null, transitionCursor=null, walkableTool='', selectedWalkableComponent='', renderBoundsTool='', renderBoundsDraft=null, selectedRenderBoundsVertex=-1, currentFloorID='', pendingActiveFocus='', confirmedActiveTokenID='', confirmedFloorID='', pendingActiveSwitch=null, drag, inviteCode, outbox, positionOutbox, commandTimer, positionCommandTimer, saveRetry, positionSaveRetry, outboxNeedsResume=true, preferredPlayerPreview=false, previewSwitchPending=null, previewSwitchTimer=null, previewSelection='',showCharacterIDs=false,resourceOverlayDraft=null; const drafts=new Drafts();
+let credentials, state, campaign, desiredSceneID='', socket, reconnectTimer, selected, selectedElement, selectedTransition='', transitionDraft=null, transitionCursor=null, walkableTool='', selectedWalkableComponent='', renderBoundsTool='', renderBoundsDraft=null, selectedRenderBoundsVertex=-1, currentFloorID='', pendingActiveFocus='', confirmedActiveTokenID='', confirmedFloorID='', pendingActiveSwitch=null, drag, inviteCode, outbox, positionOutbox, commandTimer, positionCommandTimer, saveRetry, positionSaveRetry, outboxNeedsResume=true, preferredPlayerPreview=false, previewSwitchPending=null, previewSwitchTimer=null, previewSelection='',showCharacterIDs=false; const drafts=new Drafts();
 let resourceDefinitionRegistry=null;const characterDrafts=new Drafts(),characterStatTimers=new Map(),pendingNewStats=new Set(),characterAvatarUploads=new Map(),confirmedMechanicalEdits=new Set();let characterWatchReason='',characterAvatarAsset='',characterAvatarURL='',characterAvatarDisplayController=null;
 const characterWatch=new CharacterWatch(value=>send(value),onCharacterWatchChange);let characterWatchNeedsResume=true,characterCatalogSession='';
 async function loadCharacterCatalogPage(kind,cursor){const query=new URLSearchParams({session:credentials.session,kind,limit:'50'});if(cursor)query.set('cursor',cursor);const response=await fetch(`/api/characters?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error(await response.text());return response.json();}
@@ -149,7 +149,35 @@ const definitionsEditor=new DefinitionsEditor($('definitionsMount'),{load:loadDe
 async function loadRulesetMediaThumbnail(assetID){const query=new URLSearchParams({session:credentials.session}),response=await fetch(`/api/definitions/ruleset/media/asset/${encodeURIComponent(assetID)}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error('Изображение недоступно');return response.blob();}
 const presetEditor=new PresetEditor({request:presetAPI,upload:uploadSharedMedia,thumbnail:loadRulesetMediaThumbnail,toast,onSaved:()=>{definitionsEditor.registryChanged();refreshCharacterCatalog();}});
 $('editCharacterPreset').onclick=()=>{const snapshot=characterWatch.snapshot;if(isGM(state?.you||campaign?.you)&&snapshot?.instance?.presetId)presetEditor.open(snapshot.instance.presetId);};
-$('definitionsOpen').onclick=()=>definitionsEditor.open();
+// Reuse the existing ruleset editor dialog as the campaign settings window.
+const settingsPanel=definitionsEditor.backdrop.querySelector('.definitions-panel');
+const settingsHeader=settingsPanel.querySelector('header');
+settingsHeader.querySelector('small').textContent='КАМПАНИЯ';
+settingsHeader.querySelector('h2').textContent='Настройки кампании';
+const settingsTabs=document.createElement('nav');settingsTabs.className='campaign-settings-tabs';settingsTabs.setAttribute('aria-label','Раздел настроек кампании');settingsTabs.setAttribute('role','tablist');
+const resourceTab=document.createElement('button'),rulesetTab=document.createElement('button');
+for(const [tab,label] of [[resourceTab,'Индикаторы ресурсов'],[rulesetTab,'Рулсеты и справочники']]){tab.type='button';tab.textContent=label;tab.setAttribute('role','tab');settingsTabs.append(tab);}
+const rulesetView=document.createElement('section');rulesetView.className='campaign-settings-ruleset';
+for(const node of [...settingsPanel.children].filter(node=>node!==settingsHeader))rulesetView.append(node);
+const resourceView=document.createElement('section');resourceView.className='campaign-settings-resources';
+settingsPanel.append(settingsTabs,resourceView,rulesetView);
+const resourceOverlayEditor=new ResourceOverlayEditor(resourceView,{save:resourceOverlays=>queueCommand('resourceOverlayConfigSet',{resourceOverlays}),toast});
+definitionsEditor.onBeforeClose=()=>resourceOverlayEditor.saving?false:!resourceOverlayEditor.isDirty()||confirm('Несохранённые настройки индикаторов будут потеряны. Закрыть?');
+function showCampaignSettingsTab(tab){
+ const resources=tab==='resources';resourceView.hidden=!resources;rulesetView.hidden=resources;
+ resourceTab.classList.toggle('active',resources);rulesetTab.classList.toggle('active',!resources);
+ resourceTab.setAttribute('aria-selected',String(resources));rulesetTab.setAttribute('aria-selected',String(!resources));
+}
+resourceTab.onclick=()=>showCampaignSettingsTab('resources');rulesetTab.onclick=()=>showCampaignSettingsTab('rulesets');
+$('definitionsOpen').onclick=async()=>{
+ if(!isGM(state?.you||campaign?.you)||state?.playerPreview)return;
+ const source=resourceOverlayState();
+ resourceOverlayEditor.open(source.resourceOverlays||[],source.resourceOverlayDefinitions||{});
+ showCampaignSettingsTab('resources');await definitionsEditor.open();
+ if(definitionsEditor.backdrop.hidden)return;
+ const stats=definitionsEditor.registry?.effective?.stats;
+ if(stats)resourceOverlayEditor.setDefinitions(stats);
+};
 const elementDrafts=new Drafts(),FORM_AUTOSAVE_DELAY=650;let tokenAutosaveTimer,elementAutosaveTimer;
 function commandAlreadyQueued(box,type,id,field,value){return !!box?.data.queue.some(command=>command.type===type&&(command.token?.id===id||command.element?.id===id)&&Object.hasOwn(command.properties||command.elementProperties||command.element?.transform||{},field)&&sameValue((command.properties||command.elementProperties||command.element.transform)[field],value));}
 function tokenFieldValue(id){return id==='tokenOwner'?[...$(id).selectedOptions].map(option=>option.value):id==='tokenHidden'?$(id).checked:id==='tokenSize'||id==='tokenOpacity'?Number($(id).value):$(id).value;}
@@ -359,8 +387,8 @@ function connect(){
   if(msg.type==='storageError'){const wasDegraded=!!storageDegraded;storageDegraded=msg.message||'Сервер временно не может сохранять изменения на диск';updateCommandStatus();if(!wasDegraded)toast(storageDegraded);return;}
   if(msg.type==='storageRecovered'){storageDegraded='';updateCommandStatus();return;}
   if(characterWatch.handle(msg))return;
-  if(msg.type==='registryChanged'){resourceDefinitionRegistry=null;if(isGM(state?.you||campaign?.you)){refreshCharacterCatalog();definitionsEditor.registryChanged();}return;}
-  if(msg.type==='resourceOverlayConfigChanged'){resourceOverlayDraft=null;if(campaign){campaign.resourceOverlays=msg.resourceOverlays||[];campaign.resourceOverlayDefinitions=msg.resourceOverlayDefinitions||{};}if(state){state.resourceOverlays=msg.resourceOverlays||[];state.resourceOverlayDefinitions=msg.resourceOverlayDefinitions||{};state.characterDisplays=msg.characterDisplays||{};renderResourceOverlaySettings();dirty=true;}return;}
+  if(msg.type==='registryChanged'){resourceDefinitionRegistry=null;if(isGM(state?.you||campaign?.you)){refreshCharacterCatalog();definitionsEditor.registryChanged().then(()=>{if(!definitionsEditor.backdrop.hidden)resourceOverlayEditor.setDefinitions(definitionsEditor.registry?.effective?.stats||{});});}return;}
+  if(msg.type==='resourceOverlayConfigChanged'){if(campaign){campaign.resourceOverlays=msg.resourceOverlays||[];campaign.resourceOverlayDefinitions=msg.resourceOverlayDefinitions||{};}if(state){state.resourceOverlays=msg.resourceOverlays||[];state.resourceOverlayDefinitions=msg.resourceOverlayDefinitions||{};state.characterDisplays=msg.characterDisplays||{};dirty=true;}resourceOverlayEditor.onRemote(msg.resourceOverlays||[],msg.resourceOverlayDefinitions||{});return;}
   if(msg.type==='characterDisplayChanged'){if(state&&msg.sceneId===state.scene.id){state.characterDisplays=state.characterDisplays||{};state.characterDisplays[msg.characterId]=msg.display;dirty=true;}return;}
   if(msg.type==='presence'&&state){
    if(msg.member)state.members[msg.member.id]=msg.member;
@@ -368,9 +396,9 @@ function connect(){
    renderMembers();if(selected)fillProperties();return;
   }
   if(msg.type==='campaignSnapshot'){
-   campaign=msg;resourceOverlayDraft=null;scenes.update(campaign);
+   campaign=msg;scenes.update(campaign);
    retry=0;$('connection').textContent='● В сети';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;renderInteractionMode();
-   definitionsEditor.setAuthorized(isGM(msg.you));if(isGM(msg.you)&&characterCatalogSession!==credentials.session){characterCatalogSession=credentials.session;refreshCharacterCatalog();}else if(!isGM(msg.you)){characterCatalogSession='';characterCatalog.clear();}if(state)renderResourceOverlaySettings();
+   definitionsEditor.setAuthorized(isGM(msg.you));if(isGM(msg.you)&&characterCatalogSession!==credentials.session){characterCatalogSession=credentials.session;refreshCharacterCatalog();}else if(!isGM(msg.you)){characterCatalogSession='';characterCatalog.clear();}
    if(outboxNeedsResume){outboxNeedsResume=false;outbox.reconnect();positionOutbox.reconnect();}
    const resumeCharacterWatch=characterWatchNeedsResume&&!!characterWatch.characterId;if(characterWatchNeedsResume){characterWatchNeedsResume=false;characterWatch.reconnect();}
    const active=state?.scene?.id,summary=msg.scenes.find(scene=>scene.id===active),accessible=id=>msg.scenes.some(scene=>scene.id===id);
@@ -469,31 +497,20 @@ function renderMembers(){
  $('memberCount').textContent=online;
 }
 function resourceOverlayState(){return state||campaign||{};}
-function configuredResourceOverlays(){const queued=[...(outbox?.data.queue||[])].reverse().find(command=>command.type==='resourceOverlayConfigSet');return resourceOverlayDraft||queued?.resourceOverlays||resourceOverlayState().resourceOverlays||[];}
-function nextResourceSlot(config){for(const position of ['top','bottom'])for(const slot of [1,2])if(!config.some(item=>item.enabled&&item.position===position&&item.slot===slot))return {position,slot};return null;}
-function updateResourceOverlay(statID,patch,enabled){
- const current=configuredResourceOverlays().map(item=>({...item})),index=current.findIndex(item=>item.statId===statID);if(!enabled){if(index>=0)current.splice(index,1);}else{const definition=resourceOverlayState().resourceOverlayDefinitions?.[statID];let item=index>=0?current[index]:null;if(!item){const free=nextResourceSlot(current);if(!free){toast('Все четыре позиции ресурсов уже заняты');renderResourceOverlaySettings();return;}item={statId:statID,enabled:true,...free,showName:true,color:'#76d275',mode:'text'};current.push(item);}Object.assign(item,patch,{enabled:true});if((definition?.type==='boolean'||definition?.type==='string'))item.mode='text';const conflict=current.find(other=>other!==item&&other.enabled&&other.position===item.position&&other.slot===item.slot);if(conflict){toast('Эта позиция уже занята другим ресурсом');renderResourceOverlaySettings();return;}}
- resourceOverlayDraft=current;if(!queueCommand('resourceOverlayConfigSet',{resourceOverlays:current})){resourceOverlayDraft=null;renderResourceOverlaySettings();}else renderResourceOverlaySettings();
-}
-function renderResourceOverlaySettings(){
- const source=resourceOverlayState(),definitions=source.resourceOverlayDefinitions||{},config=configuredResourceOverlays(),container=$('resourceOverlayRows');container.replaceChildren();resourceOverlaySettings.hidden=!isEditorView();
- for(const definition of Object.values(definitions).sort((a,b)=>(a.name||a.id).localeCompare(b.name||b.id))){const active=config.find(item=>item.statId===definition.id),row=document.createElement('div');row.className='resource-overlay-row';const enabled=document.createElement('input');enabled.type='checkbox';enabled.checked=!!active;enabled.onchange=()=>updateResourceOverlay(definition.id,{},enabled.checked);const name=document.createElement('span');name.textContent=definition.name||definition.id;row.append(enabled,name);if(active){const position=document.createElement('select');for(const [value,label]of [['top','Сверху'],['bottom','Снизу']]){const option=document.createElement('option');option.value=value;option.textContent=label;position.append(option);}position.value=active.position;position.onchange=()=>updateResourceOverlay(definition.id,{position:position.value},true);const slot=document.createElement('select');for(const value of [1,2]){const option=document.createElement('option');option.value=String(value);option.textContent=`Слот ${value}`;slot.append(option);}slot.value=String(active.slot);slot.onchange=()=>updateResourceOverlay(definition.id,{slot:Number(slot.value)},true);const show=document.createElement('label');show.className='check compact';const showInput=document.createElement('input');showInput.type='checkbox';showInput.checked=!!active.showName;showInput.onchange=()=>updateResourceOverlay(definition.id,{showName:showInput.checked},true);show.append(showInput,'Имя');const color=document.createElement('input');color.type='color';color.value=active.color;color.onchange=()=>updateResourceOverlay(definition.id,{color:color.value},true);const mode=document.createElement('select');for(const [value,label]of [['text','Текст'],['bar','Полоса']]){const option=document.createElement('option');option.value=value;option.textContent=label;mode.append(option);}mode.value=active.mode;mode.disabled=definition.type!=='number'&&definition.type!=='integer';mode.onchange=()=>updateResourceOverlay(definition.id,{mode:mode.value},true);row.append(position,slot,show,color,mode);}container.append(row);}
- if(!container.children.length)container.textContent='В ruleset нет resource-полей.';
-}
 function renderPanels(){
  const gm=isEditorView();$('mapTab').hidden=!gm;if(!gm&&!sidebarSections.map.panel.hidden)showSidebarSection('objects');renderInteractionMode();
  $('noSelection').querySelector('p').textContent=gm?'Выберите элемент сцены или переход':'Здесь появится лист персонажа';
  $('emptyMap').hidden=!!Object.keys(gm?state.elementCatalog||{}:state.elements||{}).length;$('sceneLabel').textContent=state.floors?.[currentFloorID]?`${state.scene.name} · ${state.floors[currentFloorID].name}`:state.scene.name;
-	 renderMembers();renderTokenList();renderResourceOverlaySettings();fillProperties();fillElementProperties();fillTransitionProperties();sceneTree.update(state,selectedElement,selectedTransition,gm);
+	 renderMembers();renderTokenList();fillProperties();fillElementProperties();fillTransitionProperties();sceneTree.update(state,selectedElement,selectedTransition,gm);
 }
 function createTokenRow(id){
- const row=document.createElement('button');row.dataset.tokenId=id;const swatch=document.createElement('span');swatch.className='swatch';const name=document.createElement('span');name.className='row-name';const extra=document.createElement('small');row.append(swatch,name,extra);
+ const row=document.createElement('button');row.dataset.tokenId=id;const swatch=document.createElement('span');swatch.className='swatch';const info=document.createElement('span');info.className='token-row-info';const name=document.createElement('span');name.className='row-name';const locator=document.createElement('small');locator.className='token-row-location';info.append(name,locator);const extra=document.createElement('small');row.append(swatch,info,extra);
  row.onclick=()=>{const current=navigationToken(id);if(!current)return;if(activatePlayerToken(current,true))return;select(id);camera.x=current.x-viewport.w/(2*camera.scale);camera.y=current.y-viewport.h/(2*camera.scale);scheduleViewportSave();dirty=true;};
  tokenRows.set(id,row);$('tokens').append(row);return row;
 }
 function updateTokenRow(t){
  let row=tokenRows.get(t.id);if(!row)row=createTokenRow(t.id);
- row.className='token-row'+(t.id===selected?' selected':'')+(t.id===state?.activeTokenId?' active':'');const [swatch,name,extra]=row.children;swatch.style.background=t.color;swatch.textContent=t.name.slice(0,1)||'◆';name.textContent=t.name;extra.textContent=t.hidden?'◌':t.id===state?.activeTokenId?'●':canMove(t)?'↗':'';
+ row.className='token-row'+(t.id===selected?' selected':'')+(t.id===state?.activeTokenId?' active':'');const [swatch,info,extra]=row.children;swatch.style.background=t.color;swatch.textContent=t.name.slice(0,1)||'◆';info.firstElementChild.textContent=t.name;info.lastElementChild.textContent=`${state?.floors?.[t.floorId]?.name||'Этаж'} · #${t.id.slice(0,6)}`;extra.textContent=t.hidden?'◌':t.id===state?.activeTokenId?'●':canMove(t)?'↗':'';
  $('emptyTokens').hidden=tokenRows.size>0;
 }
 function removeTokenRow(id){const row=tokenRows.get(id);if(row){row.remove();tokenRows.delete(id);}$('emptyTokens').hidden=tokenRows.size>0;}
