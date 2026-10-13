@@ -394,3 +394,28 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .character-stat-edit label,.character-resource-initial input{min-width:0;flex:1}
 
 .character-resource-initial label{min-width:0;flex:1;display:grid;gap:4px}
+
+/* Inline character editing: all changes are local until the GM confirms Save. */
+.character-edit-header {display:flex;flex-direction:column;gap:10px;margin:8px 0 12px;padding:11px;border:1px solid #527465;border-radius:9px;background:#1b302b}
+.character-edit-identity {display:flex;flex-wrap:wrap;align-items:flex-start;gap:9px}
+.character-edit-identity #characterRenameRow {flex:1 1 165px;min-width:0}
+.character-edit-identity #characterAvatarControls {display:flex;align-items:center;flex-wrap:wrap;gap:6px;flex:1 1 170px}
+.character-edit-identity #characterAvatarControls .wide {width:auto}
+.character-edit-footer {display:flex;gap:7px;align-items:center;justify-content:flex-end}
+.character-edit-footer #characterEditFeedback {flex:1;font-size:11px;min-width:0;overflow-wrap:anywhere}
+.character-add-toolbar {display:flex;gap:12px;align-items:center;justify-content:space-between;margin:8px 0 10px}
+.character-add-toolbar .muted {font-size:11px}
+.character-add-popover {padding:12px;background:#1b2b29;border:1px solid #405f55;border-radius:9px;margin:0 0 12px}
+.character-add-popover .character-resource-add {margin:0}
+.character-inline-input {width:100%;max-width:100%;min-width:0;min-height:35px;box-sizing:border-box;border:1px solid #71917e;border-radius:6px;background:#0f201f;color:#edf5e6;padding:6px;font:inherit;text-align:center}
+.character-inline-input[type=checkbox] {width:23px;height:23px;min-height:0;margin:6px auto}
+.character-edit-invalid {border-color:#e77967!important;box-shadow:0 0 0 1px #e77967}
+.character-stat-card:has(.character-inline-input) {gap:7px;padding:10px}
+.character-edit-remove {font-size:11px;padding:5px 9px;align-self:center;margin-top:4px}
+.character-resource-inline {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
+.character-resource-inline label {font-size:11px;color:#b3c9b9;min-width:0;display:flex;flex-direction:column;gap:4px}
+.character-resource-inline .character-inline-input {font-size:14px}
+.character-edit-header[hidden],.character-add-toolbar[hidden],.character-add-popover[hidden] {display:none!important}
+
+.character-avatar-editable {cursor:pointer;outline-offset:4px}
+.character-avatar-editable:hover,.character-avatar-editable:focus-visible {outline:2px solid #91bc98}

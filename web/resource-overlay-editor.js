@@ -11,7 +11,7 @@ export function arrangeResourceOverlays(items){
    ordered.push({...item,enabled:true,position,slot});
   }
  }
- if(ordered.length>4)throw new Error('Можно показать не больше четырёх ресурсов');
+ if(ordered.length>4)throw new Error('Можно показать не больше четырёх индикаторов');
  return ordered;
 }
 export function resourceOverlayLabel(definition,resource){
@@ -68,12 +68,12 @@ export class ResourceOverlayEditor {
  move(statId,delta){this.mutate(()=>{const index=this.items.findIndex(item=>item.statId===statId);if(index<0)return;const peer=this.items.filter(item=>item.position===this.items[index].position),offset=peer.findIndex(item=>item.statId===statId)+delta;if(offset<0||offset>=peer.length)return;const peerIndex=this.items.findIndex(item=>item.statId===peer[offset].statId);[this.items[index],this.items[peerIndex]]=[this.items[peerIndex],this.items[index]];});}
  submit(){if(this.saving||!this.isDirty())return;
   if(this.externalChange&&!confirm('Настройки были изменены в другом окне. Перезаписать их?'))return;
-  for(const item of this.items){if(!this.definitions[item.statId]){this.message=`Определение ресурса ${item.statId} больше не доступно`;this.render();return;}}
+  for(const item of this.items){if(!this.definitions[item.statId]){this.message=`Определение характеристики ${item.statId} больше не доступно`;this.render();return;}}
   const payload=arrangeResourceOverlays(this.items);if(!this.save(payload)){this.message='Не удалось отправить настройки';this.render();return;}
   this.saving=true;this.message='Ожидание подтверждения сервера…';this.render();
  }
  render(){
-  const m=this.mount;m.replaceChildren();const title=make('h3','','Индикаторы ресурсов на карте'),help=make('p','muted','Общие правила для всех персонажей кампании. Индикатор появится у персонажа, если у него есть такой ресурс.');m.append(title,help);
+  const m=this.mount;m.replaceChildren();const title=make('h3','','Индикаторы характеристик на карте'),help=make('p','muted','Общие правила для всех персонажей кампании. Индикатор появится у персонажа, если у него есть такая характеристика.');m.append(title,help);
   const layout=make('div','resource-config-layout'),preview=make('section','resource-config-preview'),controls=make('section','resource-config-controls');layout.append(preview,controls);m.append(layout);
   preview.append(make('strong','','Предпросмотр'),make('small','muted','Пример значений; на карте будут показаны реальные данные персонажа.'));
   for(const position of ['top','bottom']){
@@ -98,9 +98,9 @@ export class ResourceOverlayEditor {
    row.append(button('×',()=>this.mutate(()=>{this.items=this.items.filter(e=>e.statId!==item.statId);if(this.selected===item.statId)this.selected=this.items[0]?.statId||'';}),'subtle resource-config-remove'));list.append(row);
   }
   const available=Object.values(this.definitions).filter(def=>def.kind==='resource'&&!this.items.some(item=>item.statId===def.id)).sort((a,b)=>(a.name||a.id).localeCompare(b.name||b.id));
-  if(this.items.length<4&&available.length){const add=make('div','resource-config-add'),select=make('select'),option=make('option','','Выберите ресурс');option.value='';select.append(option);
+  if(this.items.length<4&&available.length){const add=make('div','resource-config-add'),select=make('select'),option=make('option','','Выберите характеристику');option.value='';select.append(option);
    for(const def of available){const o=make('option','',def.name||def.id);o.value=def.id;select.append(o);}const addButton=button('+ Добавить',()=>{if(select.value)this.add(select.value)},'primary');addButton.disabled=this.saving;add.append(select,addButton);controls.append(add);
-  }else if(!available.length&&!this.items.length)controls.append(make('p','muted','Ресурсов пока нет. Создайте их в чарлисте или ruleset.'));
+  }else if(!available.length&&!this.items.length)controls.append(make('p','muted','Нет характеристик с отслеживаемым значением. Добавьте такую характеристику в чарлисте.'));
   const selected=this.items.find(item=>item.statId===this.selected);
   if(selected){const def=this.definitions[selected.statId],editor=make('section','resource-config-editor');editor.append(make('strong','',def?.name||selected.statId));
    const positionLabel=make('label','','Положение'),side=make('div','resource-config-toggle');for(const [value,label] of [['top','↑ Сверху'],['bottom','↓ Снизу']]){const b=button(label,()=>this.update(selected.statId,{position:value}),'subtle');b.classList.toggle('active',selected.position===value);b.setAttribute('aria-pressed',String(selected.position===value));side.append(b);}positionLabel.append(side);editor.append(positionLabel);

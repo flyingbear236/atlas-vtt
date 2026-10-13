@@ -8,16 +8,17 @@ type characterPermissions struct {
 }
 
 type characterSnapshot struct {
-	Type            string                      `json:"type"`
-	CharacterWatch  uint64                      `json:"characterWatch"`
-	CharacterID     string                      `json:"characterId"`
-	Revision        uint64                      `json:"revision"`
-	Instance        CharacterInstance           `json:"instance"`
-	Preset          *CharacterPresetDefinition  `json:"preset,omitempty"`
-	Effective       EffectiveCharacter          `json:"effective"`
-	StatDefinitions map[string]StatDefinition   `json:"statDefinitions"`
-	Actions         map[string]ActionDefinition `json:"actions"`
-	Permissions     characterPermissions        `json:"permissions"`
+	Type             string                      `json:"type"`
+	CharacterWatch   uint64                      `json:"characterWatch"`
+	CharacterID      string                      `json:"characterId"`
+	Revision         uint64                      `json:"revision"`
+	RegistryRevision uint64                      `json:"registryRevision"`
+	Instance         CharacterInstance           `json:"instance"`
+	Preset           *CharacterPresetDefinition  `json:"preset,omitempty"`
+	Effective        EffectiveCharacter          `json:"effective"`
+	StatDefinitions  map[string]StatDefinition   `json:"statDefinitions"`
+	Actions          map[string]ActionDefinition `json:"actions"`
+	Permissions      characterPermissions        `json:"permissions"`
 }
 
 func characterSnapshotForMember(session *Session, member *Member, characterID string, watch uint64) (characterSnapshot, error) {
@@ -62,7 +63,7 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	}
 	return characterSnapshot{
 		Type: "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
-		Revision: session.CharacterRevision, Instance: instance, Preset: preset, Effective: effective,
+		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, Effective: effective,
 		StatDefinitions: stats, Actions: actions,
 		Permissions: characterPermissions{Edit: true, Manage: memberIsGM(member)},
 	}, nil
