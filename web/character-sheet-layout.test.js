@@ -5,7 +5,7 @@ const entries=[{key:'stat:hp',type:'stat',name:'Health',resource:true},{key:'sta
 test('default layout groups deterministically and contains both tabs',()=>{
  const result=buildSheet(normalizeLayout(null),entries);
  assert.deepEqual(result.tabs.map(t=>t.id),['stats','actions']);
- assert.equal(result.tabs[0].sections.find(s=>s.name==='Ресурсы').items[0],'stat:hp');
+ assert.equal(result.tabs[0].sections.find(s=>s.name==='Характеристики').items[0],'stat:hp');
  assert.equal(result.tabs[1].sections.find(s=>s.name==='Атаки').items[0],'action:slash');
 });
 test('movement, new definitions and corrupted layout',()=>{

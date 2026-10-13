@@ -78,7 +78,8 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	}
 	s.mu.Lock()
 	session, member := s.auth(request)
-	allowed := avatarTargetAllowed(session, member, target)
+	staged := request.URL.Query().Get("stage") == "1"
+	allowed := avatarTargetAllowed(session, member, target) && (!staged || (target.characterID != "" && memberIsGM(member)))
 	s.mu.Unlock()
 	if !allowed {
 		fail(w, http.StatusForbidden, "Avatar недоступен")
@@ -137,7 +138,9 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	}
 	session.Assets[asset.ID] = asset
 
-	if target.characterID != "" {
+	if staged {
+		// Store an unattached immutable asset. The character edit commit will attach it.
+	} else if target.characterID != "" {
 		instance := cloneCharacterInstance(session.CharacterInstances[target.characterID])
 		instance = WithAvatarOverride(instance, asset.ID)
 		session.CharacterInstances[target.characterID] = instance
@@ -157,7 +160,9 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		session.CampaignDefinitions = campaign
 		session.RegistryRevision++
 	}
-	session.CharacterRevision++
+	if !staged {
+		session.CharacterRevision++
+	}
 	refreshAssetOrphans(session, time.Now())
 	if err = validateSessionCharacterState(session); err != nil {
 		session.Assets = oldAssets
@@ -187,7 +192,9 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		fail(w, http.StatusInternalServerError, "Ошибка сохранения avatar")
 		return
 	}
-	if target.presetID != "" {
+	if staged {
+		// Do not broadcast or modify any character before the atomic edit.
+	} else if target.presetID != "" {
 		s.publishRegistryChanged(session)
 		s.refreshCharacterWatches(session, nil, true)
 	} else {

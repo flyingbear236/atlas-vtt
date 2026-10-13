@@ -15,7 +15,7 @@ func characterCommandType(commandType string) bool {
 	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
 		"characterStatSet", "characterStatReset", "characterResourceCurrentSet", "characterResourceCurrentReset",
 		"characterResourceInitialSet", "characterResourceAdd", "characterParameterAdd", "characterParameterRemove", "characterAvatarSet", "characterAvatarReset",
-		"characterActionAdd", "characterActionRemove":
+		"characterActionAdd", "characterActionRemove", "characterEdit":
 		return true
 	default:
 		return false
@@ -188,7 +188,7 @@ func nextCharacterID(session *Session) string {
 func applyCharacterCommand(session *Session, member *Member, sceneID string, command Command, mutation *characterMutation) error {
 	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
 		command.Type == "characterSetPersistent" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" ||
-		command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" ||
+		command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" || command.Type == "characterEdit" ||
 		command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
@@ -199,6 +199,10 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		return err
 	}
 	switch command.Type {
+	case "characterEdit":
+		if err := applyCharacterEdit(session, command, registry, mutation); err != nil {
+			return err
+		}
 	case "characterCreate":
 		scene, token, err := characterTargetToken(session, sceneID, command.TokenID)
 		if err != nil {
@@ -672,10 +676,10 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		if mutation.token != nil {
 			s.publish(session, mutation.token.sceneID, "upsert", mutation.token.old, true, mutation.token.next)
 		}
-		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" {
+		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" || command.Type == "characterEdit" {
 			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
-		if command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" || command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" {
+		if command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" || command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" || command.Type == "characterEdit" {
 			s.publishCharacterDisplayChanged(session, mutation.changedCharacters)
 		}
 		s.refreshCharacterWatches(session, mutation.changedCharacters, mutation.token != nil || mutation.registryChanged)
