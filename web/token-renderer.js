@@ -7,15 +7,24 @@ function displayScalar(value){if(!value)return '—';if(value.type==='boolean')r
 
 export function resourceOverlayPresentation(definition,resource,config){
  if(!definition||!resource||!config)return null;const current=displayScalar(resource.current),initial=displayScalar(resource.initial),prefix=config.showName?`${definition.name||config.statId}: `:'';
+ if(definition.type==='boolean')return {kind:'text',text:`${definition.name||config.statId}: ${resource.current?.value?'Да':'Нет'}`,color:config.color};
+ if(definition.type==='string')return {kind:'text',text:`${definition.name||config.statId}: ${current}`,color:config.color};
  if((definition.type==='number'||definition.type==='integer')&&config.mode==='bar'){const currentNumber=Number(resource.current?.value),initialNumber=Number(resource.initial?.value);if(Number.isFinite(currentNumber)&&Number.isFinite(initialNumber)&&initialNumber>0)return {kind:'bar',ratio:Math.max(0,Math.min(1,currentNumber/initialNumber)),label:config.showName?(definition.name||config.statId):'',color:config.color};}
  return {kind:'text',text:`${prefix}${current} / ${initial}`,color:config.color};
+}
+
+export function truncateOverlayText(ctx,text,maxWidth){
+ // Bound per-frame text measurement cost for unusually long user-defined strings.
+ if(text.length>180)text=text.slice(0,180)+'…';
+ if(ctx.measureText(text).width<=maxWidth)return text;
+ const suffix='…';let lo=0,hi=text.length;while(lo<hi){const mid=Math.ceil((lo+hi)/2);if(ctx.measureText(text.slice(0,mid)+suffix).width<=maxWidth)lo=mid;else hi=mid-1;}return text.slice(0,lo)+suffix;
 }
 
 function drawResourceOverlay(ctx,item,config,definitions,display){
  const resource=display?.resources?.[config.statId],definition=definitions?.[config.statId],presentation=resourceOverlayPresentation(definition,resource,config);if(!presentation)return;
  const slot=Math.max(1,Math.min(2,config.slot||1)),top=config.position==='top',baseY=top?item.y-item.diameter/2-9-(slot-1)*16:item.y+item.diameter/2+34+(slot-1)*16;ctx.save();ctx.globalAlpha=item.alpha;ctx.font='10px system-ui';ctx.textBaseline='middle';
  if(presentation.kind==='bar'){const width=Math.max(36,Math.min(92,item.diameter)),height=7,left=item.x-width/2,y=baseY-height/2;ctx.fillStyle='#0c1517dd';ctx.fillRect(left-1,y-1,width+2,height+2);ctx.fillStyle='#33413f';ctx.fillRect(left,y,width,height);ctx.fillStyle=presentation.color;ctx.fillRect(left,y,width*presentation.ratio,height);if(presentation.label){ctx.fillStyle='#e9eadc';ctx.textAlign='center';ctx.fillText(presentation.label,item.x,baseY-8);}}
- else{const width=Math.max(28,Math.min(180,ctx.measureText(presentation.text).width+8));ctx.fillStyle='#0c1517dd';ctx.fillRect(item.x-width/2,baseY-7,width,14);ctx.fillStyle=presentation.color;ctx.textAlign='center';ctx.fillText(presentation.text,item.x,baseY);}ctx.restore();
+ else{const text=truncateOverlayText(ctx,presentation.text,172),width=Math.max(28,Math.min(180,ctx.measureText(text).width+8));ctx.fillStyle='#0c1517dd';ctx.fillRect(item.x-width/2,baseY-7,width,14);ctx.fillStyle=presentation.color;ctx.textAlign='center';ctx.fillText(text,item.x,baseY);}ctx.restore();
 }
 
 export function drawTokens({ctx,camera,viewport,dpr,tokens,index,visuals,moving,drag,selected,queue,requestImage,artwork,delta,floorId,alpha=1,outOfBounds,resourceVisible,characterDisplays={},resourceOverlays=[],resourceOverlayDefinitions={},showCharacterIDs=false}){
