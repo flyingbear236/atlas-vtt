@@ -67,11 +67,16 @@ func createSessionForStorageTest(t *testing.T, server *Server, name string) *Ses
 func addPersistedCharacterFixture(t *testing.T, server *Server, session *Session) {
 	t.Helper()
 	session.CampaignDefinitions.Stats["speed"] = StatDefinition{ID: "speed", Name: "Speed", Type: StatTypeNumber}
-	session.CharacterInstances["wolf-1"] = CharacterInstance{
-		ID: "wolf-1", PresetID: "wolf", Name: "Wolf #1",
-		StatOverrides:  map[string]StatValue{"hp": IntegerStatValue(4), "speed": NumberStatValue(12)},
-		AddedActionIDs: []string{}, RemovedActionIDs: []string{},
+	registry, err := MergeDefinitionRegistries(sessionRegistries(session))
+	if err != nil {
+		t.Fatal(err)
 	}
+	preset := registry.Presets["wolf"]
+	instance := MaterializeCharacter(NewCharacterInstance("wolf-1", &preset), &preset, registry)
+	instance.Name = "Wolf #1"
+	instance = WithStatOverride(instance, "hp", IntegerStatValue(4))
+	instance = WithStatOverride(instance, "speed", NumberStatValue(12))
+	session.CharacterInstances[instance.ID] = instance
 	first := firstScene(session)
 	second := newScene("second-scene", "Second")
 	session.Scenes[second.ID] = second
@@ -88,6 +93,32 @@ func addPersistedCharacterFixture(t *testing.T, server *Server, session *Session
 	rebuildCharacterReferences(session)
 	server.dirty = true
 	if err := server.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Persist an actual pre-materialization document. Runtime saves reject legacy
+	// mechanics; only the loading boundary is allowed to migrate them.
+	path := filepath.Join(server.root, "sessions.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	persistedSession := document[session.ID].(map[string]any)
+	persistedCharacter := persistedSession["characterInstances"].(map[string]any)[instance.ID].(map[string]any)
+	delete(persistedCharacter, "materialized")
+	persistedCharacter["statOverrides"] = map[string]any{
+		"hp":    map[string]any{"type": "integer", "value": 4},
+		"speed": map[string]any{"type": "number", "value": 12},
+	}
+	legacy, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
 		t.Fatal(err)
 	}
 }

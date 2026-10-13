@@ -83,16 +83,6 @@ func TestCharacterWatchCrossSceneRevisionRevocationAndReconnect(t *testing.T) {
 		t.Fatal("unauthorized close leaked a character instance")
 	}
 
-	writeCharacterCommand(t, aliceWS, Command{Type: "characterStatSet", Client: "watch-alice", Seq: 1, CharacterID: characterID, StatID: "hp", StatValue: statValuePointer(IntegerStatValue(7))})
-	aliceSnapshot = decodeCharacterSnapshot(t, read(t, aliceWS, "characterSnapshot"))
-	if issue := ackError(t, read(t, aliceWS, "ack")); issue != "" {
-		t.Fatal(issue)
-	}
-	bobSnapshot = decodeCharacterSnapshot(t, read(t, bobWS, "characterSnapshot"))
-	if aliceSnapshot.Effective.Stats["hp"].Integer() != 7 || bobSnapshot.Effective.Stats["hp"].Integer() != 7 || aliceSnapshot.Revision != bobSnapshot.Revision {
-		t.Fatalf("cross-scene update mismatch: alice=%#v bob=%#v", aliceSnapshot.Effective.Stats, bobSnapshot.Effective.Stats)
-	}
-
 	fixture.server.mu.Lock()
 	registryRevision := fixture.session.RegistryRevision
 	preset := clonePresetDefinition(fixture.session.CampaignDefinitions.Presets["wolf"])
@@ -106,6 +96,16 @@ func TestCharacterWatchCrossSceneRevisionRevocationAndReconnect(t *testing.T) {
 	bobSnapshot = decodeCharacterSnapshot(t, read(t, bobWS, "characterSnapshot"))
 	if aliceSnapshot.Effective.Stats["dexterity"].Integer() != 21 || bobSnapshot.Effective.Stats["dexterity"].Integer() != 21 {
 		t.Fatal("preset edit did not refresh effective state")
+	}
+
+	writeCharacterCommand(t, aliceWS, Command{Type: "characterStatSet", Client: "watch-alice", Seq: 1, CharacterID: characterID, StatID: "hp", StatValue: statValuePointer(IntegerStatValue(7))})
+	aliceSnapshot = decodeCharacterSnapshot(t, read(t, aliceWS, "characterSnapshot"))
+	if issue := ackError(t, read(t, aliceWS, "ack")); issue != "" {
+		t.Fatal(issue)
+	}
+	bobSnapshot = decodeCharacterSnapshot(t, read(t, bobWS, "characterSnapshot"))
+	if aliceSnapshot.Instance.Materialized == nil || bobSnapshot.Instance.Materialized == nil || aliceSnapshot.Effective.Stats["hp"].Integer() != 7 || bobSnapshot.Effective.Stats["hp"].Integer() != 7 || aliceSnapshot.Revision != bobSnapshot.Revision {
+		t.Fatalf("cross-scene materialized update mismatch: alice=%#v bob=%#v", aliceSnapshot, bobSnapshot)
 	}
 
 	emptyOwners := []string{}
