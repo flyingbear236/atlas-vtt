@@ -375,3 +375,22 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .token-row-info .row-name{display:block;font-weight:600}
 .token-row .token-row-location{font-size:10px;margin:0;color:#829992;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:640px){.resource-config-layout{grid-template-columns:minmax(0,1fr)}.resource-config-preview{max-width:none}.resource-config-footer{flex-wrap:wrap}}
+
+/* Visible destination while arranging character-sheet cards. */
+.sheet-drop-placeholder{min-height:64px;min-width:0;display:flex;align-items:center;justify-content:center;border:2px dashed #9bbd84;border-radius:9px;background:rgba(145,189,126,.15);color:#d1e9bd;font-size:11px;pointer-events:none;animation:sheet-slot-in .12s ease-out}
+.sheet-entry-moving{opacity:.35;filter:grayscale(.4)}
+.sheet-entry-controls .sheet-handle{cursor:grab;touch-action:manipulation;min-width:34px;min-height:30px}
+.sheet-entry-controls .sheet-handle:active{cursor:grabbing}
+.sheet-grid>.sheet-drop-placeholder{min-height:120px}
+@keyframes sheet-slot-in{from{opacity:.45;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
+.character-parameter-current{display:grid;gap:8px}
+.character-parameter-current>strong{font-size:12px;margin-top:8px}
+.character-parameter-add{margin-top:14px}
+.character-parameter-new{border-top:1px solid var(--border);padding-top:10px}
+.character-parameter-new summary{cursor:pointer;color:var(--muted);font-size:12px}
+.character-parameter-new>label{display:grid;gap:5px;margin-top:10px}
+.character-parameter-remove{font-size:11px;white-space:nowrap}
+.character-stat-edit,.character-resource-initial{min-width:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.character-stat-edit label,.character-resource-initial input{min-width:0;flex:1}
+
+.character-resource-initial label{min-width:0;flex:1;display:grid;gap:4px}
