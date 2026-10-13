@@ -14,7 +14,7 @@ func characterCommandType(commandType string) bool {
 	switch commandType {
 	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
 		"characterStatSet", "characterStatReset", "characterResourceCurrentSet", "characterResourceCurrentReset",
-		"characterResourceInitialSet", "characterResourceAdd", "characterAvatarSet", "characterAvatarReset",
+		"characterResourceInitialSet", "characterResourceAdd", "characterParameterAdd", "characterParameterRemove", "characterAvatarSet", "characterAvatarReset",
 		"characterActionAdd", "characterActionRemove":
 		return true
 	default:
@@ -188,6 +188,7 @@ func nextCharacterID(session *Session) string {
 func applyCharacterCommand(session *Session, member *Member, sceneID string, command Command, mutation *characterMutation) error {
 	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
 		command.Type == "characterSetPersistent" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" ||
+		command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" ||
 		command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
@@ -361,6 +362,100 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if _, exists := instance.ResourceCurrent[command.StatID]; exists {
 			mutation.setInstance(ResetResourceCurrent(instance, command.StatID))
 		}
+		mutation.resultCharacterID = command.CharacterID
+	case "characterParameterAdd":
+		if command.StatValue == nil {
+			return errors.New("parameter value is required")
+		}
+		instance, exists := session.CharacterInstances[command.CharacterID]
+		if !exists {
+			return errors.New("character not found")
+		}
+		if err := validateID(command.StatID); err != nil {
+			return fmt.Errorf("parameter id: %w", err)
+		}
+		definition, exists := registry.Stats[command.StatID]
+		if command.StatDefinition != nil {
+			if exists {
+				return errors.New("parameter id is already registered")
+			}
+			definition = *command.StatDefinition
+			if definition.ID != command.StatID {
+				return errors.New("parameter definition id mismatch")
+			}
+			if err := ValidateStatDefinition(definition); err != nil {
+				return err
+			}
+			// Existing float definitions stay readable, but cannot be newly created.
+			if definition.Type == StatTypeNumber {
+				return errors.New("new parameters must be integer, boolean or string")
+			}
+			campaign := cloneCampaignRegistry(session.CampaignDefinitions)
+			if campaign.Stats == nil {
+				campaign.Stats = map[string]StatDefinition{}
+			}
+			campaign.Stats[command.StatID] = definition
+			merged, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign})
+			if err != nil {
+				return err
+			}
+			registry = merged
+			mutation.setCampaign(campaign)
+		} else if !exists {
+			return errors.New("unknown parameter definition")
+		}
+		if err := ValidateStatValueForDefinition(definition, *command.StatValue); err != nil {
+			return err
+		}
+		var preset *CharacterPresetDefinition
+		if instance.Materialized == nil && instance.PresetID != "" {
+			p, exists := registry.Presets[instance.PresetID]
+			if !exists {
+				return errors.New("character preset is unavailable")
+			}
+			preset = &p
+		}
+		if _, exists := EffectiveCharacterState(instance, preset, registry).Stats[command.StatID]; exists {
+			return errors.New("parameter is already assigned")
+		}
+		if _, exists := EffectiveCharacterState(instance, preset, registry).Resources[command.StatID]; exists {
+			return errors.New("parameter is already assigned")
+		}
+		instance = MaterializeCharacter(instance, preset, registry)
+		if definition.IsResource() {
+			instance = WithResourceInitial(instance, command.StatID, *command.StatValue)
+		} else {
+			instance = WithStatOverride(instance, command.StatID, *command.StatValue)
+		}
+		mutation.setInstance(instance)
+		mutation.resultCharacterID = command.CharacterID
+	case "characterParameterRemove":
+		instance, exists := session.CharacterInstances[command.CharacterID]
+		if !exists {
+			return errors.New("character not found")
+		}
+		if err := validateID(command.StatID); err != nil {
+			return fmt.Errorf("parameter id: %w", err)
+		}
+		var preset *CharacterPresetDefinition
+		if instance.Materialized == nil && instance.PresetID != "" {
+			p, exists := registry.Presets[instance.PresetID]
+			if !exists {
+				return errors.New("character preset is unavailable")
+			}
+			preset = &p
+		}
+		effective := EffectiveCharacterState(instance, preset, registry)
+		if _, isStat := effective.Stats[command.StatID]; !isStat {
+			if _, isResource := effective.Resources[command.StatID]; !isResource {
+				return errors.New("parameter is not assigned")
+			}
+		}
+		instance = MaterializeCharacter(instance, preset, registry)
+		delete(instance.Materialized.Stats, command.StatID)
+		delete(instance.Materialized.ResourceInitial, command.StatID)
+		delete(instance.ResourceCurrent, command.StatID)
+		mutation.setInstance(instance)
 		mutation.resultCharacterID = command.CharacterID
 	case "characterResourceAdd":
 		if command.StatValue == nil {
@@ -580,7 +675,7 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" {
 			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
-		if command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" {
+		if command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" || command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" {
 			s.publishCharacterDisplayChanged(session, mutation.changedCharacters)
 		}
 		s.refreshCharacterWatches(session, mutation.changedCharacters, mutation.token != nil || mutation.registryChanged)

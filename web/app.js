@@ -53,10 +53,26 @@ characterPanel.innerHTML=`
         <label id="characterPersistentLabel" class="check gm" hidden><input id="characterPersistent" type="checkbox"> Сохранить в кампании</label>
       </details>
       <details id="characterMechanicsSection" class="character-settings-section" hidden><summary>Редактирование механики</summary>
-        <h4>Характеристики</h4><div id="characterStatEditor"></div>
-        <form id="characterStatAdd"><div class="character-add-stat"><input id="characterStatID" placeholder="ID характеристики" maxlength="128" required><select id="characterStatType"><option value="integer">Целое</option><option value="number">Число</option><option value="boolean">Да / нет</option><option value="string">Строка</option></select></div><input id="characterStatValue" placeholder="Значение"><label id="characterStatBooleanLabel" class="check" hidden><input id="characterStatBoolean" type="checkbox"> Значение</label><button class="subtle wide" type="submit">Добавить характеристику</button></form>
-        <h4>Начальные значения ресурсов</h4><div id="characterResourceInitialEditor"></div>
-        <form id="characterResourceAdd" class="character-resource-add"><strong>Добавить ресурс</strong><label>Определение<select id="characterResourceSelect"><option value="__new__">Создать новый ресурс</option></select></label><div id="characterResourceDefinitionFields"><label>ID ресурса<input id="characterResourceID" placeholder="например, stamina" maxlength="128"></label><label>Название<input id="characterResourceName" placeholder="Выносливость" maxlength="120"></label><label>Тип<select id="characterResourceType"><option value="integer">Целое</option><option value="number">Число</option><option value="boolean">Да / нет</option><option value="string">Строка</option></select></label></div><label>Начальное значение<input id="characterResourceValue" type="number" step="1" value="0"></label><label class="check" id="characterResourceBooleanRow" hidden><input id="characterResourceBoolean" type="checkbox"> Значение</label><button class="subtle wide" type="submit">Добавить ресурс</button></form>
+        <h4>Параметры персонажа</h4>
+        <div class="character-parameter-current"><strong>Характеристики</strong><div id="characterStatEditor"></div><strong>Ресурсы · начальные значения</strong><div id="characterResourceInitialEditor"></div></div>
+        <form id="characterParameterAdd" class="character-resource-add character-parameter-add">
+          <strong>Добавить параметр</strong>
+          <div class="character-add-stat"><select id="characterParameterKind"><option value="all">Все</option><option value="stat">Характеристики</option><option value="resource">Ресурсы</option></select><input id="characterParameterSearch" placeholder="Поиск параметра…" aria-label="Поиск параметра"></div>
+          <label>Из существующих<select id="characterParameterSelect" required></select></label>
+          <label id="characterParameterValueLabel">Значение<input id="characterParameterValue" type="number" step="1" value="0"></label>
+          <label id="characterParameterBooleanRow" class="check" hidden><input id="characterParameterBoolean" type="checkbox"> Включено</label>
+          <button type="submit" class="primary wide">Добавить персонажу</button>
+          <details id="characterParameterNew" class="character-parameter-new"><summary>Создать новое определение (GM)</summary>
+            <p class="muted">Новое определение будет доступно в кампании, но назначится только этому персонажу.</p>
+            <label>Название<input id="characterParameterName" maxlength="200" placeholder="Например, Удача"></label>
+            <label>Вид<select id="characterParameterNewKind"><option value="stat">Характеристика</option><option value="resource">Ресурс</option></select></label>
+            <label>Тип<select id="characterParameterNewType"><option value="integer">Число</option><option value="boolean">Да / нет</option><option value="string">Строка</option></select></label>
+            <label>Технический ID (можно изменить)<input id="characterParameterNewID" maxlength="128" placeholder="Создаётся автоматически"></label>
+            <label id="characterParameterNewValueLabel">Значение<input id="characterParameterNewValue" type="number" step="1" value="0"></label>
+            <label id="characterParameterNewBooleanRow" class="check" hidden><input id="characterParameterNewBoolean" type="checkbox"> Включено</label>
+            <button id="characterParameterCreate" type="button" class="subtle wide">Создать и добавить</button>
+          </details>
+        </form>
         <h4>Действия</h4><div id="characterActionRemoveList"></div>
         <div id="characterActionManage" hidden><select id="characterActionAdd"></select><button id="characterActionAddButton" class="subtle wide" type="button">Добавить действие</button><button id="characterActionMore" class="subtle wide" type="button" hidden>Ещё действия</button></div>
         <button id="editCharacterPreset" class="subtle wide" type="button" hidden>Редактировать шаблон</button>
@@ -173,7 +189,7 @@ $('definitionsOpen').onclick=async()=>{
  if(!isGM(state?.you||campaign?.you)||state?.playerPreview)return;
  const source=resourceOverlayState();
  resourceOverlayEditor.open(source.resourceOverlays||[],source.resourceOverlayDefinitions||{});
- showCampaignSettingsTab('resources');await definitionsEditor.open();
+ showCampaignSettingsTab('rulesets');await definitionsEditor.open();
  if(definitionsEditor.backdrop.hidden)return;
  const stats=definitionsEditor.registry?.effective?.stats;
  if(stats)resourceOverlayEditor.setDefinitions(stats);
@@ -387,7 +403,7 @@ function connect(){
   if(msg.type==='storageError'){const wasDegraded=!!storageDegraded;storageDegraded=msg.message||'Сервер временно не может сохранять изменения на диск';updateCommandStatus();if(!wasDegraded)toast(storageDegraded);return;}
   if(msg.type==='storageRecovered'){storageDegraded='';updateCommandStatus();return;}
   if(characterWatch.handle(msg))return;
-  if(msg.type==='registryChanged'){resourceDefinitionRegistry=null;if(isGM(state?.you||campaign?.you)){refreshCharacterCatalog();definitionsEditor.registryChanged().then(()=>{if(!definitionsEditor.backdrop.hidden)resourceOverlayEditor.setDefinitions(definitionsEditor.registry?.effective?.stats||{});});}return;}
+  if(msg.type==='registryChanged'){resourceDefinitionRegistry=null;if(isGM(state?.you||campaign?.you)){if(characterMechanicsOpen)refreshResourceDefinitions();refreshCharacterCatalog();definitionsEditor.registryChanged().then(()=>{if(!definitionsEditor.backdrop.hidden)resourceOverlayEditor.setDefinitions(definitionsEditor.registry?.effective?.stats||{});});}return;}
   if(msg.type==='resourceOverlayConfigChanged'){if(campaign){campaign.resourceOverlays=msg.resourceOverlays||[];campaign.resourceOverlayDefinitions=msg.resourceOverlayDefinitions||{};}if(state){state.resourceOverlays=msg.resourceOverlays||[];state.resourceOverlayDefinitions=msg.resourceOverlayDefinitions||{};state.characterDisplays=msg.characterDisplays||{};dirty=true;}resourceOverlayEditor.onRemote(msg.resourceOverlays||[],msg.resourceOverlayDefinitions||{});return;}
   if(msg.type==='characterDisplayChanged'){if(state&&msg.sceneId===state.scene.id){state.characterDisplays=state.characterDisplays||{};state.characterDisplays[msg.characterId]=msg.display;dirty=true;}return;}
   if(msg.type==='presence'&&state){
@@ -551,13 +567,11 @@ function renderCharacterStats(snapshot){
   const output=document.createElement('strong');output.className='character-stat-value';output.textContent=definition.type==='boolean'?(value.value?'Да':'Нет'):String(value.value??'');card.title=definition.name||statID;card.dataset.sheetItem=`stat:${statID}`;card.append(name,output);container.append(card);
   if(!snapshot.permissions?.manage||!isEditorView())continue;
   const row=document.createElement('div');row.className='character-stat-edit';const label=document.createElement('label');label.textContent=definition.name||statID;label.append(makeCharacterStatInput(snapshot,statID,definition,value));row.append(label);
-  if(Object.hasOwn(snapshot.instance?.statOverrides||{},statID)){
-   const reset=document.createElement('button');reset.type='button';reset.className='subtle character-stat-reset';reset.textContent='Сбросить к пресету';reset.onclick=()=>{const key=`${snapshot.characterId}/${statID}`;clearTimeout(characterStatTimers.get(key));characterStatTimers.delete(key);characterDrafts.confirm(snapshot.characterId,{[statID]:characterDrafts.get(snapshot.characterId)[statID]});if(!confirmMechanicalEdit(snapshot))return;queueCommand('characterStatReset',{characterId:snapshot.characterId,statId:statID});};row.append(reset);
-  }
+  const remove=document.createElement('button');remove.type='button';remove.className='subtle character-parameter-remove';remove.textContent='Убрать';remove.title='Убрать характеристику у этого персонажа';remove.onclick=()=>removeCharacterParameter(snapshot,statID,definition.name||statID);row.append(remove);
   editor.append(row);
  }
  if(!ids.length)container.textContent='Нет характеристик.';
- $('characterStatAdd').hidden=!snapshot.permissions?.manage||!isEditorView();$('characterResourceAdd').hidden=!snapshot.permissions?.manage||!isEditorView();
+ $('characterParameterAdd').hidden=!snapshot.permissions?.manage||!isEditorView();
 }
 function createCharacterResourceInput(snapshot,statID,definition,resource,field){
  const input=document.createElement('input');input.type=definition.type==='boolean'?'checkbox':definition.type==='string'?'text':'number';
@@ -587,15 +601,11 @@ function renderCharacterResources(snapshot){
   if(Object.hasOwn(snapshot.instance?.resourceCurrent||{},statID)&&snapshot.permissions?.edit){const reset=document.createElement('button');reset.type='button';reset.className='subtle character-resource-reset';reset.textContent='Восстановить начальное';reset.onclick=()=>queueCommand('characterResourceCurrentReset',{characterId:snapshot.characterId,statId:statID});row.append(reset);}
   container.append(row);
   if(snapshot.permissions?.manage&&isEditorView()){
-   const label=document.createElement('label');label.className='character-resource-initial';label.textContent=definition.name||statID;label.append(createCharacterResourceInput(snapshot,statID,definition,resource,'initial'));editor.append(label);
+   const row=document.createElement('div');row.className='character-resource-initial';const label=document.createElement('label');label.textContent=definition.name||statID;label.append(createCharacterResourceInput(snapshot,statID,definition,resource,'initial'));const remove=document.createElement('button');remove.type='button';remove.className='subtle character-parameter-remove';remove.textContent='Убрать';remove.onclick=()=>removeCharacterParameter(snapshot,statID,definition.name||statID);row.append(label,remove);editor.append(row);
   }
  }
  if(!container.children.length)container.textContent='Нет ресурсов.';
- const form=$('characterResourceAdd');form.hidden=!snapshot.permissions?.manage||!isEditorView();
- const select=$('characterResourceSelect'),oldValue=select.value;select.replaceChildren();
- const fresh=document.createElement('option');fresh.value='__new__';fresh.textContent='Создать новый ресурс';select.append(fresh);
- for(const def of Object.values({...resourceDefinitionRegistry,...snapshot.statDefinitions}).filter(def=>def.kind==='resource'&&!Object.hasOwn(resources,def.id)).sort((a,b)=>(a.name||a.id).localeCompare(b.name||b.id))){const option=document.createElement('option');option.value=def.id;option.textContent=def.name||def.id;select.append(option);}
- select.value=[...select.options].some(option=>option.value===oldValue)?oldValue:'__new__';updateResourceAddForm();
+ updateCharacterParameterOptions(snapshot);
 }
 function formatRoll(roll){const modifier=[roll.modifierStat,roll.modifierFixed?String(roll.modifierFixed):''].filter(Boolean).join(' + ');return `${roll.count}d${roll.sides}${modifier?` + ${modifier}`:''}`;}
 function renderCharacterActions(snapshot){
@@ -614,7 +624,7 @@ function renderCharacterActions(snapshot){
  const effective=new Set(ids),available=characterCatalog.actions.filter(action=>!effective.has(action.id));fillCatalogSelect($('characterActionAdd'),available,characterCatalog.loading.has('actions')?'Загрузка…':'Выберите действие');const manage=snapshot.permissions?.manage&&isEditorView();$('characterActionManage').hidden=!manage;$('characterActionAddButton').disabled=!$('characterActionAdd').value;$('characterActionMore').hidden=!manage||!characterCatalog.next.actions;$('characterActionMore').disabled=characterCatalog.loading.has('actions');
 }
 let characterActiveTab='stats',characterSettingsOpen=false,characterMechanicsOpen=false,characterDisplayedID='';
-let sheetEdit=false,sheetScope='',sheetLayout=null,sheetDrag=null;
+let sheetEdit=false,sheetScope='',sheetLayout=null,sheetDrag=null,sheetDropMarker=null;
 const sheetSessionFingerprint=value=>{let hash=2166136261;for(const char of String(value||'')){hash=Math.imul(hash^char.charCodeAt(0),16777619);}return (hash>>>0).toString(16);};
 const sheetSavedScope=()=>{
  // The browser profile owns these preferences; campaign scope is a safe fallback.
@@ -649,6 +659,32 @@ function sheetEntryMenu(key,entries){
  if(answer==='0')sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});
  else{const option=options[Number(answer)-1];if(option)sheetMutate(layout=>{const tab=layout.tabs.find(t=>t.id===option.tab.id);if(!tab.sections.some(s=>s.id===option.section.id))tab.sections.push({...option.section,items:[]});return moveEntry(layout,key,option.tab.id,option.section.id);});}
 }
+function clearSheetDrag(){
+ sheetDropMarker?.remove();sheetDropMarker=null;
+ document.querySelectorAll('.sheet-entry-moving,.sheet-drop').forEach(node=>node.classList.remove('sheet-entry-moving','sheet-drop'));
+ sheetDrag=null;
+}
+function previewSheetDrop(event,listing){
+ if(sheetDrag?.kind!=='item')return;
+ event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='move';
+ if(!sheetDropMarker){sheetDropMarker=document.createElement('div');sheetDropMarker.className='sheet-drop-placeholder';sheetDropMarker.textContent='Переместить сюда';}
+ const grid=listing.classList.contains('sheet-grid');let before=null;
+ for(const node of listing.querySelectorAll(':scope > .sheet-entry')){
+  const box=node.getBoundingClientRect();
+  if(event.clientY<box.top+box.height/2 || grid&&event.clientY<box.bottom&&event.clientX<box.left+box.width/2){before=node;break;}
+ }
+ if(sheetDropMarker.parentElement!==listing||sheetDropMarker.nextElementSibling!==before){sheetDropMarker.parentElement?.classList.remove('sheet-drop');listing.insertBefore(sheetDropMarker,before);}
+ listing.classList.add('sheet-drop');
+}
+function finishSheetDrop(tab,section){
+ if(sheetDrag?.kind!=='item')return;
+ const key=sheetDrag.key;
+ let next=sheetDropMarker?.nextElementSibling;
+ while(next?.dataset?.sheetItem===key)next=next.nextElementSibling;
+ const before=next?.dataset?.sheetItem||'';
+ clearSheetDrag();
+ sheetMutate(layout=>{ensureSheetSection(layout,tab,section);return moveEntry(layout,key,tab.id,section.id,before);});
+}
 function renderSheetLayout(snapshot){
  const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';}
  const entries=sheetEntryList(snapshot);
@@ -658,7 +694,7 @@ function renderSheetLayout(snapshot){
  if(!full.tabs.some(tab=>tab.id===characterActiveTab))characterActiveTab='stats';
  for(const tab of full.tabs){
   const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;renderCharacterPanel();};
-  if(sheetEdit){button.draggable=true;button.ondragstart=event=>{sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};button.ondragover=event=>event.preventDefault();button.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='item')sheetMutate(layout=>{const t=layout.tabs.find(t=>t.id===tab.id);let bucket=t.sections.find(s=>s.id===`user:drop:${tab.id}`);if(!bucket){bucket={id:`user:drop:${tab.id}`,name:'Перемещённые',view:'list',collapsed:false,items:[]};t.sections.push(bucket);}characterActiveTab=tab.id;return moveEntry(layout,sheetDrag.key,tab.id,bucket.id);});else if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===sheetDrag.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});else if(sheetDrag?.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===sheetDrag.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});};button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
+  if(sheetEdit){button.draggable=true;button.ondragend=clearSheetDrag;button.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};button.ondragover=event=>event.preventDefault();button.ondrop=event=>{event.preventDefault();sheetDropMarker?.remove();sheetDropMarker=null;if(sheetDrag?.kind==='item')sheetMutate(layout=>{const t=layout.tabs.find(t=>t.id===tab.id);let bucket=t.sections.find(s=>s.id===`user:drop:${tab.id}`);if(!bucket){bucket={id:`user:drop:${tab.id}`,name:'Перемещённые',view:'list',collapsed:false,items:[]};t.sections.push(bucket);}characterActiveTab=tab.id;return moveEntry(layout,sheetDrag.key,tab.id,bucket.id);});else if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===sheetDrag.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});else if(sheetDrag?.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===sheetDrag.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});};button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
   tabs.append(button);
  }
  if(sheetEdit){const add=document.createElement('button');add.type='button';add.textContent='+';add.title='Новая вкладка';add.onclick=()=>{const name=prompt('Название новой вкладки');if(name?.trim())sheetMutate(layout=>{const id=`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;layout.tabs.push({id,name:name.trim().slice(0,120),sections:[]});characterActiveTab=id;return layout;});};tabs.append(add);}
@@ -667,12 +703,15 @@ function renderSheetLayout(snapshot){
  if(sheetEdit){const toolbar=document.createElement('div');toolbar.className='sheet-edit-toolbar';const add=document.createElement('button');add.type='button';add.textContent='+ Раздел';add.onclick=()=>{const name=prompt('Название раздела');if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===selected.id).sections.push({id:`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`,name:name.trim().slice(0,120),view:'list',collapsed:false,items:[]});return layout;});};toolbar.append(add);const hidden=entries.filter(entry=>sheetLayout.hidden.includes(entry.key));if(hidden.length){const restore=document.createElement('button');restore.type='button';restore.textContent=`Скрытые (${hidden.length})`;restore.onclick=()=>{const answer=prompt(hidden.map((entry,i)=>`${i+1}. ${entry.name}`).join('\n'));const entry=hidden[Number(answer)-1];if(entry)sheetMutate(layout=>{layout.hidden=layout.hidden.filter(item=>item!==entry.key);return layout;});};toolbar.append(restore);}body.append(toolbar);}
  for(const section of selected.sections){
   const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
-  const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragstart=event=>{sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
+  const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
   if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
   wrapper.append(heading);const listing=document.createElement('div');listing.className=section.view==='grid'?'sheet-grid':'sheet-list';listing.hidden=section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
-  if(sheetEdit){listing.ondragover=event=>{event.preventDefault();listing.classList.add('sheet-drop');};listing.ondragleave=()=>listing.classList.remove('sheet-drop');listing.ondrop=event=>{event.preventDefault();listing.classList.remove('sheet-drop');if(sheetDrag?.kind==='item')sheetMutate(layout=>{let target=layout.tabs.find(t=>t.id===selected.id).sections.find(s=>s.id===section.id);if(!target){target={...section};layout.tabs.find(t=>t.id===selected.id).sections.push(target);}return moveEntry(layout,sheetDrag.key,selected.id,section.id);});sheetDrag=null;};}
+  if(sheetEdit){
+   listing.ondragover=event=>previewSheetDrop(event,listing);
+   listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
+  }
   for(const key of section.items){const item=elements.get(key);if(!item)continue;const frame=document.createElement('div');frame.className='sheet-entry';frame.dataset.sheetItem=key;
-   if(sheetEdit){const drag=document.createElement('button');drag.type='button';drag.className='subtle sheet-handle';drag.textContent='⠿';drag.draggable=true;drag.title='Перетащить';drag.ondragstart=event=>{sheetDrag={kind:'item',key};event.dataTransfer.setData('text/plain',key);};const hide=document.createElement('button');hide.type='button';hide.className='subtle sheet-entry-hide';hide.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3 21 21M10.6 6.2A10.5 10.5 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-3 3.4M6.4 6.4C3.8 8 3 12 3 12s3 6 9 6a10 10 0 0 0 3.6-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';hide.title='Скрыть элемент';hide.setAttribute('aria-label','Скрыть элемент');hide.onclick=()=>sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});const controls=document.createElement('div');controls.className='sheet-entry-controls';controls.append(drag,hide);frame.append(item,controls);frame.ondragover=event=>event.preventDefault();frame.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='item')sheetMutate(layout=>moveEntry(layout,sheetDrag.key,selected.id,section.id,key));sheetDrag=null;};}
+   if(sheetEdit){const drag=document.createElement('button');drag.type='button';drag.className='subtle sheet-handle';drag.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20m0-20-4 4m4-4 4 4m-4 16-4-4m4 4 4-4M2 12h20m-20 0 4-4m-4 4 4 4m16-4-4-4m4 4-4 4"/></svg>';drag.setAttribute('aria-label','Переместить карточку');drag.draggable=true;drag.title='Перетащить';drag.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'item',key};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',key);frame.classList.add('sheet-entry-moving');};drag.ondragend=clearSheetDrag;const hide=document.createElement('button');hide.type='button';hide.className='subtle sheet-entry-hide';hide.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3 21 21M10.6 6.2A10.5 10.5 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-3 3.4M6.4 6.4C3.8 8 3 12 3 12s3 6 9 6a10 10 0 0 0 3.6-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';hide.title='Скрыть элемент';hide.setAttribute('aria-label','Скрыть элемент');hide.onclick=()=>sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});const controls=document.createElement('div');controls.className='sheet-entry-controls';controls.append(drag,hide);frame.append(item,controls);frame.ondragover=event=>previewSheetDrop(event,listing);frame.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};}
    frame.append(item);listing.append(frame);
   }
   wrapper.append(listing);body.append(wrapper);
@@ -776,35 +815,60 @@ $('characterRosterMore').onclick=()=>characterCatalog.more('roster').catch(error
 $('characterActionAdd').onchange=()=>{$('characterActionAddButton').disabled=!$('characterActionAdd').value;};
 $('characterActionAddButton').onclick=()=>{const snapshot=characterWatch.snapshot,actionId=$('characterActionAdd').value;if(snapshot?.permissions?.manage&&actionId)confirmMechanicalEdit(snapshot)&&queueCommand('characterActionAdd',{characterId:snapshot.characterId,actionId});};
 $('characterActionMore').onclick=()=>characterCatalog.more('actions').catch(error=>toast(error.message));
-function updateResourceAddForm(){
- const select=$('characterResourceSelect'),fresh=select.value==='__new__';$('characterResourceDefinitionFields').hidden=!fresh;
- const definition=fresh?null:(resourceDefinitionRegistry?.[select.value]||characterWatch.snapshot?.statDefinitions?.[select.value]);
- const type=definition?.type||$('characterResourceType').value;
- $('characterResourceValue').type=type==='string'?'text':'number';$('characterResourceValue').step=type==='integer'?'1':'any';$('characterResourceValue').hidden=type==='boolean';$('characterResourceBooleanRow').hidden=type!=='boolean';
+function removeCharacterParameter(snapshot,id,name){
+ if(!snapshot?.permissions?.manage||!isEditorView()||!confirm(`Убрать «${name}» только у этого персонажа? Значение будет удалено.`)||!confirmMechanicalEdit(snapshot))return;
+ const linkedActions=Object.values(snapshot.actions||{}).filter(action=>(action.rolls||[]).some(roll=>roll.modifierStat===id)).map(action=>action.name||action.id);if(linkedActions.length&&!confirm(`Этот параметр используется в бросках действий: ${linkedActions.join(', ')}. После удаления модификатор станет недоступен. Продолжить?`))return;
+ const key=`${snapshot.characterId}/${id}`;clearTimeout(characterStatTimers.get(key));characterStatTimers.delete(key);
+ if(queueCommand('characterParameterRemove',{characterId:snapshot.characterId,statId:id}))characterDrafts.confirm(snapshot.characterId,{[id]:characterDrafts.get(snapshot.characterId)[id]});
+}
+function updateCharacterParameterOptions(snapshot=characterWatch.snapshot){
+ if(!snapshot)return;
+ const selection=$('characterParameterSelect'),previous=selection.value,kind=$('characterParameterKind').value,query=$('characterParameterSearch').value.trim().toLocaleLowerCase('ru');
+ const existing=new Set([...Object.keys(snapshot.effective?.stats||{}),...Object.keys(snapshot.effective?.resources||{})]);
+ const definitions={...(resourceDefinitionRegistry||{}),...(snapshot.statDefinitions||{})};
+ const available=Object.values(definitions).filter(d=>d.type!=='number'&&!existing.has(d.id)&&(kind==='all'||(d.kind==='resource'?'resource':'stat')===kind)&&`${d.name||''} ${d.id}`.toLocaleLowerCase('ru').includes(query)).sort((a,b)=>(a.name||a.id).localeCompare(b.name||b.id,'ru'));
+ selection.replaceChildren();for(const def of available){const option=document.createElement('option');option.value=def.id;option.textContent=`${def.name||def.id} · ${def.kind==='resource'?'Ресурс':'Характеристика'}`;selection.append(option);}
+ if(available.some(d=>d.id===previous))selection.value=previous;
+ selection.disabled=!available.length;
+ $('characterParameterAdd').querySelector('[type=submit]').disabled=!available.length;
+ updateCharacterParameterValue();
+}
+function updateCharacterParameterValue(newDefinition=false){
+ const prefix=newDefinition?'characterParameterNew':'characterParameter',definition=newDefinition?{type:$('characterParameterNewType').value,kind:$('characterParameterNewKind').value==='resource'?'resource':''}:(resourceDefinitionRegistry?.[$('characterParameterSelect').value]||characterWatch.snapshot?.statDefinitions?.[$('characterParameterSelect').value]);
+ const type=definition?.type||'integer',input=$(prefix+'Value'),bool=$(prefix+'BooleanRow');
+ input.type=type==='string'?'text':'number';input.step=type==='number'?'any':'1';input.hidden=type==='boolean';bool.hidden=type!=='boolean';
+ $(prefix+'ValueLabel').firstChild.textContent=(definition?.kind==='resource'?'Начальное значение':'Значение');
+ if(type==='boolean')return;
+ if(type==='string'&&input.value==='0')input.value='';
 }
 async function refreshResourceDefinitions(){
  try{const definitions=await loadDefinitions();resourceDefinitionRegistry=definitions.effective?.stats||{};if(characterWatch.snapshot)renderCharacterPanel();}
- catch(error){toast(`Не удалось получить определения ресурсов: ${error.message}`);}
+ catch(error){toast(`Не удалось получить определения: ${error.message}`);}
 }
-$('characterResourceSelect').onfocus=()=>{if(!resourceDefinitionRegistry)refreshResourceDefinitions();};
-$('characterResourceSelect').onchange=updateResourceAddForm;
-$('characterResourceType').onchange=updateResourceAddForm;
-$('characterResourceAdd').onsubmit=event=>{
- event.preventDefault();const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage||!isEditorView())return;
- const fresh=$('characterResourceSelect').value==='__new__',id=fresh?$('characterResourceID').value.trim():$('characterResourceSelect').value;
- const type=fresh?$('characterResourceType').value:(resourceDefinitionRegistry?.[id]||snapshot.statDefinitions?.[id])?.type;
- if(!id||!type){toast('Выберите или создайте определение ресурса');return;}
- try{const value=statValueFromInput(type,$('characterResourceValue').value,$('characterResourceBoolean').checked);
- const definition=fresh?{id,name:$('characterResourceName').value.trim()||id,type,kind:'resource'}:undefined;
- if(!confirmMechanicalEdit(snapshot))return;
- if(queueCommand('characterResourceAdd',{characterId:snapshot.characterId,statId:id,statValue:value,...(definition?{statDefinition:definition}:{})})){
-   $('characterResourceID').value='';$('characterResourceName').value='';$('characterResourceValue').value='0';$('characterResourceBoolean').checked=false;
+$('characterParameterKind').onchange=()=>updateCharacterParameterOptions();
+$('characterParameterSearch').oninput=()=>updateCharacterParameterOptions();
+$('characterParameterSelect').onchange=()=>updateCharacterParameterValue();
+$('characterParameterNewType').onchange=()=>updateCharacterParameterValue(true);
+$('characterParameterNewKind').onchange=()=>updateCharacterParameterValue(true);
+$('characterParameterAdd').onsubmit=e=>{
+ e.preventDefault();const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage||!isEditorView())return;
+ const id=$('characterParameterSelect').value,def=resourceDefinitionRegistry?.[id]||snapshot.statDefinitions?.[id];if(!def)return;
+ try{const value=statValueFromInput(def.type,$('characterParameterValue').value,$('characterParameterBoolean').checked);
+ if(confirmMechanicalEdit(snapshot)&&queueCommand('characterParameterAdd',{characterId:snapshot.characterId,statId:id,statValue:value}))$('characterParameterSearch').value='';
+ }catch(error){toast(error.message);}
+};
+$('characterParameterNew').onkeydown=e=>{if(e.key==='Enter'&&e.target instanceof HTMLInputElement){e.preventDefault();$('characterParameterCreate').click();}};
+$('characterParameterCreate').onclick=()=>{
+ const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage||!isEditorView())return;
+ const name=$('characterParameterName').value.trim(),id=$('characterParameterNewID').value.trim()||name.replace(/\s+/g,'_').toLowerCase(),type=$('characterParameterNewType').value,kind=$('characterParameterNewKind').value==='resource'?'resource':'';
+ if(!name||!id){toast('Укажите название нового параметра');return;}
+ try{const value=statValueFromInput(type,$('characterParameterNewValue').value,$('characterParameterNewBoolean').checked),definition={id,name,type,...(kind?{kind}:{})};
+ if(confirmMechanicalEdit(snapshot)&&queueCommand('characterParameterAdd',{characterId:snapshot.characterId,statId:id,statValue:value,statDefinition:definition})){
+  $('characterParameterNew').open=false;$('characterParameterName').value='';$('characterParameterNewID').value='';$('characterParameterNewValue').value='0';$('characterParameterNewBoolean').checked=false;
  }
  }catch(error){toast(error.message);}
 };
-function updateNewStatInput(){const type=$('characterStatType').value,boolean=type==='boolean';$('characterStatValue').hidden=boolean;$('characterStatValue').required=type==='integer'||type==='number';$('characterStatBooleanLabel').hidden=!boolean;}
-$('characterStatType').onchange=updateNewStatInput;updateNewStatInput();
-$('characterStatAdd').onsubmit=e=>{e.preventDefault();const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage)return;const statId=$('characterStatID').value.trim();try{const type=$('characterStatType').value,value=statValueFromInput(type,$('characterStatValue').value,$('characterStatBoolean').checked),isNew=!Object.hasOwn(snapshot.statDefinitions||{},statId);characterDrafts.set(snapshot.characterId,statId,value);if(queueCharacterStat(snapshot.characterId,statId,value,isNew)){$('characterStatID').value='';$('characterStatValue').value='';$('characterStatBoolean').checked=false;renderCharacterPanel();}}catch(error){toast(error.message);}};
+updateCharacterParameterValue(true);
 $('characterAvatarUpload').onchange=async e=>{const control=e.target,file=control.files[0],snapshot=characterWatch.snapshot;if(!file||!snapshot?.permissions?.edit)return;if(file.size>10*1024*1024){toast('Avatar не должен превышать 10 МиБ');control.value='';return;}const characterID=snapshot.characterId,controller=new AbortController();characterAvatarUploads.get(characterID)?.abort();characterAvatarUploads.set(characterID,controller);uploadControllers.add(controller);control.disabled=true;try{const query=new URLSearchParams({session:credentials.session,kind:'avatar',characterId:characterID});await api(`/api/upload?${query}`,file,true,controller.signal);if(!controller.signal.aborted&&characterWatch.characterId===characterID)toast('Avatar обновлён');}catch(error){if(error.name!=='AbortError')toast(error.message);}finally{uploadControllers.delete(controller);if(characterAvatarUploads.get(characterID)===controller)characterAvatarUploads.delete(characterID);control.disabled=false;control.value='';}};
 $('characterRename').onchange=()=>{const snapshot=characterWatch.snapshot;if(snapshot?.permissions?.edit&&$('characterRename').value.trim())queueCommand('characterNameSet',{characterId:snapshot.characterId,characterName:$('characterRename').value.trim()});};
 $('characterAvatarReset').onclick=()=>{const snapshot=characterWatch.snapshot;if(snapshot?.permissions?.edit)queueCommand('characterAvatarReset',{characterId:snapshot.characterId});};
