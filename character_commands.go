@@ -14,7 +14,7 @@ func characterCommandType(commandType string) bool {
 	switch commandType {
 	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
 		"characterStatSet", "characterStatReset", "characterResourceCurrentSet", "characterResourceCurrentReset",
-		"characterResourceInitialSet", "characterAvatarSet", "characterAvatarReset",
+		"characterResourceInitialSet", "characterResourceAdd", "characterAvatarSet", "characterAvatarReset",
 		"characterActionAdd", "characterActionRemove":
 		return true
 	default:
@@ -187,7 +187,7 @@ func nextCharacterID(session *Session) string {
 
 func applyCharacterCommand(session *Session, member *Member, sceneID string, command Command, mutation *characterMutation) error {
 	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
-		command.Type == "characterSetPersistent" || command.Type == "characterResourceInitialSet" ||
+		command.Type == "characterSetPersistent" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" ||
 		command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
@@ -362,6 +362,64 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			mutation.setInstance(ResetResourceCurrent(instance, command.StatID))
 		}
 		mutation.resultCharacterID = command.CharacterID
+	case "characterResourceAdd":
+		if command.StatValue == nil {
+			return errors.New("initial resource value is required")
+		}
+		instance, exists := session.CharacterInstances[command.CharacterID]
+		if !exists {
+			return errors.New("character not found")
+		}
+		if len(command.StatID) == 0 {
+			return errors.New("resource id is required")
+		}
+		if _, exists := EffectiveCharacterState(instance, nil, registry).Resources[command.StatID]; exists {
+			return errors.New("resource is already assigned")
+		}
+		definition, exists := registry.Stats[command.StatID]
+		if command.StatDefinition != nil {
+			if exists {
+				return errors.New("stat id is already registered")
+			}
+			definition = *command.StatDefinition
+			if definition.ID != command.StatID || !definition.IsResource() {
+				return errors.New("invalid new resource definition")
+			}
+			if err := ValidateStatDefinition(definition); err != nil {
+				return err
+			}
+			campaign := cloneCampaignRegistry(session.CampaignDefinitions)
+			if campaign.Stats == nil {
+				campaign.Stats = map[string]StatDefinition{}
+			}
+			campaign.Stats[definition.ID] = definition
+			validated, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign})
+			if err != nil {
+				return err
+			}
+			registry = validated
+			mutation.setCampaign(campaign)
+		} else if !exists || !definition.IsResource() {
+			return errors.New("unknown resource definition")
+		}
+		if err := ValidateStatValueForDefinition(definition, *command.StatValue); err != nil {
+			return err
+		}
+		var preset *CharacterPresetDefinition
+		if instance.Materialized == nil && instance.PresetID != "" {
+			if p, ok := registry.Presets[instance.PresetID]; ok {
+				preset = &p
+			} else {
+				return errors.New("character preset is unavailable")
+			}
+		}
+		instance = MaterializeCharacter(instance, preset, registry)
+		if _, exists := instance.Materialized.ResourceInitial[command.StatID]; exists {
+			return errors.New("resource is already assigned")
+		}
+		instance = WithResourceInitial(instance, command.StatID, *command.StatValue)
+		mutation.setInstance(instance)
+		mutation.resultCharacterID = command.CharacterID
 	case "characterResourceInitialSet":
 		if command.StatValue == nil {
 			return errors.New("resource initial value is required")
@@ -522,7 +580,7 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" {
 			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
-		if command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" {
+		if command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" {
 			s.publishCharacterDisplayChanged(session, mutation.changedCharacters)
 		}
 		s.refreshCharacterWatches(session, mutation.changedCharacters, mutation.token != nil || mutation.registryChanged)

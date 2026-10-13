@@ -99,11 +99,12 @@ type TransitionEndpoint struct {
 }
 
 type Transition struct {
-	ID        string             `json:"id"`
-	Name      string             `json:"name"`
-	EndpointA TransitionEndpoint `json:"endpointA"`
-	EndpointB TransitionEndpoint `json:"endpointB"`
-	Direction string             `json:"direction"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	EndpointA     TransitionEndpoint `json:"endpointA"`
+	EndpointB     TransitionEndpoint `json:"endpointB"`
+	Direction     string             `json:"direction"`
+	ShowToPlayers bool               `json:"showToPlayers,omitempty"`
 }
 
 func validSceneBounds(bounds SceneBounds) bool {

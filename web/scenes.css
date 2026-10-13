@@ -315,3 +315,13 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .sheet-handle { cursor:grab; }
 .sheet-edit-toolbar { display:flex; gap:7px; flex-wrap:wrap; margin-bottom:10px; }
 .sheet-drop { outline:2px dashed var(--text); min-height:35px; border-radius:5px; }
+
+/* Layout controls belong to the card that they edit. */
+.sheet-entry{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:#1c2927}
+.sheet-entry > .character-stat-card,.sheet-entry > .character-resource-card,.sheet-entry > .character-action-card{height:auto;min-height:0;flex:1;border:0;background:transparent}
+.sheet-entry-controls{display:flex;align-items:center;gap:4px;margin-top:auto;padding:5px 8px 7px}
+.sheet-entry-controls .sheet-handle,.sheet-entry-controls .sheet-entry-hide{position:static;margin:0;padding:4px 7px;display:grid;place-items:center;border-radius:6px}
+.sheet-entry-controls button:focus-visible{outline:2px solid var(--accent)}
+.sheet-grid>.sheet-entry{min-width:0}.character-resource-card,.character-resource-head,.character-resource-controls{min-width:0}.character-resource-head strong{overflow-wrap:anywhere}
+
+.character-resource-add{display:grid;gap:9px;margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:8px}.character-resource-add label{display:grid;gap:4px}.character-resource-add input,.character-resource-add select{min-width:0;max-width:100%}
