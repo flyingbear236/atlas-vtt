@@ -36,8 +36,8 @@ function worldPoint(transform,x,y){
   return {x:dx*Math.cos(angle)-dy*Math.sin(angle)+cx,y:dx*Math.sin(angle)+dy*Math.cos(angle)+cy};
 }
 
-export function hitElement(state,floorId,x,y,renderIndex){
-  return elementsAtPoint(state,floorId,x,y,renderIndex)[0]||null;
+export function hitElement(state,floorId,x,y,renderIndex,skipLocked=false){
+  return elementsAtPoint(state,floorId,x,y,renderIndex).find(element=>!skipLocked||!state.layers[element.layerId]?.locked)||null;
 }
 
 export function elementsAtPoint(state,floorId,x,y,renderIndex){
@@ -296,6 +296,22 @@ export function drawTransitionOverlay(ctx,state,currentFloorId,camera,{selectedI
     if(a){if(a.floorId===currentFloorId)drawTransitionEndpoint(ctx,a,'A',camera,true);if((draft.phase==='placingB'||draft.phase==='editingB')&&cursor){ctx.save();ctx.strokeStyle='#d8e8bd';ctx.lineWidth=1.5/camera.scale;ctx.setLineDash([7/camera.scale,6/camera.scale]);ctx.beginPath();ctx.moveTo(a.position.x,a.position.y);ctx.lineTo((b||cursor).position?.x??cursor.x,(b||cursor).position?.y??cursor.y);ctx.stroke();ctx.restore();}}
     if(b&&b.floorId===currentFloorId)drawTransitionEndpoint(ctx,b,'B',camera,true);
     if(active){const endpoint=draft[active];if(endpoint?.floorId===currentFloorId){const offset=endpoint.radius+18/camera.scale,size=7/camera.scale,y=endpoint.position.y-14/camera.scale,x=endpoint.position.x+offset;ctx.save();ctx.fillStyle='#cfe5a9';ctx.fillRect(x-size,y-size,2*size,2*size);ctx.fillStyle='#20301e';ctx.font=`${11/camera.scale}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('✓',x,y);ctx.fillStyle='#e59b91';const cancelX=x+21/camera.scale;ctx.fillRect(cancelX-size,y-size,2*size,2*size);ctx.fillStyle='#35201f';ctx.fillText('×',cancelX,y);ctx.restore();}}
+  }
+  ctx.restore();
+}
+
+// Player-visible endpoints are minimal projections: no destination, identifier or radius.
+export function drawPlayerTransitionMarkers(ctx,markers,floorId,camera){
+  if(!Array.isArray(markers))return;
+  const size=13/camera.scale;
+  ctx.save();
+  for(const marker of markers){
+    if(marker.floorId!==floorId||!marker.position)continue;
+    const {x,y}=marker.position;
+    ctx.save();ctx.translate(x,y);ctx.lineWidth=2/camera.scale;ctx.fillStyle='#23312df0';ctx.strokeStyle='#d5e4ba';
+    ctx.beginPath();ctx.roundRect(-size,-size,size*2,size*2,3/camera.scale);ctx.fill();ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-size*.53,size*.65);ctx.lineTo(-size*.53,-size*.65);ctx.lineTo(size*.48,-size*.65);ctx.lineTo(size*.48,size*.65);ctx.moveTo(-size*.53,size*.65);ctx.lineTo(size*.48,size*.65);ctx.stroke();
+    ctx.beginPath();ctx.arc(size*.22,0,1.6/camera.scale,0,Math.PI*2);ctx.fillStyle='#d5e4ba';ctx.fill();ctx.restore();
   }
   ctx.restore();
 }

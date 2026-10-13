@@ -616,6 +616,19 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 			layers[layerID] = layer
 		}
 	}
+	markers := []map[string]any{}
+	if playerProjection {
+		for _, transition := range scene.Transitions {
+			if !transition.ShowToPlayers {
+				continue
+			}
+			for _, endpoint := range []TransitionEndpoint{transition.EndpointA, transition.EndpointB} {
+				if _, ok := visibleFloors[endpoint.FloorID]; ok {
+					markers = append(markers, map[string]any{"floorId": endpoint.FloorID, "position": endpoint.Position})
+				}
+			}
+		}
+	}
 	transitions := scene.Transitions
 	if playerProjection {
 		// Transition geometry is editor state. Runtime triggering is authoritative
@@ -636,6 +649,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		"characterDisplays": characterDisplaysForTokens(ss, registry, tokens),
 		"ownedTokens":       ownedTokenLocators(ss, registry, scene, member),
 		"transitions":       transitions,
+		"transitionMarkers": markers,
 		"assets":            assets,
 		"members":           members,
 		"you":               *member,
@@ -755,7 +769,18 @@ func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, active
 	if token, ok := activeTokenForMember(scene, member, activeTokenID); ok {
 		floorID = tokenFloorID(scene, token)
 	}
-	for visibleFloorID := range visibleFloorSet(scene, floorID) {
+	visibleFloors := visibleFloorSet(scene, floorID)
+	if isCharacterArtworkAsset(asset) {
+		registry, err := MergeDefinitionRegistries(sessionRegistries(ss))
+		if err == nil {
+			for _, token := range scene.Tokens {
+				if _, visible := visibleFloors[token.FloorID]; visible && !token.Hidden && presentToken(ss, registry, token).Asset == assetID {
+					return true
+				}
+			}
+		}
+	}
+	for visibleFloorID := range visibleFloors {
 		if rt.assetPublicByFloor[visibleFloorID][assetID] > 0 {
 			return true
 		}
