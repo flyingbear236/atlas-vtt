@@ -118,7 +118,6 @@ function initOutbox(){
         if(cmd.type.startsWith('character')){if(cmd.statId&&sameValue(characterDrafts.get(cmd.characterId)[cmd.statId],cmd.statValue))pendingNewStats.delete(`${cmd.characterId}/${cmd.statId}`);renderCharacterPanel();}
         if(cmd.type==='transitionCreate'&&transitionDraft?.phase==='awaitingCreate'){transitionDraft={...transitionDraft,phase:'editingB'};delete transitionDraft.priorIds;fillTransitionProperties();}
         if(cmd.type==='transitionUpdate')send({type:'sync'});
-		if(cmd.type==='resourceOverlayConfigSet')resourceOverlayEditor.onSaved(error,resourceOverlayState().resourceOverlays);
       }else if(cmd.type==='properties'){drafts.confirm(cmd.token.id,cmd.properties);if(cmd.sceneId===state?.scene?.id)fillProperties();}
       else if(cmd.type==='elementUpdate'){elementDrafts.confirm(cmd.element.id,cmd.elementProperties);if(cmd.sceneId===state?.scene?.id)fillElementProperties();}
       else if(cmd.type==='elementTransform'){elementDrafts.confirm(cmd.element.id,cmd.element.transform);if(cmd.sceneId===state?.scene?.id)fillElementProperties();}
@@ -128,7 +127,9 @@ function initOutbox(){
         renderCharacterPanel();
       }
       else if(cmd.type==='characterStatReset'){characterDrafts.confirm(cmd.characterId,{[cmd.statId]:undefined});renderCharacterPanel();}
+      else if(cmd.type==='characterParameterAdd')clearCharacterParameterDraft(!!cmd.statDefinition);
       else if(cmd.type==='characterSetPersistent')refreshCharacterCatalog();
+      if(cmd.type==='resourceOverlayConfigSet')resourceOverlayEditor.onSaved(error,resourceOverlayState().resourceOverlays);
       if(position)attemptPreviewSwitch();
     });
     outbox=make(`atlas-outbox/${credentials.session}/${credentials.key}`,false);
@@ -841,6 +842,11 @@ function updateCharacterParameterValue(newDefinition=false){
  if(type==='boolean')return;
  if(type==='string'&&input.value==='0')input.value='';
 }
+function clearCharacterParameterDraft(newDefinition){
+ $('characterParameterSearch').value='';
+ if(!newDefinition)return;
+ $('characterParameterNew').open=false;$('characterParameterName').value='';$('characterParameterNewID').value='';$('characterParameterNewValue').value='0';$('characterParameterNewBoolean').checked=false;
+}
 async function refreshResourceDefinitions(){
  try{const definitions=await loadDefinitions();resourceDefinitionRegistry=definitions.effective?.stats||{};if(characterWatch.snapshot)renderCharacterPanel();}
  catch(error){toast(`Не удалось получить определения: ${error.message}`);}
@@ -854,7 +860,7 @@ $('characterParameterAdd').onsubmit=e=>{
  e.preventDefault();const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage||!isEditorView())return;
  const id=$('characterParameterSelect').value,def=resourceDefinitionRegistry?.[id]||snapshot.statDefinitions?.[id];if(!def)return;
  try{const value=statValueFromInput(def.type,$('characterParameterValue').value,$('characterParameterBoolean').checked);
- if(confirmMechanicalEdit(snapshot)&&queueCommand('characterParameterAdd',{characterId:snapshot.characterId,statId:id,statValue:value}))$('characterParameterSearch').value='';
+ if(confirmMechanicalEdit(snapshot))queueCommand('characterParameterAdd',{characterId:snapshot.characterId,statId:id,statValue:value});
  }catch(error){toast(error.message);}
 };
 $('characterParameterNew').onkeydown=e=>{if(e.key==='Enter'&&e.target instanceof HTMLInputElement){e.preventDefault();$('characterParameterCreate').click();}};
@@ -863,9 +869,7 @@ $('characterParameterCreate').onclick=()=>{
  const name=$('characterParameterName').value.trim(),id=$('characterParameterNewID').value.trim()||name.replace(/\s+/g,'_').toLowerCase(),type=$('characterParameterNewType').value,kind=$('characterParameterNewKind').value==='resource'?'resource':'';
  if(!name||!id){toast('Укажите название нового параметра');return;}
  try{const value=statValueFromInput(type,$('characterParameterNewValue').value,$('characterParameterNewBoolean').checked),definition={id,name,type,...(kind?{kind}:{})};
- if(confirmMechanicalEdit(snapshot)&&queueCommand('characterParameterAdd',{characterId:snapshot.characterId,statId:id,statValue:value,statDefinition:definition})){
-  $('characterParameterNew').open=false;$('characterParameterName').value='';$('characterParameterNewID').value='';$('characterParameterNewValue').value='0';$('characterParameterNewBoolean').checked=false;
- }
+ if(confirmMechanicalEdit(snapshot))queueCommand('characterParameterAdd',{characterId:snapshot.characterId,statId:id,statValue:value,statDefinition:definition});
  }catch(error){toast(error.message);}
 };
 updateCharacterParameterValue(true);

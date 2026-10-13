@@ -16823,14 +16823,9 @@ class Cp {
         this.sounds_table[this.surface].push(o);
       }
     }
-    if (!this.sounds_dice.hasOwnProperty("coin")) {
-      this.sounds_dice.coin = [];
-      let i = t.coin;
-      for (let s = 1; s <= i; ++s) {
-        const o = await this.loadAudio(this.assetPath + "sounds/dicehit/dicehit_coin" + s + ".mp3");
-        this.sounds_dice.coin.push(o);
-      }
-    }
+    // This build deliberately does not expose d2, so preloading its six coin
+    // samples only produces avoidable 404s. Keep the bucket for eventCollide.
+    this.sounds_dice.coin = this.sounds_dice.coin || [];
     if (!this.sounds_dice.hasOwnProperty(this.sound_dieMaterial)) {
       this.sounds_dice[this.sound_dieMaterial] = [];
       let i = t[this.sound_dieMaterial];

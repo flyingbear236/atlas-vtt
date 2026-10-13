@@ -52,7 +52,9 @@ export class DiceRendererAdapter {
     this.window.addEventListener=(type,listener,options)=>{if(type==='resize')this.resizeListeners.push({listener,options});return originalAdd.call(this.window,type,listener,options);};
     let initialization;
     try{
-      this.box=new DiceBox(`#${id}`,{assetPath:'/dice-assets/',sounds:this.sounds,shadows:true,theme_colorset:'white',theme_material:'plastic'});
+      // Full-screen dynamic shadow maps are disproportionately expensive on
+      // integrated GPUs. The dice remain lit and antialiased without them.
+      this.box=new DiceBox(`#${id}`,{assetPath:'/dice-assets/',sounds:this.sounds,shadows:false,theme_colorset:'white',theme_material:'plastic'});
       this.#trackAnimationFrames(this.box);
       initialization=this.box.initialize();
     }catch(error){await this.cleanup();throw error;}finally{this.window.addEventListener=originalAdd;}
