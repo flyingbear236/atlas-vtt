@@ -103,8 +103,10 @@ func TestRulesetArtworkResolutionMaterializationAndPresetRemoval(t *testing.T) {
 			t.Fatal("linked character already materialized")
 		}
 	}
-	removed := cloneRulesetSnapshot(next)
-	delete(removed.Registry.Presets, "skeleton")
+	removed, err := CompileRulesetFiles(map[string]string{"skeleton.toml": "schema_version = 1\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	updates, err := prepareDefinitionCharacters(session, removed, emptyCampaignRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +136,12 @@ func TestRulesetArtworkResolutionMaterializationAndPresetRemoval(t *testing.T) {
 
 func rulesetMediaHTTP(t *testing.T, host, endpoint string, gm map[string]string, files map[string]string, media map[string]string, query url.Values) (int, []byte) {
 	t.Helper()
-	payload := rulesetUploadPayload{Media: media}
+	// Keep nil distinct from an explicit empty map: omitted/null preserves the
+	// committed mapping, while {} intentionally removes every media entry.
+	payload := struct {
+		Files []rulesetUploadFile `json:"files"`
+		Media map[string]string   `json:"media"`
+	}{Media: media}
 	for name, source := range files {
 		payload.Files = append(payload.Files, rulesetUploadFile{Name: name, Content: source})
 	}
