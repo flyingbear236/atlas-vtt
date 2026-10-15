@@ -25,6 +25,8 @@ type CharacterEditPayload struct {
 	NewActions                []ActionDefinition   `json:"newActions,omitempty"`
 	ResetAvatar               bool                 `json:"resetAvatar,omitempty"`
 	AvatarAssetID             string               `json:"avatarAssetId,omitempty"`
+	ArtworkPath               string               `json:"artworkPath,omitempty"`
+	PlaceholderAvatar         bool                 `json:"placeholderAvatar,omitempty"`
 }
 
 func applyCharacterEdit(session *Session, command Command, registry EffectiveRegistry, mutation *characterMutation) error {
@@ -171,10 +173,35 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 			instance.ResourceCurrent[id] = current
 		}
 	}
-	if draft.ResetAvatar && draft.AvatarAssetID != "" {
-		return errors.New("cannot reset and set avatar together")
+	artworkChanges := 0
+	if draft.ResetAvatar {
+		artworkChanges++
+	}
+	if draft.PlaceholderAvatar {
+		artworkChanges++
+	}
+	if draft.ArtworkPath != "" {
+		artworkChanges++
 	}
 	if draft.AvatarAssetID != "" {
+		artworkChanges++
+	}
+	if artworkChanges > 1 {
+		return errors.New("only one avatar operation is allowed")
+	}
+	if draft.ArtworkPath != "" {
+		if err := validateRulesetMediaPath(draft.ArtworkPath); err != nil {
+			return err
+		}
+		assetID, exists := session.Ruleset.Media[draft.ArtworkPath]
+		if !exists || !isCharacterArtworkAsset(session.Assets[assetID]) {
+			return errors.New("artwork path is not registered in media")
+		}
+		instance.ArtworkPath = draft.ArtworkPath
+		instance.AvatarAssetID = nil
+	} else if draft.PlaceholderAvatar {
+		instance = WithAvatarOverride(instance, "")
+	} else if draft.AvatarAssetID != "" {
 		asset, exists := session.Assets[draft.AvatarAssetID]
 		if !exists || asset.Kind != assetKindAvatar {
 			return errors.New("prepared avatar is not available")
@@ -183,11 +210,12 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 	} else if draft.ResetAvatar {
 		instance = ResetAvatarOverride(instance)
 	}
+
 	if len(draft.Definitions) > 0 || len(draft.NewActions) > 0 {
 		mutation.setCampaign(campaign)
 	}
 	mutation.setInstance(instance)
-	if draft.ResetAvatar || draft.AvatarAssetID != "" {
+	if artworkChanges > 0 {
 		mutation.refreshAssets()
 	}
 	mutation.resultCharacterID = command.CharacterID

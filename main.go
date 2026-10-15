@@ -121,6 +121,7 @@ type Session struct {
 	Ruleset              RulesetSnapshot                       `json:"rulesetSnapshot"`
 	CampaignDefinitions  CampaignRegistry                      `json:"campaignDefinitions"`
 	CharacterInstances   map[string]CharacterInstance          `json:"characterInstances"`
+	CharacterSources     map[string]CharacterTOMLSource        `json:"characterSources,omitempty"`
 	ResourceOverlays     []ResourceOverlayConfig               `json:"resourceOverlays,omitempty"`
 
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
@@ -421,6 +422,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/definitions/ruleset/media/asset/{id}", s.readRulesetMediaImage)
 	mux.HandleFunc("GET /api/definitions/ruleset/media/path", s.suggestRulesetMediaPath)
 	mux.HandleFunc("POST /api/definitions/ruleset/media/upload", s.uploadRulesetMedia)
+	mux.HandleFunc("POST /api/definitions/ruleset/media/attach", s.attachRulesetMedia)
 	mux.HandleFunc("GET /api/definitions/campaign/export", s.exportCampaignDefinitions)
 	mux.HandleFunc("GET /api/characters", s.readCharacterCatalog)
 	mux.HandleFunc("POST /api/definitions/ruleset/preview", s.previewRulesetInstall)

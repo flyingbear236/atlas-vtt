@@ -558,6 +558,7 @@ func WithActionRemoved(instance CharacterInstance, id string) CharacterInstance 
 func ResetAvatarOverride(instance CharacterInstance) CharacterInstance {
 	result := cloneCharacterInstance(instance)
 	result.AvatarAssetID = nil
+	result.ArtworkPath = ""
 	return result
 }
 
@@ -565,6 +566,7 @@ func WithAvatarOverride(instance CharacterInstance, assetID string) CharacterIns
 	result := cloneCharacterInstance(instance)
 	result.AvatarAssetID = new(string)
 	*result.AvatarAssetID = assetID
+	result.ArtworkPath = ""
 	return result
 }
 
@@ -635,6 +637,14 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 		}
 	} else if instance.Materialized == nil {
 		return errors.New("standalone character requires materialized state")
+	}
+	if instance.ArtworkPath != "" {
+		if err := validateRulesetMediaPath(instance.ArtworkPath); err != nil {
+			return fmt.Errorf("character artwork: %w", err)
+		}
+		if instance.AvatarAssetID != nil {
+			return errors.New("character artwork cannot have both path and asset override")
+		}
 	}
 	if len(instance.StatOverrides) != 0 || len(instance.AddedActionIDs) != 0 || len(instance.RemovedActionIDs) != 0 {
 		return errors.New("legacy mechanical overrides require migration")
