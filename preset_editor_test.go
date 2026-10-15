@@ -232,6 +232,16 @@ func TestPresetEditorGMAndAtomicSave(t *testing.T) {
 	if newRuleset.Files["extra.toml"].Source != before.Files["extra.toml"].Source || newRuleset.Media["media/wolf.webp"] != "A" {
 		t.Fatal("save modified unrelated sources or mapping")
 	}
+	if newRuleset.Files["owner.toml"].Source != presetEditorSource {
+		t.Fatal("editor must not replace the user's original TOML source")
+	}
+	current, err := RenderRulesetFileTOML(newRuleset, "owner.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(current, "# keep this comment intact") || !strings.Contains(current, "hp = 100") || !strings.Contains(current, `name = "Wolf changed"`) {
+		t.Fatalf("current view lost changes or comments:\n%s", current)
+	}
 	if warnings := rulesetArtworkWarnings(newRuleset, session.Assets); len(warnings) != 1 {
 		t.Fatalf("missing artwork should warn: %#v", warnings)
 	}
