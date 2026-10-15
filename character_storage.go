@@ -303,6 +303,10 @@ func initializeSessionCharacterCollections(session *Session) bool {
 		session.CampaignDefinitions.Presets = map[string]CharacterPresetDefinition{}
 		changed = true
 	}
+	if session.CharacterSources == nil {
+		session.CharacterSources = map[string]CharacterTOMLSource{}
+		changed = true
+	}
 	if session.CharacterInstances == nil {
 		session.CharacterInstances = map[string]CharacterInstance{}
 		changed = true
@@ -392,6 +396,17 @@ func validateSessionCharacterState(session *Session) error {
 	}
 	if len(session.CharacterInstances) > MaxCharacterInstances {
 		return fmt.Errorf("character instances exceed limit %d", MaxCharacterInstances)
+	}
+	for id, source := range session.CharacterSources {
+		if err := validateCharacterSourceFileName(source.FileName); err != nil {
+			return err
+		}
+		if _, exists := session.CharacterInstances[id]; !exists {
+			return fmt.Errorf("character TOML source %q is orphaned", id)
+		}
+		if len(source.Source) > MaxDefinitionDocumentBytes {
+			return fmt.Errorf("character TOML source %q exceeds size limit", id)
+		}
 	}
 	for id, instance := range session.CharacterInstances {
 		if instance.ID != id {

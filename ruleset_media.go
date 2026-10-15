@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -122,6 +123,14 @@ func resolvePresetArtwork(preset *CharacterPresetDefinition, snapshot RulesetSna
 }
 
 func resolveCharacterArtwork(session *Session, instance CharacterInstance, preset *CharacterPresetDefinition, snapshot RulesetSnapshot) ArtworkResolution {
+	if instance.ArtworkPath != "" {
+		result := ArtworkResolution{Source: "character", Status: "missing", Path: instance.ArtworkPath}
+		if assetID, ok := snapshot.Media[instance.ArtworkPath]; ok && isCharacterArtworkAsset(session.Assets[assetID]) {
+			result.AssetID = assetID
+			result.Status = "resolved"
+		}
+		return result
+	}
 	if instance.AvatarAssetID != nil {
 		if *instance.AvatarAssetID == "" {
 			return ArtworkResolution{Source: "placeholder", Status: "placeholder"}
@@ -312,4 +321,75 @@ func (s *Server) readRulesetMediaImage(w http.ResponseWriter, r *http.Request) {
 		filename = "token.png"
 	}
 	http.ServeFile(w, r, filepath.Join(s.root, "assets", assetID, filename))
+}
+
+// attachRulesetMedia assigns an existing shared asset a stable logical path.
+// It does not rewrite user TOML or make a copy of the image.
+func (s *Server) attachRulesetMedia(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req struct {
+		AssetID  string `json:"assetId"`
+		Filename string `json:"filename"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, "Некорректный media request")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, member := s.auth(r)
+	if !memberIsGM(member) {
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
+		return
+	}
+	if !isCharacterArtworkAsset(session.Assets[req.AssetID]) {
+		fail(w, http.StatusBadRequest, "Изображение недоступно")
+		return
+	}
+	var existing []string
+	for name, id := range session.Ruleset.Media {
+		if id == req.AssetID {
+			existing = append(existing, name)
+		}
+	}
+	if len(existing) != 0 {
+		sort.Strings(existing)
+		reply(w, map[string]any{"path": existing[0], "registryRevision": session.RegistryRevision})
+		return
+	}
+	if len(session.Ruleset.Media) >= maxRulesetMediaEntries {
+		fail(w, http.StatusBadRequest, "Media library is full")
+		return
+	}
+	if len(req.Filename) > 255 {
+		fail(w, http.StatusBadRequest, "Filename too long")
+		return
+	}
+	filename := strings.TrimSuffix(req.Filename, path.Ext(req.Filename)) + ".png"
+	name := suggestMediaPath(filename, session.Ruleset.Media)
+	previous := cloneRulesetSnapshot(session.Ruleset)
+	oldAssets, oldDirty, oldRevision := cloneAssetRegistry(session.Assets), s.dirty, session.RegistryRevision
+	if session.Ruleset.Media == nil {
+		session.Ruleset.Media = map[string]string{}
+	}
+	session.Ruleset.Media[name] = req.AssetID
+	if err := ValidateRulesetSnapshot(session.Ruleset); err != nil {
+		session.Ruleset = previous
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	refreshAssetOrphans(session, time.Now())
+	session.RegistryRevision++
+	s.dirty = true
+	if err := s.saveLocked(); err != nil {
+		session.Ruleset = previous
+		session.Assets = oldAssets
+		session.RegistryRevision = oldRevision
+		s.dirty = oldDirty
+		fail(w, http.StatusInternalServerError, "Ошибка сохранения media")
+		return
+	}
+	s.publishRegistryChanged(session)
+	s.refreshCharacterWatches(session, nil, true)
+	reply(w, map[string]any{"path": name, "registryRevision": session.RegistryRevision})
 }

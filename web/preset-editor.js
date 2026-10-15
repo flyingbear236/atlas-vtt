@@ -111,7 +111,7 @@ export class PresetEditor {
   async uploadArtwork(file){
     if(!IMAGE_TYPES.has(file.type)||file.size>10*1024*1024){this.error('Допускаются PNG, JPEG, WebP до 10 МиБ');return;}
     const generation=this.generation;
-    try{const result=await this.upload(file);if(generation!==this.generation)return;await this.selectAsset(result.asset.id,file.name,result.suggestedPath);if(generation===this.generation)this.toast('Изображение добавлено в черновик');}catch(error){if(generation===this.generation)this.error(error.message);}
+    try{const result=await this.upload(file);if(generation!==this.generation)return;await this.selectAsset(result.asset.id,file.name.replace(/\.[^.]+$/,'.png'));if(generation===this.generation)this.toast('Изображение добавлено в черновик');}catch(error){if(generation===this.generation)this.error(error.message);}
   }
   async save(){
     if(!this.data)return;const button=this.q('[data-save]');button.disabled=true;this.q('[data-error]').hidden=true;
