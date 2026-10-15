@@ -280,7 +280,7 @@ func (s *Server) savePresetEditor(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, fmt.Sprintf("Шаблон %s отсутствует в текущем ruleset", req.Preset.ID))
 		return
 	}
-	owner, err := rulesetPresetOwner(session.Ruleset, req.Preset.ID)
+	_, err := rulesetPresetOwner(session.Ruleset, req.Preset.ID)
 	if err != nil {
 		fail(w, http.StatusConflict, err.Error())
 		return
