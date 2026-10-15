@@ -232,6 +232,7 @@ type CharacterInstance struct {
 	PresetID        string                    `json:"presetId,omitempty"`
 	Name            string                    `json:"name"`
 	AvatarAssetID   *string                   `json:"avatarAssetId,omitempty"`
+	ArtworkPath     string                    `json:"artworkPath,omitempty"`
 	Materialized    *CharacterMechanicalState `json:"materialized,omitempty"`
 	ResourceCurrent map[string]StatValue      `json:"resourceCurrent,omitempty"`
 	// Legacy fields are read only during saved-session migration.

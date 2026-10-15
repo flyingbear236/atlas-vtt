@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -187,6 +188,16 @@ func sourceValueStyle(original, next string) string {
 		var data map[string]string
 		if toml.Unmarshal([]byte("v = "+next), &data) == nil && !strings.Contains(data["v"], "'") && !strings.ContainsAny(data["v"], "\n\r") {
 			return "'" + data["v"] + "'"
+		}
+	}
+	// Likewise, preserve a basic string when canonical encoding selected a
+	// literal string. JSON string encoding is valid TOML basic-string syntax.
+	if strings.HasPrefix(original, "\"") && strings.HasSuffix(original, "\"") && strings.HasPrefix(next, "'") && strings.HasSuffix(next, "'") {
+		var data map[string]string
+		if toml.Unmarshal([]byte("v = "+next), &data) == nil {
+			if encoded, err := json.Marshal(data["v"]); err == nil {
+				return string(encoded)
+			}
 		}
 	}
 	return next
@@ -463,8 +474,22 @@ func RenderRulesetFileTOML(snapshot RulesetSnapshot, name string) (string, error
 		out.WriteString(merged)
 	}
 	keys := make([]string, 0, len(target))
-	for key := range target {
-		if !existing[key] {
+	for key, table := range target {
+		if existing[key] {
+			continue
+		}
+		// Canonical encoding may emit empty parent tables such as [stats]
+		// alongside [stats.hp]. Child tables already define those parents, so
+		// adding the empty table only changes source formatting and conflicts
+		// with array-of-table forms such as [[stats]].
+		hasAssignment := false
+		for _, line := range table.lines {
+			if _, _, _, ok := sourceValueRange(line); ok {
+				hasAssignment = true
+				break
+			}
+		}
+		if hasAssignment {
 			keys = append(keys, key)
 		}
 	}
