@@ -307,12 +307,29 @@ func (s *Server) savePresetEditor(w http.ResponseWriter, r *http.Request) {
 		}
 		pkg.Media[name] = id
 	}
-	pkg.Files[owner], err = rewritePresetSource(pkg.Files[owner], req.Preset)
-	if err != nil {
-		fail(w, http.StatusConflict, err.Error())
-		return
+	// Keep the user-authored source immutable. Validate the prospective
+	// registry against a source-preserving view, but persist only the registry.
+	candidate := cloneRulesetSnapshot(session.Ruleset)
+	candidate.Registry.Presets[req.Preset.ID] = clonePresetDefinition(req.Preset)
+	for path, assetID := range req.Media {
+		if candidate.Media == nil {
+			candidate.Media = map[string]string{}
+		}
+		candidate.Media[path] = assetID
 	}
-	candidate, err := compileRulesetPackage(pkg)
+	for filename := range candidate.Files {
+		pkg.Files[filename], err = RenderRulesetFileTOML(candidate, filename)
+		if err != nil {
+			break
+		}
+	}
+	if err == nil {
+		var rendered RulesetSnapshot
+		rendered, err = compileRulesetPackage(pkg)
+		if err == nil && !equalRulesetRegistries(rendered.Registry, candidate.Registry) {
+			err = errors.New("rendered TOML changed unrelated ruleset definitions")
+		}
+	}
 	var updates map[string]CharacterInstance
 	if err == nil {
 		updates, err = prepareDefinitionCharacters(session, candidate, session.CampaignDefinitions)

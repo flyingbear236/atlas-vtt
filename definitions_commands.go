@@ -62,7 +62,7 @@ type definitionPreviewResponse struct {
 
 func definitionCommandType(commandType string) bool {
 	switch commandType {
-	case "definitionCreate", "definitionUpdate", "definitionDuplicate", "definitionDelete":
+	case "definitionCreate", "definitionUpdate", "definitionDuplicate", "definitionDelete", "definitionRulesetUpdate", "definitionRulesetDelete":
 		return true
 	default:
 		return false
@@ -411,6 +411,7 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 	}
 
 	oldCampaign := cloneCampaignRegistry(session.CampaignDefinitions)
+	oldRuleset := cloneRulesetSnapshot(session.Ruleset)
 	oldRevision, oldCharacterRevision, oldDirty := session.RegistryRevision, session.CharacterRevision, s.dirty
 	oldCharacters := map[string]CharacterInstance{}
 	var oldAssets map[string]Asset
@@ -418,6 +419,27 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 	changed := false
 	if !memberIsGM(peer.member) {
 		issue = "Действие доступно ведущему"
+	} else if command.Type == "definitionRulesetUpdate" || command.Type == "definitionRulesetDelete" {
+		candidate, candidateChanged, err := applyRulesetDefinitionCommand(session, command)
+		if err != nil {
+			issue = err.Error()
+		} else if candidateChanged {
+			updates, projectionErr := prepareDefinitionCharacters(session, candidate, session.CampaignDefinitions)
+			if projectionErr != nil {
+				issue = projectionErr.Error()
+			} else {
+				for characterID, next := range updates {
+					oldCharacters[characterID] = cloneCharacterInstance(session.CharacterInstances[characterID])
+					session.CharacterInstances[characterID] = next
+				}
+				oldAssets = cloneAssetRegistry(session.Assets)
+				session.Ruleset = candidate
+				session.RegistryRevision++
+				session.CharacterRevision++
+				refreshAssetOrphans(session, time.Now())
+				changed = true
+			}
+		}
 	} else {
 		candidate, candidateChanged, err := applyDefinitionCommand(session, command)
 		if err != nil {
@@ -447,6 +469,7 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
 		if changed {
+			session.Ruleset = oldRuleset
 			session.CampaignDefinitions = oldCampaign
 			for characterID, original := range oldCharacters {
 				session.CharacterInstances[characterID] = original
@@ -1006,4 +1029,37 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	s.publishRegistryChanged(session)
 	s.refreshCharacterWatches(session, nil, true)
 	reply(w, result)
+}
+
+// readCurrentRulesetFile renders only the requested TOML file, without
+// rewriting persisted originals or serializing all files for the UI list.
+func (s *Server) readCurrentRulesetFile(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, member := s.auth(r)
+	if !memberIsGM(member) {
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
+		return
+	}
+	name := r.URL.Query().Get("name")
+	var source string
+	var err error
+	if name == "campaign/generated-definitions.toml" {
+		if len(session.CampaignDefinitions.Stats) == 0 && len(session.CampaignDefinitions.Actions) == 0 && len(session.CampaignDefinitions.Presets) == 0 {
+			fail(w, http.StatusNotFound, "Нет definitions кампании")
+			return
+		}
+		var data []byte
+		data, err = ExportCampaignDefinitionsTOML(sessionRegistries(session))
+		source = string(data)
+	} else {
+		source, err = RenderRulesetFileTOML(session.Ruleset, name)
+	}
+	if err != nil {
+		fail(w, http.StatusConflict, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/toml; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, source)
 }
