@@ -417,6 +417,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/definitions/file", s.readCurrentRulesetFile)
 	mux.HandleFunc("GET /api/definitions/file/download", s.downloadCurrentDefinitionFile)
 	mux.HandleFunc("GET /api/definitions/package/export", s.exportPortablePackage)
+	mux.HandleFunc("POST /api/definitions/package/preview", s.previewPortableImport)
+	mux.HandleFunc("POST /api/definitions/package/apply", s.applyPortableImport)
 	mux.HandleFunc("GET /api/definitions/preset", s.readPresetEditor)
 	mux.HandleFunc("POST /api/definitions/preset", s.savePresetEditor)
 	mux.HandleFunc("GET /api/definitions/ruleset/export", s.exportRulesetDefinitions)
