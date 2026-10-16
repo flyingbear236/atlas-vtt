@@ -21,13 +21,16 @@ import (
 func (s *Server) previewPortableImport(w http.ResponseWriter, r *http.Request) {
 	// ZIP is read into an on-disk bounded upload. Validation completes while it
 	// remains available; see withPortableImport below.
-	s.withPortableImport(w, r, false)
+	s.withPortableImport(w, r, false, false)
 }
 func (s *Server) applyPortableImport(w http.ResponseWriter, r *http.Request) {
-	s.withPortableImport(w, r, true)
+	s.withPortableImport(w, r, true, false)
 }
 
-func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, apply bool) {
+func (s *Server) inventoryPortableImport(w http.ResponseWriter, r *http.Request) {
+	s.withPortableImport(w, r, false, true)
+}
+func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, apply, inventory bool) {
 	s.mu.Lock()
 	ss, member := s.auth(r)
 	allowed := memberIsGM(member) && !s.stopping
@@ -81,6 +84,12 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	archive, err := readPortableImportArchive(zipReader)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if inventory {
+		// Reuse the strict ZIP parser, but do not build a candidate, touch
+		// assets or mutate any session data merely to display file choices.
+		reply(w, map[string]any{"availableFiles": archive.fileNames()})
 		return
 	}
 	hexDigest := hex.EncodeToString(digest.Sum(nil))
