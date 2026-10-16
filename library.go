@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"mime"
 	"net/http"
+	"os"
 	"path"
 	"reflect"
 	"slices"
@@ -69,14 +71,25 @@ func libraryKey(p string) string {
 
 // LibraryFile is derived; definition IDs are not duplicated in persisted data.
 type LibraryFile struct {
-	Path            string   `json:"path"`
-	Type            string   `json:"type"` // definitions, character, image, unknown-toml
-	CharacterID     string   `json:"characterId,omitempty"`
-	AssetID         string   `json:"assetId,omitempty"`
-	StatIDs         []string `json:"statIds,omitempty"`
-	ActionIDs       []string `json:"actionIds,omitempty"`
-	PresetIDs       []string `json:"presetIds,omitempty"`
-	SourcePreserved bool     `json:"sourcePreserved,omitempty"`
+	Path            string               `json:"path"`
+	Type            string               `json:"type"` // definitions, character, image, unknown-toml
+	CharacterID     string               `json:"characterId,omitempty"`
+	AssetID         string               `json:"assetId,omitempty"`
+	StatIDs         []string             `json:"statIds,omitempty"`
+	ActionIDs       []string             `json:"actionIds,omitempty"`
+	PresetIDs       []string             `json:"presetIds,omitempty"`
+	SourcePreserved bool                 `json:"sourcePreserved,omitempty"`
+	Name            string               `json:"name,omitempty"`
+	PresetID        string               `json:"presetId,omitempty"`
+	Materialized    bool                 `json:"materialized,omitempty"`
+	Persistent      bool                 `json:"persistent,omitempty"`
+	ResourceCurrent map[string]StatValue `json:"resourceCurrent,omitempty"`
+	ResourceInitial map[string]StatValue `json:"resourceInitial,omitempty"`
+	HasArtwork      bool                 `json:"hasArtwork,omitempty"`
+	MimeType        string               `json:"mimeType,omitempty"`
+	Width           int                  `json:"width,omitempty"`
+	Height          int                  `json:"height,omitempty"`
+	Size            int64                `json:"size,omitempty"`
 }
 type LibraryTree struct {
 	Directories         []string      `json:"directories"`
@@ -99,11 +112,15 @@ func libraryFiles(ss *Session) []LibraryFile {
 			if name == "" {
 				name = characterSuggestedPath(instance, 8)
 			}
-			files = append(files, LibraryFile{Path: name, Type: "character", CharacterID: id, SourcePreserved: source.Source != ""})
+			files = append(files, LibraryFile{Path: name, Type: "character", CharacterID: id, SourcePreserved: source.Source != "", Name: instance.Name, PresetID: instance.PresetID, Persistent: instance.Persistent, Materialized: instance.Materialized != nil, HasArtwork: instance.ArtworkPath != "" || instance.AvatarAssetID != nil})
+			if instance.Materialized != nil {
+				files[len(files)-1].ResourceInitial = instance.Materialized.ResourceInitial
+			}
 		}
 	}
 	for p, asset := range ss.Ruleset.Media {
-		files = append(files, LibraryFile{Path: p, Type: "image", AssetID: asset})
+		meta := ss.Assets[asset]
+		files = append(files, LibraryFile{Path: p, Type: "image", AssetID: asset, MimeType: meta.MimeType, Width: meta.Width, Height: meta.Height, Size: meta.Size})
 	}
 	for p := range ss.UnknownTOML {
 		files = append(files, LibraryFile{Path: p, Type: "unknown-toml", SourcePreserved: true})
@@ -298,6 +315,124 @@ func (s *Server) readLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, libraryTree(ss))
+}
+
+// Inspect only one selected file; potentially large resource maps are never
+// replicated for every character in the routinely refreshed library tree.
+func inspectedLibraryFile(ss *Session, name string) (LibraryFile, bool) {
+	for _, f := range libraryFiles(ss) {
+		if f.Path != name {
+			continue
+		}
+		if f.Type == "character" {
+			character := ss.CharacterInstances[f.CharacterID]
+			f.ResourceCurrent = character.ResourceCurrent
+			if character.Materialized != nil {
+				f.ResourceInitial = character.Materialized.ResourceInitial
+			}
+		}
+		return f, true
+	}
+	return LibraryFile{}, false
+}
+func (s *Server) inspectLibraryFile(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("path")
+	if err := validateLibraryFilePath(name); err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ss, member := s.auth(r)
+	if ss == nil || !memberIsGM(member) {
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
+		return
+	}
+	file, ok := inspectedLibraryFile(ss, name)
+	if !ok {
+		fail(w, http.StatusNotFound, "Файл не найден")
+		return
+	}
+	reply(w, file)
+}
+
+// Library download uses current on-demand TOML rendering or the existing asset
+// pipeline. It never exposes the physical asset path.
+func (s *Server) downloadLibraryFile(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("path")
+	if err := validateLibraryFilePath(name); err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.mu.Lock()
+	ss, member := s.auth(r)
+	if ss == nil || !memberIsGM(member) {
+		s.mu.Unlock()
+		fail(w, http.StatusForbidden, "Нужны права ведущего")
+		return
+	}
+	var data []byte
+	var asset Asset
+	found, imageFile := false, false
+	if _, ok := ss.Ruleset.Files[name]; ok {
+		content, err := RenderRulesetFileTOML(ss.Ruleset, name)
+		if err != nil {
+			s.mu.Unlock()
+			fail(w, http.StatusConflict, err.Error())
+			return
+		}
+		data, found = []byte(content), true
+	} else if source, ok := ss.UnknownTOML[name]; ok {
+		data, found = []byte(source), true
+	} else if assetID, ok := ss.Ruleset.Media[name]; ok {
+		asset, found, imageFile = ss.Assets[assetID], true, true
+	} else {
+		for id, origin := range ss.CharacterSources {
+			if origin.FileName == name && ss.CharacterInstances[id].Persistent {
+				content, err := CurrentCharacterTOML(ss, id)
+				if err != nil {
+					s.mu.Unlock()
+					fail(w, http.StatusConflict, err.Error())
+					return
+				}
+				data, found = content, true
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	if !found {
+		fail(w, http.StatusNotFound, "Файл не найден")
+		return
+	}
+	if imageFile {
+		file, err := os.CreateTemp(s.root, "atlas-download-*.image")
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer os.Remove(file.Name())
+		defer file.Close()
+		if err = writePortableMedia(r.Context(), file, s.root, name, asset); err != nil {
+			fail(w, http.StatusConflict, err.Error())
+			return
+		}
+		if _, err = file.Seek(0, 0); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if kind := mime.TypeByExtension(path.Ext(name)); kind != "" {
+			w.Header().Set("Content-Type", kind)
+		}
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(name)))
+		w.Header().Set("Cache-Control", "no-store")
+		http.ServeContent(w, r, path.Base(name), time.Time{}, file)
+		return
+	}
+	w.Header().Set("Content-Type", "application/toml; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(name)))
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
 }
 
 // A single request rewrites the complete namespace in a candidate. The live

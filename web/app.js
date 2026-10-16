@@ -198,8 +198,20 @@ async function requestPortableImport(operation,file,options,preview=null){
  if(!response.ok)throw new Error(await response.text());return response.json();
 }
 const definitionDocuments={previewImport:(file,options)=>requestPortableImport('preview',file,options),applyImport:(file,options,preview)=>requestPortableImport('apply',file,options,preview),preview:(kind,payload)=>definitionDocumentRequest(kind,'preview',payload),apply:(kind,payload,preview,key)=>definitionDocumentRequest(kind,'apply',payload,preview,key),operationKey:definitionOperationKey,complete:completeDefinitionOperation,export:exportDefinitionDocument,exportPackage:includeMedia=>downloadDefinitionsFile('/api/definitions/package/export','atlas-export.zip',{includeMedia:String(includeMedia)}),downloadFile:name=>downloadDefinitionsFile('/api/definitions/file/download',name.startsWith('campaign/')?name.slice(9):name,{name}),currentFile:async name=>{const query=new URLSearchParams({session:credentials.session,name});const response=await fetch(`/api/definitions/file?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error(await response.text());return response.text();}};
-const definitionsEditor=new DefinitionsEditor($('definitionsMount'),{load:loadDefinitions,queue:queueCommand,getCharacter:()=>characterWatch.snapshot,toast,documents:definitionDocuments,uploadPresetAvatar,loadAvatar:loadDefinitionAvatar,mediaTransport});
-async function loadRulesetMediaThumbnail(assetID){const query=new URLSearchParams({session:credentials.session}),response=await fetch(`/api/definitions/ruleset/media/asset/${encodeURIComponent(assetID)}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error('Изображение недоступно');return response.blob();}
+const libraryTransport={
+  list:()=>presetAPI('/api/library'),
+  inspect:path=>presetAPI('/api/library/inspect?path='+encodeURIComponent(path)),
+  operate:async command=>{const query=new URLSearchParams({session:credentials.session});const response=await fetch(`/api/library/operation?${query}`,{method:'POST',headers:{Authorization:`Bearer ${credentials.key}`,'Content-Type':'application/json'},body:JSON.stringify(command)});if(!response.ok){const error=new Error(await response.text());error.status=response.status;throw error;}return response.json();},
+  download:path=>downloadDefinitionsFile('/api/library/file/download',path.split('/').at(-1),{path}),
+  thumbnail:(id,signal)=>loadRulesetMediaThumbnail(id,signal),
+  exportPackage:definitionDocuments.exportPackage,
+  previewImport:definitionDocuments.previewImport,
+  inventoryImport:file=>requestPortableImport('inventory',file,{mode:'selected'}),
+  applyImport:definitionDocuments.applyImport,
+  openCharacter:id=>{const tokenID=Object.keys(state?.tokens||{}).find(key=>state.tokens[key].characterInstanceId===id);if(tokenID){definitionsEditor.close(true);select(tokenID);}else toast('Для открытия чарлиста персонаж должен находиться на текущей сцене');},
+};
+const definitionsEditor=new DefinitionsEditor($('definitionsMount'),{load:loadDefinitions,queue:queueCommand,getCharacter:()=>characterWatch.snapshot,toast,documents:definitionDocuments,uploadPresetAvatar,loadAvatar:loadDefinitionAvatar,mediaTransport,libraryTransport});
+async function loadRulesetMediaThumbnail(assetID,signal){const query=new URLSearchParams({session:credentials.session}),response=await fetch(`/api/definitions/ruleset/media/asset/${encodeURIComponent(assetID)}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal});if(!response.ok)throw new Error('Изображение недоступно');return response.blob();}
 const presetEditor=new PresetEditor({request:presetAPI,upload:uploadSharedMedia,thumbnail:loadRulesetMediaThumbnail,toast,onSaved:()=>{definitionsEditor.registryChanged();refreshCharacterCatalog();}});
 $('characterLinkSection').append($('editCharacterPreset'));
 $('editCharacterPreset').onclick=()=>{const snapshot=characterWatch.snapshot;if(isGM(state?.you||campaign?.you)&&snapshot?.instance?.presetId)presetEditor.open(snapshot.instance.presetId);};
@@ -210,7 +222,7 @@ settingsHeader.querySelector('small').textContent='КАМПАНИЯ';
 settingsHeader.querySelector('h2').textContent='Настройки кампании';
 const settingsTabs=document.createElement('nav');settingsTabs.className='campaign-settings-tabs';settingsTabs.setAttribute('aria-label','Раздел настроек кампании');settingsTabs.setAttribute('role','tablist');
 const resourceTab=document.createElement('button'),rulesetTab=document.createElement('button');
-for(const [tab,label] of [[resourceTab,'Индикаторы характеристик'],[rulesetTab,'Рулсеты и справочники']]){tab.type='button';tab.textContent=label;tab.setAttribute('role','tab');settingsTabs.append(tab);}
+for(const [tab,label] of [[rulesetTab,'Рулсеты и файлы'],[resourceTab,'Индикаторы характеристик']]){tab.type='button';tab.textContent=label;tab.setAttribute('role','tab');settingsTabs.append(tab);}
 const rulesetView=document.createElement('section');rulesetView.className='campaign-settings-ruleset';
 for(const node of [...settingsPanel.children].filter(node=>node!==settingsHeader))rulesetView.append(node);
 const resourceView=document.createElement('section');resourceView.className='campaign-settings-resources';

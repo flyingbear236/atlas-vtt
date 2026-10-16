@@ -364,3 +364,42 @@ func TestLibraryArtworkMissingPathRetained(t *testing.T) {
 		t.Fatalf("missing path lost during render: %v %s", err, rendered)
 	}
 }
+
+func TestLibraryInspectorMetadataFromExistingEntities(t *testing.T) {
+	s := libraryFixture(t)
+	if err := syncLibraryCharacterPaths(s); err != nil {
+		t.Fatal(err)
+	}
+	image := s.Assets["img1"]
+	image.Width, image.Height, image.Size, image.MimeType = 64, 96, 12345, "image/png"
+	s.Assets["img1"] = image
+	files := libraryTree(s).Files
+	var gotCharacter, gotImage bool
+	for _, file := range files {
+		switch file.Type {
+		case "character":
+			if file.CharacterID != "character-a12f" || file.Name != "Валера" || !file.Persistent || file.PresetID != "goblin" {
+				t.Fatalf("character metadata: %+v", file)
+			}
+			gotCharacter = true
+		case "image":
+			if file.AssetID != "img1" || file.Width != 64 || file.Height != 96 || file.Size != 12345 || file.MimeType != "image/png" {
+				t.Fatalf("image metadata: %+v", file)
+			}
+			gotImage = true
+		}
+	}
+	if !gotCharacter || !gotImage {
+		t.Fatalf("missing inspector metadata: character=%v image=%v", gotCharacter, gotImage)
+	}
+	source := s.CharacterSources["character-a12f"]
+	detailed, ok := inspectedLibraryFile(s, source.FileName)
+	if !ok || detailed.ResourceCurrent["hp"].Integer() != 6 {
+		t.Fatalf("inspector omitted current resource: %+v", detailed)
+	}
+	for _, file := range files {
+		if file.Type == "character" && len(file.ResourceCurrent) != 0 {
+			t.Fatal("library tree eagerly included all character resources")
+		}
+	}
+}
