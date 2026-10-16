@@ -40,10 +40,9 @@ type portableExportSnapshot struct {
 // mechanical state, never scenes, tokens, roll history or raw image bytes.
 func snapshotPortableExport(session *Session) portableExportSnapshot {
 	copy := Session{
-		Ruleset:             cloneRulesetSnapshot(session.Ruleset),
-		CampaignDefinitions: cloneCampaignRegistry(session.CampaignDefinitions),
-		CharacterInstances:  make(map[string]CharacterInstance),
-		CharacterSources:    make(map[string]CharacterTOMLSource),
+		Ruleset:            cloneRulesetSnapshot(session.Ruleset),
+		CharacterInstances: make(map[string]CharacterInstance),
+		CharacterSources:   make(map[string]CharacterTOMLSource),
 	}
 	for id, instance := range session.CharacterInstances {
 		if instance.Persistent {
@@ -96,24 +95,6 @@ func resolvePortableMediaPaths(s *portableExportSnapshot) error {
 			}
 		}
 	}
-	for id, preset := range s.Session.CampaignDefinitions.Presets {
-		if preset.AvatarAssetID == "" {
-			continue
-		}
-		if err := ensure(preset.AvatarAssetID); err != nil {
-			return err
-		}
-		// The TOML package uses portable media paths, not internal asset IDs.
-		if preset.Artwork == "" {
-			for name, assetID := range media {
-				if assetID == preset.AvatarAssetID && (preset.Artwork == "" || name < preset.Artwork) {
-					preset.Artwork = name
-				}
-			}
-		}
-		preset.AvatarAssetID = ""
-		s.Session.CampaignDefinitions.Presets[id] = preset
-	}
 	if len(media) > maxRulesetMediaEntries {
 		return fmt.Errorf("portable media mappings exceed %d entries", maxRulesetMediaEntries)
 	}
@@ -149,15 +130,6 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 		p := "ruleset/" + name
 		files[p] = []byte(content)
 		manifest.RulesetFiles = append(manifest.RulesetFiles, p)
-	}
-	if c := ss.CampaignDefinitions; len(c.Stats)+len(c.Actions)+len(c.Presets) > 0 {
-		data, err := ExportCampaignDefinitionsTOML(sessionRegistries(ss))
-		if err != nil {
-			return nil, manifest, fmt.Errorf("campaign definitions: %w", err)
-		}
-		p := "campaign/generated-definitions.toml"
-		files[p] = data
-		manifest.CampaignFiles = append(manifest.CampaignFiles, p)
 	}
 	used := make(map[string]string, len(ss.CharacterInstances))
 	// Reserve imported paths first: generated filenames must not claim them,
@@ -304,11 +276,6 @@ func ExportPortablePackage(ctx context.Context, snapshot portableExportSnapshot,
 	}
 	if includeMedia {
 		for _, preset := range snapshot.Session.Ruleset.Registry.Presets {
-			if preset.Artwork != "" && snapshot.Session.Ruleset.Media[preset.Artwork] == "" {
-				return fmt.Errorf("preset %q artwork %q is unavailable", preset.ID, preset.Artwork)
-			}
-		}
-		for _, preset := range snapshot.Session.CampaignDefinitions.Presets {
 			if preset.Artwork != "" && snapshot.Session.Ruleset.Media[preset.Artwork] == "" {
 				return fmt.Errorf("preset %q artwork %q is unavailable", preset.ID, preset.Artwork)
 			}

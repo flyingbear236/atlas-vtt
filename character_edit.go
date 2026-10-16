@@ -59,7 +59,7 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 	if len(draft.Definitions) > MaxStatsPerRegistry || len(draft.NewActions) > MaxActionsPerRegistry || len(draft.Stats)+len(draft.ResourceInitial) > MaxStatsPerCharacter || len(draft.ResourceCurrent) > MaxStatsPerCharacter || len(draft.ActionIDs) > MaxActionsPerCharacter {
 		return errors.New("character edit exceeds limits")
 	}
-	campaign := cloneCampaignRegistry(session.CampaignDefinitions)
+	campaign := emptyCampaignRegistry()
 	if campaign.Stats == nil {
 		campaign.Stats = map[string]StatDefinition{}
 	}
@@ -212,7 +212,9 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 	}
 
 	if len(draft.Definitions) > 0 || len(draft.NewActions) > 0 {
-		mutation.setCampaign(campaign)
+		if err := mutation.setCampaign(campaign); err != nil {
+			return err
+		}
 	}
 	mutation.setInstance(instance)
 	if artworkChanges > 0 {

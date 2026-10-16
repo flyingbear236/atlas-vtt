@@ -119,7 +119,7 @@ type Session struct {
 	RollHistory          []RollEvent                           `json:"rollHistory,omitempty"`
 	Scenes               map[string]*Scene                     `json:"scenes"`
 	Ruleset              RulesetSnapshot                       `json:"rulesetSnapshot"`
-	CampaignDefinitions  CampaignRegistry                      `json:"campaignDefinitions"`
+	CampaignDefinitions  CampaignRegistry                      `json:"-"`
 	CharacterInstances   map[string]CharacterInstance          `json:"characterInstances"`
 	CharacterSources     map[string]CharacterTOMLSource        `json:"characterSources,omitempty"`
 	ResourceOverlays     []ResourceOverlayConfig               `json:"resourceOverlays,omitempty"`
@@ -473,7 +473,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	ss := &Session{
 		ID: id(), Name: req.Name, Invite: id(), Members: map[string]*Member{m.ID: m}, Keys: map[string]string{m.Secret: m.ID},
 		Assets: map[string]Asset{}, CampaignRevision: 1, RegistryRevision: 1, CharacterRevision: 1, DefinitionOperations: map[string]DefinitionOperationReceipt{}, Scenes: map[string]*Scene{sceneID: scene},
-		Ruleset: cloneRulesetSnapshot(s.defaultRuleset), CampaignDefinitions: emptyCampaignRegistry(),
+		Ruleset:            cloneRulesetSnapshot(s.defaultRuleset),
 		CharacterInstances: map[string]CharacterInstance{}, characterReferences: map[string]map[CharacterTokenReference]struct{}{},
 	}
 	if ss.Name == "" {

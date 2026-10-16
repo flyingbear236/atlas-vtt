@@ -181,13 +181,11 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 		return
 	}
 	oldRuleset := ss.Ruleset
-	oldCampaign := ss.CampaignDefinitions
 	oldChars := ss.CharacterInstances
 	oldSources := ss.CharacterSources
 	oldAssets := ss.Assets
 	oldReg, oldChar, oldDirty := ss.RegistryRevision, ss.CharacterRevision, s.dirty
 	ss.Ruleset = next.Ruleset
-	ss.CampaignDefinitions = next.Campaign
 	ss.CharacterInstances = next.Characters
 	ss.CharacterSources = next.Sources
 	ss.Assets = next.Assets
@@ -196,7 +194,7 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	refreshAssetOrphans(ss, time.Now())
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
-		ss.Ruleset, ss.CampaignDefinitions, ss.CharacterInstances, ss.CharacterSources, ss.Assets = oldRuleset, oldCampaign, oldChars, oldSources, oldAssets
+		ss.Ruleset, ss.CharacterInstances, ss.CharacterSources, ss.Assets = oldRuleset, oldChars, oldSources, oldAssets
 		ss.RegistryRevision, ss.CharacterRevision, s.dirty = oldReg, oldChar, oldDirty
 		s.mu.Unlock()
 		fail(w, http.StatusInternalServerError, "Ошибка сохранения импорта: "+err.Error())

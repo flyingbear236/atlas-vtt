@@ -41,9 +41,7 @@ func avatarTargetAllowed(session *Session, member *Member, target avatarUploadTa
 	if !memberIsGM(member) {
 		return false
 	}
-	// Ruleset presets are edited through the TOML + media candidate API.
-	// Uploading their artwork must never create a campaign preset override.
-	_, exists := session.CampaignDefinitions.Presets[target.presetID]
+	_, exists := session.Ruleset.Registry.Presets[target.presetID]
 	return exists
 }
 
@@ -123,7 +121,7 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	}
 
 	oldAssets := cloneAssetRegistry(session.Assets)
-	oldCampaign := cloneCampaignRegistry(session.CampaignDefinitions)
+	oldRuleset := cloneRulesetSnapshot(session.Ruleset)
 	oldRegistryRevision := session.RegistryRevision
 	oldCharacterRevision := session.CharacterRevision
 	oldDirty := s.dirty
@@ -153,11 +151,31 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 			fail(w, http.StatusConflict, mergeErr.Error())
 			return
 		}
+		candidate, sourceErr := RulesetSnapshotWithSources(session.Ruleset)
+		if sourceErr != nil {
+			session.Assets = oldAssets
+			s.discardPreparedAssetLocked(asset.ID)
+			s.mu.Unlock()
+			fail(w, http.StatusConflict, sourceErr.Error())
+			return
+		}
 		preset := clonePresetDefinition(registry.Presets[target.presetID])
-		preset.AvatarAssetID = asset.ID
-		campaign := cloneCampaignRegistry(session.CampaignDefinitions)
-		campaign.Presets[target.presetID] = preset
-		session.CampaignDefinitions = campaign
+		if candidate.Media == nil {
+			candidate.Media = map[string]string{}
+		}
+		path := suggestMediaPath("preset-"+target.presetID+".png", candidate.Media)
+		candidate.Media[path] = asset.ID
+		preset.Artwork = path
+		preset.AvatarAssetID = ""
+		candidate.Registry.Presets[target.presetID] = preset
+		if sourceErr = validateUnifiedDefinitionCandidate(session, candidate); sourceErr != nil {
+			session.Assets = oldAssets
+			s.discardPreparedAssetLocked(asset.ID)
+			s.mu.Unlock()
+			fail(w, http.StatusConflict, sourceErr.Error())
+			return
+		}
+		session.Ruleset = candidate
 		session.RegistryRevision++
 	}
 	if !staged {
@@ -166,7 +184,7 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	refreshAssetOrphans(session, time.Now())
 	if err = validateSessionCharacterState(session); err != nil {
 		session.Assets = oldAssets
-		session.CampaignDefinitions = oldCampaign
+		session.Ruleset = oldRuleset
 		if target.characterID != "" {
 			session.CharacterInstances[target.characterID] = oldInstance
 		}
@@ -180,7 +198,7 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	s.dirty = true
 	if err = s.saveLocked(); err != nil {
 		session.Assets = oldAssets
-		session.CampaignDefinitions = oldCampaign
+		session.Ruleset = oldRuleset
 		if target.characterID != "" {
 			session.CharacterInstances[target.characterID] = oldInstance
 		}

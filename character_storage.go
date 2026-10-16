@@ -251,11 +251,6 @@ func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
 			return err
 		}
 	}
-	for id, preset := range snapshot.Registry.Presets {
-		if preset.AvatarAssetID != "" {
-			return fmt.Errorf("ruleset preset %q cannot reference a campaign avatar", id)
-		}
-	}
 	_, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: snapshot.Registry})
 	if err != nil {
 		return fmt.Errorf("invalid ruleset registry: %w", err)
@@ -289,18 +284,6 @@ func initializeSessionCharacterCollections(session *Session) bool {
 	}
 	if session.Ruleset.Registry.Presets == nil {
 		session.Ruleset.Registry.Presets = map[string]CharacterPresetDefinition{}
-		changed = true
-	}
-	if session.CampaignDefinitions.Stats == nil {
-		session.CampaignDefinitions.Stats = map[string]StatDefinition{}
-		changed = true
-	}
-	if session.CampaignDefinitions.Actions == nil {
-		session.CampaignDefinitions.Actions = map[string]ActionDefinition{}
-		changed = true
-	}
-	if session.CampaignDefinitions.Presets == nil {
-		session.CampaignDefinitions.Presets = map[string]CharacterPresetDefinition{}
 		changed = true
 	}
 	if session.CharacterSources == nil {
@@ -389,7 +372,7 @@ func validateSessionCharacterState(session *Session) error {
 		return err
 	}
 	registry, err := MergeDefinitionRegistries(DefinitionRegistries{
-		Ruleset: session.Ruleset.Registry, Campaign: session.CampaignDefinitions,
+		Ruleset: session.Ruleset.Registry,
 	})
 	if err != nil {
 		return fmt.Errorf("invalid definitions: %w", err)
@@ -421,10 +404,10 @@ func validateSessionCharacterState(session *Session) error {
 			}
 		}
 	}
-	for id, preset := range session.CampaignDefinitions.Presets {
+	for id, preset := range registry.Presets {
 		if preset.AvatarAssetID != "" {
 			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
-				return fmt.Errorf("campaign preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
+				return fmt.Errorf("preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
 			}
 		}
 	}

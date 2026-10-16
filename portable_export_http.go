@@ -55,18 +55,7 @@ func (s *Server) downloadCurrentDefinitionFile(w http.ResponseWriter, r *http.Re
 	name := r.URL.Query().Get("name")
 	var data string
 	var err error
-	if name == "campaign/generated-definitions.toml" {
-		if len(session.CampaignDefinitions.Stats)+len(session.CampaignDefinitions.Actions)+len(session.CampaignDefinitions.Presets) == 0 {
-			s.mu.Unlock()
-			fail(w, http.StatusNotFound, "Нет definitions кампании")
-			return
-		}
-		var result []byte
-		result, err = ExportCampaignDefinitionsTOML(sessionRegistries(session))
-		data = string(result)
-	} else {
-		data, err = RenderRulesetFileTOML(session.Ruleset, name)
-	}
+	data, err = RenderRulesetFileTOML(session.Ruleset, name)
 	s.mu.Unlock()
 	if err != nil {
 		fail(w, http.StatusConflict, err.Error())
@@ -77,9 +66,6 @@ func (s *Server) downloadCurrentDefinitionFile(w http.ResponseWriter, r *http.Re
 		return
 	}
 	filename := name
-	if strings.HasPrefix(name, "campaign/") {
-		filename = strings.TrimPrefix(name, "campaign/")
-	}
 	w.Header().Set("Content-Type", "application/toml; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))
 	w.Header().Set("Cache-Control", "no-store")

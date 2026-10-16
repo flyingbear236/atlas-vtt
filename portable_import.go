@@ -404,25 +404,10 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	if e = ValidateRulesetSnapshot(ruleset); e != nil {
 		return candidate, e
 	}
-	campaign := cloneCampaignRegistry(base.CampaignDefinitions)
-	if opts.ImportCampaign && len(a.Campaign) > 0 {
-		campaign = emptyCampaignRegistry()
-		if len(a.Campaign) > 0 {
-			var registry EffectiveRegistry
-			registry, e = MergeDefinitionRegistries(DefinitionRegistries{Ruleset: ruleset.Registry})
-			if e != nil {
-				return candidate, e
-			}
-			var metadata *RulesetMetadata
-			campaign, metadata, e = decodeDefinitionsTOML(a.Campaign, registry)
-			if e != nil {
-				return candidate, e
-			}
-			if metadata != nil {
-				return candidate, errors.New("campaign TOML cannot contain ruleset metadata")
-			}
-		}
+	if len(a.Campaign) > 0 {
+		return candidate, errors.New("legacy ZIP campaign definitions are unsupported; import TOML as a ruleset file")
 	}
+	campaign := emptyCampaignRegistry()
 	registry, e := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: ruleset.Registry, Campaign: campaign})
 	if e != nil {
 		return candidate, e

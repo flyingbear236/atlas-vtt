@@ -37,7 +37,7 @@ type characterTokenMutation struct {
 
 type characterMutation struct {
 	session              *Session
-	oldCampaign          CampaignRegistry
+	oldRuleset           RulesetSnapshot
 	oldRegistryRevision  uint64
 	oldCharacterRevision uint64
 	campaignTouched      bool
@@ -52,7 +52,7 @@ type characterMutation struct {
 func newCharacterMutation(session *Session) *characterMutation {
 	return &characterMutation{
 		session:              session,
-		oldCampaign:          session.CampaignDefinitions,
+		oldRuleset:           cloneRulesetSnapshot(session.Ruleset),
 		oldRegistryRevision:  session.RegistryRevision,
 		oldCharacterRevision: session.CharacterRevision,
 		instances:            map[string]characterInstanceBackup{},
@@ -89,14 +89,25 @@ func (mutation *characterMutation) refreshAssets() {
 	refreshAssetOrphans(mutation.session, time.Now())
 }
 
-func (mutation *characterMutation) setCampaign(campaign CampaignRegistry) {
-	if campaignRegistriesEqual(mutation.session.CampaignDefinitions, campaign) {
-		return
+func (mutation *characterMutation) setCampaign(additions CampaignRegistry) error {
+	if campaignRegistryEmpty(additions) {
+		return nil
+	}
+	candidate, err := RulesetSnapshotWithSources(mutation.session.Ruleset)
+	if err != nil {
+		return err
+	}
+	if err := addGeneratedDefinitions(&candidate, additions); err != nil {
+		return err
+	}
+	if err := ValidateRulesetSnapshot(candidate); err != nil {
+		return err
 	}
 	mutation.campaignTouched = true
-	mutation.session.CampaignDefinitions = campaign
+	mutation.session.Ruleset = candidate
 	mutation.session.RegistryRevision++
 	mutation.registryChanged = true
+	return nil
 }
 
 func (mutation *characterMutation) setToken(sceneID string, scene *Scene, old Token, next Token) {
@@ -115,7 +126,7 @@ func (mutation *characterMutation) setToken(sceneID string, scene *Scene, old To
 
 func (mutation *characterMutation) rollback() {
 	if mutation.campaignTouched {
-		mutation.session.CampaignDefinitions = mutation.oldCampaign
+		mutation.session.Ruleset = mutation.oldRuleset
 	}
 	mutation.session.RegistryRevision = mutation.oldRegistryRevision
 	mutation.session.CharacterRevision = mutation.oldCharacterRevision
@@ -286,8 +297,10 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if err != nil {
 			return err
 		}
-		mutation.setCampaign(campaign)
-		if nextRegistry, mergeErr := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign}); mergeErr == nil {
+		if err := mutation.setCampaign(campaign); err != nil {
+			return err
+		}
+		if nextRegistry, mergeErr := MergeDefinitionRegistries(sessionRegistries(session)); mergeErr == nil {
 			registry = nextRegistry
 		} else {
 			return mergeErr
@@ -394,7 +407,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			if definition.Type == StatTypeNumber {
 				return errors.New("new parameters must be integer, boolean or string")
 			}
-			campaign := cloneCampaignRegistry(session.CampaignDefinitions)
+			campaign := emptyCampaignRegistry()
 			if campaign.Stats == nil {
 				campaign.Stats = map[string]StatDefinition{}
 			}
@@ -403,8 +416,13 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			if err != nil {
 				return err
 			}
-			registry = merged
-			mutation.setCampaign(campaign)
+			if err := mutation.setCampaign(campaign); err != nil {
+				return err
+			}
+			registry, err = MergeDefinitionRegistries(sessionRegistries(session))
+			if err != nil {
+				return err
+			}
 		} else if !exists {
 			return errors.New("unknown parameter definition")
 		}
@@ -487,7 +505,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			if err := ValidateStatDefinition(definition); err != nil {
 				return err
 			}
-			campaign := cloneCampaignRegistry(session.CampaignDefinitions)
+			campaign := emptyCampaignRegistry()
 			if campaign.Stats == nil {
 				campaign.Stats = map[string]StatDefinition{}
 			}
@@ -496,8 +514,13 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			if err != nil {
 				return err
 			}
-			registry = validated
-			mutation.setCampaign(campaign)
+			if err := mutation.setCampaign(campaign); err != nil {
+				return err
+			}
+			registry, err = MergeDefinitionRegistries(sessionRegistries(session))
+			if err != nil {
+				return err
+			}
 		} else if !exists || !definition.IsResource() {
 			return errors.New("unknown resource definition")
 		}
