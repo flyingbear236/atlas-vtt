@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"path"
 	"slices"
 	"strings"
 
@@ -19,34 +21,39 @@ import (
 // Portable imports are prepared from a bounded archive, independently of the
 // live session. Preview and apply use exactly the same candidate builder.
 type portableImportOptions struct {
-	Mode           string            `json:"mode"` // replace or selected
-	SelectedFiles  []string          `json:"selectedFiles,omitempty"`
-	ImportCampaign bool              `json:"importCampaign"`
-	Characters     map[string]string `json:"characters,omitempty"` // existing ID: replace or skip
-	Media          map[string]string `json:"media,omitempty"`      // conflicting path: replace or keep
+	Mode          string            `json:"mode"` // replace or selected
+	SelectedFiles []string          `json:"selectedFiles,omitempty"`
+	Characters    map[string]string `json:"characters,omitempty"` // existing ID: replace or skip
+	Media         map[string]string `json:"media,omitempty"`      // conflicting path: replace or keep
+	Unknown       map[string]string `json:"unknown,omitempty"`    // unknown TOML collision: keep or replace
 }
 type portableImportArchive struct {
-	Manifest   portableExportManifest
-	Ruleset    map[string]string
-	Campaign   []byte
-	Characters map[string][]byte
-	Media      map[string]*zip.File
-	Unknown    map[string]string
+	Directories []string
+	Skipped     []string
+	Ruleset     map[string]string
+	Characters  map[string][]byte
+	Media       map[string]*zip.File
+	Unknown     map[string]string
 }
 type portableImportPreview struct {
 	AvailableFiles        []string               `json:"availableFiles"`
 	Digest                string                 `json:"digest"`
 	CampaignRevision      uint64                 `json:"campaignRevision"`
+	LibraryRevision       uint64                 `json:"libraryRevision"`
+	OptionsDigest         string                 `json:"optionsDigest"`
+	UnknownFiles          []string               `json:"unknownFiles"`
+	SkippedFiles          []string               `json:"skippedFiles"`
 	RegistryRevision      uint64                 `json:"registryRevision"`
 	CharacterRevision     uint64                 `json:"characterRevision"`
 	AddedFiles            []string               `json:"addedFiles"`
 	ReplacedFiles         []string               `json:"replacedFiles"`
 	RemovedFiles          []string               `json:"removedFiles"`
 	RulesetDiff           RulesetReplacementDiff `json:"rulesetDiff"`
-	CampaignDiff          RulesetReplacementDiff `json:"campaignDiff"`
 	AddedCharacters       []string               `json:"addedCharacters"`
 	ConflictingCharacters []string               `json:"conflictingCharacters"`
+	AddedMedia            []string               `json:"addedMedia"`
 	ConflictingMedia      []string               `json:"conflictingMedia"`
+	ConflictingUnknown    []string               `json:"conflictingUnknown"`
 	MissingMedia          []string               `json:"missingMedia"`
 }
 type portableImportCandidate struct {
@@ -65,189 +72,175 @@ const maxPortableImportCompressed int64 = 512 << 20
 const maxPortableImportUncompressed uint64 = 768 << 20
 const maxPortableImportImage uint64 = 32 << 20
 
-func importSafeName(name string) bool { return validateLibraryPath(name) == nil }
+func portableOptionsDigest(opts portableImportOptions) string {
+	// Bind the preview to normalized user decisions, not map iteration order.
+	if opts.Mode == "replace" {
+		opts.SelectedFiles = nil
+	} else {
+		opts.SelectedFiles = append([]string(nil), opts.SelectedFiles...)
+		slices.Sort(opts.SelectedFiles)
+	}
+	if opts.Characters == nil {
+		opts.Characters = map[string]string{}
+	}
+	if opts.Media == nil {
+		opts.Media = map[string]string{}
+	}
+	if opts.Unknown == nil {
+		opts.Unknown = map[string]string{}
+	}
+	data, _ := json.Marshal(opts)
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
 
 func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error) {
 	if len(reader.File) > maxPortableImportFiles {
-		return portableImportArchive{}, fmt.Errorf("too many archive entries")
+		return portableImportArchive{}, errors.New("too many ZIP entries")
 	}
-	entries := make(map[string]*zip.File, len(reader.File))
-	var total uint64
+	a := portableImportArchive{Ruleset: map[string]string{}, Characters: map[string][]byte{}, Media: map[string]*zip.File{}, Unknown: map[string]string{}, Directories: []string{}, Skipped: []string{}}
+	keys := make(map[string]string, len(reader.File))
+	files, dirs := map[string]string{}, map[string]string{}
+	var total, totalTOML, totalRules uint64
 	for _, f := range reader.File {
-		if !importSafeName(f.Name) || !f.Mode().IsRegular() {
-			return portableImportArchive{}, fmt.Errorf("unsafe archive entry %q", f.Name)
+		isDir := f.FileInfo().IsDir()
+		name := f.Name
+		if isDir {
+			name = strings.TrimSuffix(name, "/")
 		}
-		low := libraryKey(f.Name)
-		if _, ok := entries[low]; ok {
-			return portableImportArchive{}, fmt.Errorf("duplicate archive entry %q", f.Name)
+		if err := validateLibraryPath(name); err != nil {
+			return a, fmt.Errorf("unsafe ZIP entry %q: %w", f.Name, err)
 		}
+		if !isDir && !f.Mode().IsRegular() {
+			return a, fmt.Errorf("unsupported ZIP entry %q", f.Name)
+		}
+		if isDir && (f.Name != name+"/" || f.UncompressedSize64 != 0) {
+			return a, fmt.Errorf("unsafe directory entry %q", f.Name)
+		}
+		key := libraryKey(name)
+		if old, ok := keys[key]; ok {
+			return a, fmt.Errorf("duplicate ZIP path %q and %q", old, f.Name)
+		}
+		keys[key] = f.Name
+		if isDir {
+			dirs[key] = name
+			a.Directories = append(a.Directories, name)
+			continue
+		}
+		files[key] = name
 		if f.UncompressedSize64 > maxPortableImportUncompressed-total {
-			return portableImportArchive{}, errors.New("archive uncompressed size exceeds limit")
+			return a, errors.New("ZIP uncompressed size exceeds limit")
 		}
 		total += f.UncompressedSize64
-		entries[low] = f
-	}
-	manifestKey := libraryKey("manifest.toml")
-	mf := entries[manifestKey]
-	if mf == nil || mf.UncompressedSize64 > MaxDefinitionDocumentBytes {
-		return portableImportArchive{}, errors.New("missing or oversized manifest.toml")
-	}
-	mbytes, err := readImportEntry(mf, MaxDefinitionDocumentBytes)
-	if err != nil {
-		return portableImportArchive{}, err
-	}
-	var manifest portableExportManifest
-	if err = toml.NewDecoder(bytes.NewReader(mbytes)).DisallowUnknownFields().Decode(&manifest); err != nil {
-		return portableImportArchive{}, fmt.Errorf("manifest: %w", err)
-	}
-	if manifest.FormatVersion != portablePackageVersion {
-		return portableImportArchive{}, fmt.Errorf("unsupported archive format_version %d", manifest.FormatVersion)
-	}
-	out := portableImportArchive{Manifest: manifest, Ruleset: map[string]string{}, Characters: map[string][]byte{}, Media: map[string]*zip.File{}}
-	listed := map[string]bool{manifestKey: true}
-	add := func(name, prefix string, max uint64) (*zip.File, error) {
-		if !importSafeName(name) || !strings.HasPrefix(name, prefix) {
-			return nil, fmt.Errorf("invalid manifest path %q", name)
+		if f.UncompressedSize64 > 8<<20 && (f.CompressedSize64 == 0 || f.UncompressedSize64/f.CompressedSize64 > 200) {
+			return a, fmt.Errorf("suspicious compression ratio in %q", name)
 		}
-		f := entries[libraryKey(name)]
-		if f == nil || f.Name != name || listed[libraryKey(name)] {
-			return nil, fmt.Errorf("missing, duplicated or case-conflicting entry %q", name)
-		}
-		if f.UncompressedSize64 > max {
-			return nil, fmt.Errorf("archive entry %q exceeds size limit", name)
-		}
-		listed[libraryKey(name)] = true
-		return f, nil
-	}
-	var rulesetBytes uint64
-	var totalTOML uint64
-	for _, name := range manifest.RulesetFiles {
-		f, e := add(name, "ruleset/", MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-		short := strings.TrimPrefix(name, "ruleset/")
-		if e = validateRulesetFileName(short); e != nil {
-			return out, e
-		}
-		rulesetBytes += f.UncompressedSize64
-		totalTOML += f.UncompressedSize64
-		if rulesetBytes > MaxRulesetPackageBytes {
-			return out, errors.New("ruleset package exceeds limit")
-		}
-		data, e := readImportEntry(f, MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-		out.Ruleset[short] = string(data)
-	}
-	if len(manifest.RulesetFiles) > MaxRulesetFiles {
-		return out, errors.New("too many ruleset files")
-	}
-	if len(manifest.CampaignFiles) > 1 {
-		return out, errors.New("multiple campaign documents are not supported")
-	}
-	for _, name := range manifest.CampaignFiles {
-		if name != "campaign/generated-definitions.toml" {
-			return out, fmt.Errorf("unsupported campaign path %q", name)
-		}
-		f, e := add(name, "campaign/", MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-		totalTOML += f.UncompressedSize64
-		out.Campaign, e = readImportEntry(f, MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-	}
-	if len(manifest.CharacterFiles) > MaxCharacterInstances {
-		return out, errors.New("too many characters")
-	}
-	for _, name := range manifest.CharacterFiles {
-		if e := validateCharacterSourceFileName(name); e != nil {
-			return out, e
-		}
-		f, e := add(name, "", MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-		totalTOML += f.UncompressedSize64
-		if totalTOML > uint64(maxPortableTOMLBytes) {
-			return out, errors.New("import TOML exceeds total size limit")
-		}
-		out.Characters[name], e = readImportEntry(f, MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-	}
-	if totalTOML > uint64(maxPortableTOMLBytes) {
-		return out, errors.New("import TOML exceeds total size limit")
-	}
-	if len(manifest.MediaFiles) > maxRulesetMediaEntries {
-		return out, errors.New("too many media paths")
-	}
-	seenMediaPaths := map[string]bool{}
-	for _, name := range manifest.MediaFiles {
-		if seenMediaPaths[libraryKey(name)] {
-			return out, fmt.Errorf("duplicate media path %q", name)
-		}
-		seenMediaPaths[libraryKey(name)] = true
-		if e := validateRulesetMediaPath(name); e != nil {
-			return out, e
-		}
-		if manifest.IncludesMedia {
-			f, e := add(name, "", maxPortableImportImage)
-			if e != nil {
-				return out, e
+		switch strings.ToLower(path.Ext(name)) {
+		case ".toml":
+			if f.UncompressedSize64 > MaxDefinitionDocumentBytes {
+				return a, fmt.Errorf("TOML %q exceeds size limit", name)
 			}
-			out.Media[name] = f
+			totalTOML += f.UncompressedSize64
+			if totalTOML > uint64(maxPortableTOMLBytes) {
+				return a, errors.New("ZIP TOML exceeds total limit")
+			}
+			data, err := readImportEntry(f, MaxDefinitionDocumentBytes)
+			if err != nil {
+				return a, err
+			}
+			var root map[string]any
+			if err := toml.Unmarshal(data, &root); err != nil {
+				return a, fmt.Errorf("TOML %q: %w", name, err)
+			}
+			if libraryKey(name) == libraryKey("manifest.toml") {
+				if _, old := root["format_version"]; old {
+					if _, ok := root["ruleset_files"]; ok {
+						return a, errors.New("старый ZIP ATLAS с manifest.toml не поддерживается")
+					}
+				}
+			}
+			_, character := root["character"]
+			known := false
+			for _, field := range []string{"stats", "actions", "presets", "ruleset"} {
+				if _, ok := root[field]; ok {
+					known = true
+				}
+			}
+			if character && known {
+				return a, fmt.Errorf("TOML %q mixes character and definitions", name)
+			}
+			if character {
+				if len(a.Characters) >= MaxCharacterInstances {
+					return a, errors.New("too many character TOMLs")
+				}
+				a.Characters[name] = data
+			} else if known {
+				totalRules += f.UncompressedSize64
+				if totalRules > MaxRulesetPackageBytes || len(a.Ruleset) >= MaxRulesetFiles {
+					return a, errors.New("ruleset package exceeds limits")
+				}
+				if _, err = decodeRulesetSourceFile(name, string(data)); err != nil {
+					return a, err
+				}
+				a.Ruleset[name] = string(data)
+			} else {
+				if len(a.Unknown) >= maxUnknownTOMLFiles {
+					return a, errors.New("too many unknown TOMLs")
+				}
+				a.Unknown[name] = string(data)
+			}
+		case ".png", ".jpg", ".jpeg", ".webp":
+			if f.UncompressedSize64 > maxPortableImportImage || len(a.Media) >= maxRulesetMediaEntries {
+				return a, fmt.Errorf("image %q exceeds limits", name)
+			}
+			a.Media[name] = f
+		default:
+			a.Skipped = append(a.Skipped, name)
 		}
 	}
-	if len(manifest.UnknownFiles) > maxUnknownTOMLFiles || len(manifest.Directories) > maxLibraryDirectories {
-		return out, errors.New("library limit exceeded")
+	if len(a.Directories) > maxLibraryDirectories {
+		return a, errors.New("too many directories")
 	}
-	for _, d := range manifest.Directories {
-		if e := validateLibraryPath(d); e != nil {
-			return out, e
+	// ZIP paths are a single virtual namespace: ancestors cannot be files.
+	for _, name := range files {
+		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+			if conflicting, ok := files[libraryKey(parent)]; ok {
+				return a, fmt.Errorf("file %q conflicts with directory %q", conflicting, parent)
+			}
 		}
 	}
-	if out.Unknown == nil {
-		out.Unknown = map[string]string{}
+	for key, name := range dirs {
+		if other, ok := files[key]; ok {
+			return a, fmt.Errorf("file %q conflicts with directory %q", other, name)
+		}
+		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+			if conflicting, ok := files[libraryKey(parent)]; ok {
+				return a, fmt.Errorf("file %q conflicts with directory %q", conflicting, parent)
+			}
+		}
 	}
-	for _, name := range manifest.UnknownFiles {
-		if !strings.HasPrefix(name, "unknown/") {
-			return out, fmt.Errorf("invalid unknown TOML entry %q", name)
+	// Preserve a unique directory spelling even when only implicit parents exist.
+	allDirectories := map[string]string{}
+	for _, name := range keys {
+		logical := strings.TrimSuffix(name, "/")
+		if strings.HasSuffix(name, "/") {
+			key := libraryKey(logical)
+			if old, ok := allDirectories[key]; ok && old != logical {
+				return a, fmt.Errorf("directory case collision: %q and %q", old, logical)
+			}
+			allDirectories[key] = logical
 		}
-		logical := strings.TrimPrefix(name, "unknown/")
-		if e := validateCharacterSourceFileName(logical); e != nil {
-			return out, e
+		for parent := path.Dir(logical); parent != "."; parent = path.Dir(parent) {
+			key := libraryKey(parent)
+			if old, ok := allDirectories[key]; ok && old != parent {
+				return a, fmt.Errorf("directory case collision: %q and %q", old, parent)
+			}
+			allDirectories[key] = parent
 		}
-		f, e := add(name, "unknown/", MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-		totalTOML += f.UncompressedSize64
-		if totalTOML > uint64(maxPortableTOMLBytes) {
-			return out, errors.New("import TOML exceeds total size limit")
-		}
-		data, e := readImportEntry(f, MaxDefinitionDocumentBytes)
-		if e != nil {
-			return out, e
-		}
-		if _, exists := out.Unknown[logical]; exists {
-			return out, fmt.Errorf("duplicate unknown TOML %q", logical)
-		}
-		var opaque map[string]any
-		if e = toml.Unmarshal(data, &opaque); e != nil {
-			return out, fmt.Errorf("unknown TOML %q: %w", logical, e)
-		}
-		out.Unknown[logical] = string(data)
 	}
-	if len(listed) != len(entries) {
-		return out, errors.New("archive includes unlisted entries")
-	}
-	return out, nil
+	slices.Sort(a.Directories)
+	slices.Sort(a.Skipped)
+	return a, nil
 }
 func readImportEntry(f *zip.File, limit int) ([]byte, error) {
 	r, e := f.Open()
@@ -313,7 +306,7 @@ func equalImportedMedia(ctx context.Context, root string, f *zip.File, asset Ass
 // Conflict choices are required only at apply, never silently inferred.
 func buildPortableImportCandidate(ctx context.Context, base *Session, a portableImportArchive, opts portableImportOptions, root string, assets map[string]Asset, mediaIDs map[string]string, strict bool) (portableImportCandidate, error) {
 	candidate := portableImportCandidate{Characters: map[string]CharacterInstance{}, Sources: map[string]CharacterTOMLSource{}}
-	info := portableImportPreview{AvailableFiles: a.fileNames(), AddedFiles: []string{}, ReplacedFiles: []string{}, RemovedFiles: []string{}, AddedCharacters: []string{}, ConflictingCharacters: []string{}, ConflictingMedia: []string{}, MissingMedia: []string{}}
+	info := portableImportPreview{AddedMedia: []string{}, ConflictingUnknown: []string{}, UnknownFiles: []string{}, SkippedFiles: append([]string(nil), a.Skipped...), AvailableFiles: a.fileNames(), AddedFiles: []string{}, ReplacedFiles: []string{}, RemovedFiles: []string{}, AddedCharacters: []string{}, ConflictingCharacters: []string{}, ConflictingMedia: []string{}, MissingMedia: []string{}}
 	if opts.Mode != "replace" && opts.Mode != "selected" {
 		return candidate, errors.New("import mode must be replace or selected")
 	}
@@ -333,7 +326,10 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	}
 	selected := map[string]bool{}
 	for _, name := range opts.SelectedFiles {
-		if selected[name] || a.Ruleset[name] == "" {
+		if selected[name] {
+			return candidate, fmt.Errorf("duplicate selected ruleset file %q", name)
+		}
+		if _, ok := a.Ruleset[name]; !ok {
 			return candidate, fmt.Errorf("unknown or duplicate selected ruleset file %q", name)
 		}
 		selected[name] = true
@@ -345,10 +341,10 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	}
 	for name := range files {
 		if _, ok := base.Ruleset.Files[name]; ok {
-			if a.Ruleset[name] != "" && (opts.Mode == "replace" || selected[name]) {
+			if opts.Mode == "replace" || selected[name] {
 				info.ReplacedFiles = append(info.ReplacedFiles, name)
 			}
-		} else if a.Ruleset[name] != "" {
+		} else if _, incoming := a.Ruleset[name]; incoming {
 			info.AddedFiles = append(info.AddedFiles, name)
 		}
 	}
@@ -359,6 +355,10 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 			}
 		}
 	}
+	for name := range a.Unknown {
+		info.UnknownFiles = append(info.UnknownFiles, name)
+	}
+	slices.Sort(info.UnknownFiles)
 	slices.Sort(info.AddedFiles)
 	slices.Sort(info.ReplacedFiles)
 	slices.Sort(info.RemovedFiles)
@@ -378,10 +378,8 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	// Only listed paths are part of a fully replaced media library. For a
 	// selective import, preserve untouched existing mappings as well.
 	nextMedia := map[string]string{}
-	if opts.Mode == "selected" {
-		maps.Copy(nextMedia, base.Ruleset.Media)
-	}
-	for _, name := range a.Manifest.MediaFiles {
+	maps.Copy(nextMedia, base.Ruleset.Media)
+	for name := range a.Media {
 		existingID := base.Ruleset.Media[name]
 		incoming := a.Media[name]
 		if incoming == nil {
@@ -396,6 +394,9 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 		if same {
 			nextMedia[name] = existingID
 			continue
+		}
+		if existingID == "" {
+			info.AddedMedia = append(info.AddedMedia, name)
 		}
 		if existingID != "" && !same {
 			info.ConflictingMedia = append(info.ConflictingMedia, name)
@@ -418,6 +419,7 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 			assets[newID] = Asset{ID: newID, Kind: assetKindAvatar}
 		}
 	}
+	slices.Sort(info.AddedMedia)
 	slices.Sort(info.ConflictingMedia)
 	for name := range nextMedia {
 		if err := validateRulesetMediaPath(name); err != nil {
@@ -436,9 +438,6 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	if e = ValidateRulesetSnapshot(ruleset); e != nil {
 		return candidate, e
 	}
-	if len(a.Campaign) > 0 {
-		return candidate, errors.New("legacy ZIP campaign definitions are unsupported; import TOML as a ruleset file")
-	}
 	campaign := emptyCampaignRegistry()
 	registry, e := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: ruleset.Registry, Campaign: campaign})
 	if e != nil {
@@ -446,10 +445,26 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	}
 	next := cloneForPortableImport(base)
 	next.Ruleset = ruleset
-	if opts.Mode == "replace" {
-		next.UnknownTOML = maps.Clone(a.Unknown)
-		next.LibraryDirectories = append([]string(nil), a.Manifest.Directories...)
+	if next.UnknownTOML == nil {
+		next.UnknownTOML = map[string]string{}
 	}
+	for name, source := range a.Unknown {
+		if existing, ok := next.UnknownTOML[name]; ok && existing != source {
+			info.ConflictingUnknown = append(info.ConflictingUnknown, name)
+			choice := opts.Unknown[name]
+			if strict && choice != "keep" && choice != "replace" {
+				return candidate, fmt.Errorf("unknown TOML %q requires keep or replace", name)
+			}
+			if choice != "replace" {
+				continue
+			}
+		}
+		next.UnknownTOML[name] = source
+	}
+	slices.Sort(info.ConflictingUnknown)
+	next.LibraryDirectories = append(next.LibraryDirectories, a.Directories...)
+	slices.Sort(next.LibraryDirectories)
+	next.LibraryDirectories = slices.Compact(next.LibraryDirectories)
 	next.CampaignDefinitions = campaign
 	next.Assets = assets
 	seenCharacters := map[string]bool{}
@@ -518,8 +533,11 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 		missing[name] = true
 	}
 	reportArtwork := func(name string) {
-		if name != "" && ruleset.Media[name] == "" {
-			missing[name] = true
+		if name != "" {
+			id := ruleset.Media[name]
+			if id == "" || !isCharacterArtworkAsset(next.Assets[id]) {
+				missing[name] = true
+			}
 		}
 	}
 	for _, preset := range ruleset.Registry.Presets {
@@ -537,7 +555,6 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	}
 	slices.Sort(info.MissingMedia)
 	info.RulesetDiff = DiffRulesetRegistries(base.Ruleset.Registry, ruleset.Registry)
-	info.CampaignDiff = DiffRulesetRegistries(RulesetRegistry{Stats: base.CampaignDefinitions.Stats, Actions: base.CampaignDefinitions.Actions, Presets: base.CampaignDefinitions.Presets}, RulesetRegistry{Stats: campaign.Stats, Actions: campaign.Actions, Presets: campaign.Presets})
 	candidate.Ruleset = ruleset
 	candidate.Campaign = campaign
 	candidate.Characters = next.CharacterInstances

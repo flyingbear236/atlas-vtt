@@ -14,23 +14,14 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/pelletier/go-toml/v2"
 )
 
-const portablePackageVersion = 1
 const maxPortableMediaBytes int64 = 512 << 20
 const maxPortableTOMLBytes int64 = 128 << 20
 
-type portableExportManifest struct {
-	FormatVersion  int      `toml:"format_version"`
-	RulesetFiles   []string `toml:"ruleset_files"`
-	CampaignFiles  []string `toml:"campaign_files"`
-	CharacterFiles []string `toml:"character_files"`
-	MediaFiles     []string `toml:"media_files"`
-	UnknownFiles   []string `toml:"unknown_files,omitempty"`
-	Directories    []string `toml:"virtual_directories,omitempty"`
-	IncludesMedia  bool     `toml:"includes_media"`
+type portableExportPlan struct {
+	MediaFiles  []string
+	Directories []string
 }
 
 type portableExportSnapshot struct {
@@ -81,12 +72,18 @@ func resolvePortableMediaPaths(s *portableExportSnapshot) error {
 		if err := validateID(id); err != nil {
 			return fmt.Errorf("artwork asset ID: %w", err)
 		}
-		name := "media/character-" + id + ".png"
+		name := "character-artwork-" + id + ".png"
 		if err := validateRulesetMediaPath(name); err != nil {
 			return err
 		}
 		if existing, ok := media[name]; ok && existing != id {
-			name = suggestMediaPath("character-"+id+".png", media)
+			for index := 2; ; index++ {
+				candidate := fmt.Sprintf("character-artwork-%s-%d.png", id, index)
+				if _, occupied := media[candidate]; !occupied {
+					name = candidate
+					break
+				}
+			}
 		}
 		media[name] = id
 		mapped[id] = true
@@ -107,19 +104,22 @@ func resolvePortableMediaPaths(s *portableExportSnapshot) error {
 
 // portableExportFiles produces only small TOML bytes. No image bytes are
 // buffered, and no session mutex is held while building them.
-func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (map[string][]byte, portableExportManifest, error) {
+func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (map[string][]byte, portableExportPlan, error) {
 	ss := &snapshot.Session
 	if err := resolvePortableMediaPaths(snapshot); err != nil {
-		return nil, portableExportManifest{}, err
+		return nil, portableExportPlan{}, err
 	}
 	if _, err := MergeDefinitionRegistries(sessionRegistries(ss)); err != nil {
-		return nil, portableExportManifest{}, err
+		return nil, portableExportPlan{}, err
+	}
+	if err := validateLibrary(ss); err != nil {
+		return nil, portableExportPlan{}, err
 	}
 	files := map[string][]byte{}
-	manifest := portableExportManifest{FormatVersion: portablePackageVersion, IncludesMedia: includeMedia, RulesetFiles: []string{}, CampaignFiles: []string{}, CharacterFiles: []string{}, MediaFiles: []string{}}
+	plan := portableExportPlan{MediaFiles: []string{}, Directories: append([]string(nil), ss.LibraryDirectories...)}
 	original, err := RulesetSnapshotWithSources(ss.Ruleset)
 	if err != nil {
-		return nil, manifest, err
+		return nil, plan, err
 	}
 	names := make([]string, 0, len(original.Files))
 	for name := range original.Files {
@@ -129,11 +129,10 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 	for _, name := range names {
 		content, err := RenderRulesetFileTOML(original, name)
 		if err != nil {
-			return nil, manifest, fmt.Errorf("ruleset/%s: %w", name, err)
+			return nil, plan, fmt.Errorf("ruleset/%s: %w", name, err)
 		}
-		p := "ruleset/" + name
+		p := name
 		files[p] = []byte(content)
-		manifest.RulesetFiles = append(manifest.RulesetFiles, p)
 	}
 	used := make(map[string]string, len(ss.CharacterInstances))
 	// Reserve imported paths first: generated filenames must not claim them,
@@ -141,11 +140,11 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 	for _, id := range PortableCharacterIDs(ss.CharacterInstances) {
 		if origin, ok := ss.CharacterSources[id]; ok && origin.FileName != "" {
 			if err := validateCharacterSourceFileName(origin.FileName); err != nil {
-				return nil, manifest, err
+				return nil, plan, err
 			}
 			key := libraryKey(origin.FileName)
 			if first := used[key]; first != "" {
-				return nil, manifest, fmt.Errorf("characters %q and %q share %q", first, id, origin.FileName)
+				return nil, plan, fmt.Errorf("characters %q and %q share %q", first, id, origin.FileName)
 			}
 			used[key] = id
 		}
@@ -155,12 +154,12 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 		totalTOML += int64(len(data))
 	}
 	if totalTOML > maxPortableTOMLBytes {
-		return nil, manifest, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
+		return nil, plan, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
 	}
 	for _, id := range PortableCharacterIDs(ss.CharacterInstances) {
 		name := CharacterSourceFileName(ss, id)
 		if err := validateCharacterSourceFileName(name); err != nil {
-			return nil, manifest, err
+			return nil, plan, err
 		}
 		// Imported paths were reserved. Generated paths are stable unless
 		// explicitly occupied by a user-provided filename.
@@ -173,44 +172,40 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 		}
 		data, err := CurrentCharacterTOML(ss, id)
 		if err != nil {
-			return nil, manifest, fmt.Errorf("%s: %w", name, err)
+			return nil, plan, fmt.Errorf("%s: %w", name, err)
 		}
 		totalTOML += int64(len(data))
 		if totalTOML > maxPortableTOMLBytes {
-			return nil, manifest, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
+			return nil, plan, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
 		}
 		if _, exists := files[name]; exists {
-			return nil, manifest, fmt.Errorf("archive path collision %q", name)
+			return nil, plan, fmt.Errorf("archive path collision %q", name)
 		}
 		files[name] = data
-		manifest.CharacterFiles = append(manifest.CharacterFiles, name)
 	}
 	for name := range ss.Ruleset.Media {
-		manifest.MediaFiles = append(manifest.MediaFiles, name)
+		plan.MediaFiles = append(plan.MediaFiles, name)
 	}
-	slices.Sort(manifest.MediaFiles)
-	manifest.Directories = append([]string(nil), ss.LibraryDirectories...)
-	slices.Sort(manifest.Directories)
+	slices.Sort(plan.MediaFiles)
+	slices.Sort(plan.Directories)
 	for name, source := range ss.UnknownTOML {
 		if err := validateLibraryFilePath(name); err != nil {
-			return nil, manifest, err
+			return nil, plan, err
 		}
 		if !strings.EqualFold(path.Ext(name), ".toml") {
-			return nil, manifest, fmt.Errorf("unknown file %q must be TOML", name)
+			return nil, plan, fmt.Errorf("unknown file %q must be TOML", name)
 		}
-		p := "unknown/" + name
+		p := name
 		if _, exists := files[p]; exists {
-			return nil, manifest, fmt.Errorf("archive path collision %q", p)
+			return nil, plan, fmt.Errorf("archive path collision %q", p)
 		}
 		files[p] = []byte(source)
-		manifest.UnknownFiles = append(manifest.UnknownFiles, p)
 		totalTOML += int64(len(source))
 		if totalTOML > maxPortableTOMLBytes {
-			return nil, manifest, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
+			return nil, plan, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
 		}
 	}
-	slices.Sort(manifest.UnknownFiles)
-	return files, manifest, nil
+	return files, plan, nil
 }
 
 // mediaSourcePath is the immutable processed PNG, not the originally uploaded
@@ -298,13 +293,20 @@ func writePortableMedia(ctx context.Context, dst io.Writer, root, logicalPath st
 // ExportPortablePackage is reusable by an HTTP handler or a future scheduled
 // job. The session snapshot is captured elsewhere, and the zip is streamed to w.
 func ExportPortablePackage(ctx context.Context, snapshot portableExportSnapshot, root string, includeMedia bool, w io.Writer) (err error) {
-	files, manifest, err := portableExportFiles(&snapshot, includeMedia)
+	files, plan, err := portableExportFiles(&snapshot, includeMedia)
 	if err != nil {
 		return err
 	}
+	entries := len(files) + len(plan.Directories)
+	if includeMedia {
+		entries += len(plan.MediaFiles)
+	}
+	if entries > maxPortableImportFiles {
+		return fmt.Errorf("archive exceeds %d entries", maxPortableImportFiles)
+	}
 	if includeMedia {
 		var total int64
-		for _, name := range manifest.MediaFiles {
+		for _, name := range plan.MediaFiles {
 			assetID := snapshot.Session.Ruleset.Media[name]
 			// portableExportFiles resolves generated media only on its local
 			// copy; it must also be visible to the ZIP writer.
@@ -334,21 +336,36 @@ func ExportPortablePackage(ctx context.Context, snapshot portableExportSnapshot,
 	for p := range files {
 		seenPaths[libraryKey(p)] = p
 	}
-	for _, p := range manifest.MediaFiles {
+	for _, p := range plan.MediaFiles {
 		key := libraryKey(p)
 		if first, ok := seenPaths[key]; ok {
 			return fmt.Errorf("archive paths %q and %q conflict", first, p)
 		}
 		seenPaths[key] = p
 	}
-	if len(seenPaths) != len(files)+len(manifest.MediaFiles) {
+	if len(seenPaths) != len(files)+len(plan.MediaFiles) {
 		return fmt.Errorf("archive contains case-insensitive duplicate paths")
 	}
-	manifestBytes, err := toml.Marshal(manifest)
-	if err != nil {
-		return err
+	for _, d := range plan.Directories {
+		if e := validateLibraryPath(d); e != nil {
+			return e
+		}
+		if first, exists := seenPaths[libraryKey(d)]; exists {
+			return fmt.Errorf("archive file %q conflicts with directory %q", first, d)
+		}
+		for parent := path.Dir(d); parent != "."; parent = path.Dir(parent) {
+			if first, exists := seenPaths[libraryKey(parent)]; exists {
+				return fmt.Errorf("archive file %q conflicts with directory %q", first, parent)
+			}
+		}
 	}
-	files["manifest.toml"] = manifestBytes
+	for _, p := range seenPaths {
+		for parent := path.Dir(p); parent != "."; parent = path.Dir(parent) {
+			if first, exists := seenPaths[libraryKey(parent)]; exists {
+				return fmt.Errorf("archive file %q conflicts with directory %q", first, parent)
+			}
+		}
+	}
 	zw := zip.NewWriter(w)
 	defer func() {
 		closeErr := zw.Close()
@@ -361,6 +378,14 @@ func ExportPortablePackage(ctx context.Context, snapshot portableExportSnapshot,
 		paths = append(paths, p)
 	}
 	slices.Sort(paths)
+	for _, d := range plan.Directories {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := zw.Create(d + "/"); err != nil {
+			return err
+		}
+	}
 	for _, p := range paths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -376,7 +401,7 @@ func ExportPortablePackage(ctx context.Context, snapshot portableExportSnapshot,
 	if !includeMedia {
 		return nil
 	}
-	for _, p := range manifest.MediaFiles {
+	for _, p := range plan.MediaFiles {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

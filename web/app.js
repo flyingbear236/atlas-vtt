@@ -193,7 +193,7 @@ const mediaTransport={upload:uploadSharedMedia,list:()=>presetAPI('/api/definiti
 async function requestPortableImport(operation,file,options,preview=null){
  const query=new URLSearchParams({session:credentials.session});const body=new FormData();
  body.set('file',file);body.set('options',JSON.stringify(options));
- if(preview){body.set('digest',preview.digest);body.set('registryRevision',String(preview.registryRevision));body.set('characterRevision',String(preview.characterRevision));body.set('campaignRevision',String(preview.campaignRevision));}
+ if(preview){body.set('digest',preview.digest);body.set('registryRevision',String(preview.registryRevision));body.set('characterRevision',String(preview.characterRevision));body.set('campaignRevision',String(preview.campaignRevision));body.set('libraryRevision',String(preview.libraryRevision));body.set('optionsDigest',preview.optionsDigest);}
  const response=await fetch(`/api/definitions/package/${operation}?${query}`,{method:'POST',headers:{Authorization:`Bearer ${credentials.key}`},body});
  if(!response.ok)throw new Error(await response.text());return response.json();
 }

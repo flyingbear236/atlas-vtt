@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"github.com/pelletier/go-toml/v2"
 	"image"
 	"image/color"
 	"image/png"
@@ -37,7 +36,7 @@ func TestPortableImportRoundTripNoMedia(t *testing.T) {
 		t.Fatalf("archive lost files or persistent characters: %d %d", len(archive.Ruleset), len(archive.Characters))
 	}
 	empty := &Session{RegistryRevision: 1, CharacterRevision: 1, Ruleset: RulesetSnapshot{Registry: emptyRulesetRegistry()}, CampaignDefinitions: emptyCampaignRegistry(), CharacterInstances: map[string]CharacterInstance{}, CharacterSources: map[string]CharacterTOMLSource{}, Assets: map[string]Asset{}}
-	result, err := buildPortableImportCandidate(context.Background(), empty, archive, portableImportOptions{Mode: "replace", ImportCampaign: true}, t.TempDir(), cloneAssetRegistry(empty.Assets), nil, true)
+	result, err := buildPortableImportCandidate(context.Background(), empty, archive, portableImportOptions{Mode: "replace"}, t.TempDir(), cloneAssetRegistry(empty.Assets), nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +94,7 @@ func TestPortableImportRejectUnsafeArchive(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		names []string
-	}{{"traversal", []string{"../escape.toml"}}, {"duplicate", []string{"manifest.toml", "manifest.toml"}}, {"case-insensitive duplicate", []string{"manifest.toml", "MANIFEST.toml"}}} {
+	}{{"traversal", []string{"../escape.toml"}}, {"duplicate", []string{"goblins.toml", "goblins.toml"}}, {"case-insensitive duplicate", []string{"Goblins.toml", "goblins.toml"}}} {
 		t.Run(test.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			w := zip.NewWriter(&buf)
@@ -142,23 +141,16 @@ func TestPortableImportMediaConflict(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "avatar.png"), oldData.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := portableExportManifest{FormatVersion: portablePackageVersion, IncludesMedia: true, RulesetFiles: []string{}, CampaignFiles: []string{}, CharacterFiles: []string{}, MediaFiles: []string{"media/goblin.png"}}
-	m, err := toml.Marshal(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	for name, data := range map[string][]byte{"manifest.toml": m, "media/goblin.png": newData.Bytes()} {
-		f, e := zw.Create(name)
-		if e != nil {
-			t.Fatal(e)
-		}
-		if _, e = f.Write(data); e != nil {
-			t.Fatal(e)
-		}
+	f, e := zw.Create("pictures/goblin.png")
+	if e != nil {
+		t.Fatal(e)
 	}
-	if err = zw.Close(); err != nil {
+	if _, e = f.Write(newData.Bytes()); e != nil {
+		t.Fatal(e)
+	}
+	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	reader, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
@@ -169,7 +161,7 @@ func TestPortableImportMediaConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := &Session{RegistryRevision: 1, CharacterRevision: 1, Ruleset: RulesetSnapshot{Registry: emptyRulesetRegistry(), Media: map[string]string{"media/goblin.png": oldID}}, CampaignDefinitions: emptyCampaignRegistry(), CharacterInstances: map[string]CharacterInstance{}, Assets: map[string]Asset{oldID: {ID: oldID, Kind: assetKindAvatar}}}
+	base := &Session{RegistryRevision: 1, CharacterRevision: 1, Ruleset: RulesetSnapshot{Registry: emptyRulesetRegistry(), Media: map[string]string{"pictures/goblin.png": oldID}}, CampaignDefinitions: emptyCampaignRegistry(), CharacterInstances: map[string]CharacterInstance{}, Assets: map[string]Asset{oldID: {ID: oldID, Kind: assetKindAvatar}}}
 	result, err := buildPortableImportCandidate(context.Background(), base, archive, portableImportOptions{Mode: "replace"}, root, cloneAssetRegistry(base.Assets), nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -181,11 +173,11 @@ func TestPortableImportMediaConflict(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "requires keep or replace") {
 		t.Fatalf("media was silently replaced: %v", err)
 	}
-	result, err = buildPortableImportCandidate(context.Background(), base, archive, portableImportOptions{Mode: "replace", Media: map[string]string{"media/goblin.png": "keep"}}, root, cloneAssetRegistry(base.Assets), nil, true)
+	result, err = buildPortableImportCandidate(context.Background(), base, archive, portableImportOptions{Mode: "replace", Media: map[string]string{"pictures/goblin.png": "keep"}}, root, cloneAssetRegistry(base.Assets), nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Ruleset.Media["media/goblin.png"] != oldID {
+	if result.Ruleset.Media["pictures/goblin.png"] != oldID {
 		t.Fatal("existing image replaced despite keep choice")
 	}
 }
