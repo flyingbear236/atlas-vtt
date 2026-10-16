@@ -233,16 +233,13 @@ func TestLibraryNonPersistentCharacterNotInTreeOrExport(t *testing.T) {
 			t.Fatal("temporary character file in tree")
 		}
 	}
-	files, manifest, err := portableExportFiles(&portableExportSnapshot{Session: *s}, false)
+	files, _, err := portableExportFiles(&portableExportSnapshot{Session: *s}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range manifest.CharacterFiles {
-		if strings.Contains(name, "temp") {
-			t.Fatal("temporary character exported")
-		}
+	if _, exists := files[CharacterSourceFileName(s, "temp")]; exists {
+		t.Fatal("temporary character exported")
 	}
-	_ = files
 }
 func TestLibraryJSONRoundTripPreservesDirectoriesAndSources(t *testing.T) {
 	s := libraryFixture(t)
@@ -271,21 +268,21 @@ func TestLibraryExportKeepsEmptyFolderAndUnknownTOML(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := snapshotPortableExport(s)
-	files, manifest, err := portableExportFiles(&snapshot, false)
+	files, plan, err := portableExportFiles(&snapshot, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slicesContains(manifest.Directories, "empty/sub") {
-		t.Fatal("empty folder not in manifest")
+	if !slicesContains(plan.Directories, "empty/sub") {
+		t.Fatal("empty folder not in export plan")
 	}
-	if !bytes.Equal(files["unknown/notes/unknown.toml"], []byte(s.UnknownTOML["notes/unknown.toml"])) {
+	if !bytes.Equal(files["notes/unknown.toml"], []byte(s.UnknownTOML["notes/unknown.toml"])) {
 		t.Fatal("opaque TOML not preserved")
 	}
 	var buf bytes.Buffer
 	if err := ExportPortablePackage(context.Background(), snapshot, "", false, &buf); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("unknown/notes/unknown.toml")) {
+	if !bytes.Contains(buf.Bytes(), []byte("notes/unknown.toml")) {
 		t.Fatal("opaque file absent from ZIP")
 	}
 }

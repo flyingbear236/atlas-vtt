@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -97,7 +98,8 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 		expectedCampaign, e0 := strconv.ParseUint(r.FormValue("campaignRevision"), 10, 64)
 		expectedReg, e1 := strconv.ParseUint(r.FormValue("registryRevision"), 10, 64)
 		expectedChar, e2 := strconv.ParseUint(r.FormValue("characterRevision"), 10, 64)
-		if e0 != nil || expectedCampaign != campaignRev || e1 != nil || e2 != nil || expectedReg != regRev || expectedChar != charRev || r.FormValue("digest") != hexDigest {
+		expectedLib, e3 := strconv.ParseUint(r.FormValue("libraryRevision"), 10, 64)
+		if e0 != nil || expectedCampaign != campaignRev || e1 != nil || e2 != nil || e3 != nil || expectedLib != libRev || expectedReg != regRev || expectedChar != charRev || r.FormValue("digest") != hexDigest || r.FormValue("optionsDigest") != portableOptionsDigest(opts) {
 			fail(w, http.StatusConflict, "Изменились ревизии или содержимое ZIP: повторите preview")
 			return
 		}
@@ -113,6 +115,8 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	snapshot.Preview.CampaignRevision = campaignRev
 	snapshot.Preview.RegistryRevision = regRev
 	snapshot.Preview.CharacterRevision = charRev
+	snapshot.Preview.LibraryRevision = libRev
+	snapshot.Preview.OptionsDigest = portableOptionsDigest(opts)
 	if !apply {
 		reply(w, snapshot.Preview)
 		return
@@ -145,7 +149,12 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 			cleanup()
 		}
 	}()
-	for _, name := range archive.Manifest.MediaFiles {
+	names := make([]string, 0, len(archive.Media))
+	for name := range archive.Media {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
 		entry := archive.Media[name]
 		if entry == nil {
 			continue

@@ -93,7 +93,7 @@ func characterTOMLPath(instance CharacterInstance, media map[string]string) (str
 		return paths[0], "", nil
 	}
 	// Generated mapping is resolved when the export snapshot is assembled in stage 3.
-	return "media/character-" + *instance.AvatarAssetID + ".png", "", nil
+	return "character-artwork-" + *instance.AvatarAssetID + ".png", "", nil
 }
 
 func buildCharacterTOMLDocument(instance CharacterInstance, media map[string]string, registry EffectiveRegistry) (characterTOMLDocument, error) {

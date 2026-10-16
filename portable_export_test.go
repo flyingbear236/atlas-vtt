@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/pelletier/go-toml/v2"
 )
 
 func portableExportFixture(t *testing.T) *Session {
@@ -64,11 +62,11 @@ func TestPortableExportRoundTripSourcesAndCharacters(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries := unpackPortable(t, zipBytes.Bytes())
-	if len(entries) != 14 {
+	if len(entries) != 13 {
 		t.Fatalf("unexpected archive entries: %d", len(entries))
-	} // 11 originals + 2 characters + manifest
+	} // 11 originals + 2 characters
 	for name, original := range ss.Ruleset.Files {
-		if string(entries["ruleset/"+name]) != original.Source {
+		if string(entries[name]) != original.Source {
 			t.Fatalf("source %s changed", name)
 		}
 	}
@@ -91,12 +89,8 @@ func TestPortableExportRoundTripSourcesAndCharacters(t *testing.T) {
 			t.Fatalf("materialization changed for %s", id)
 		}
 	}
-	var manifest portableExportManifest
-	if err := toml.Unmarshal(entries["manifest.toml"], &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if manifest.FormatVersion != 1 || manifest.IncludesMedia || len(manifest.RulesetFiles) != 11 || len(manifest.CharacterFiles) != 2 {
-		t.Fatalf("manifest mismatch: %#v", manifest)
+	if _, exists := entries["manifest.toml"]; exists {
+		t.Fatal("export added legacy manifest")
 	}
 }
 
@@ -110,12 +104,12 @@ func TestPortableExportPreservesSourceEdits(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := unpackPortable(t, buf.Bytes())
-	if !strings.Contains(string(files["ruleset/goblins.toml"]), "hp = 9  # Important comment") {
-		t.Fatalf("comment lost: %s", files["ruleset/goblins.toml"])
+	if !strings.Contains(string(files["goblins.toml"]), "hp = 9  # Important comment") {
+		t.Fatalf("comment lost: %s", files["goblins.toml"])
 	}
 	for i := 0; i < 10; i++ {
 		name := fmt.Sprintf("source-%02d.toml", i)
-		if string(files["ruleset/"+name]) != ss.Ruleset.Files[name].Source {
+		if string(files[name]) != ss.Ruleset.Files[name].Source {
 			t.Fatalf("unrelated %s changed", name)
 		}
 	}
@@ -178,7 +172,7 @@ func TestPortableExportGeneratedDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := unpackPortable(t, zipped.Bytes())
-	if len(files["ruleset/"+generatedDefinitionsFile]) == 0 || len(files[CharacterTOMLFileName("unique")]) == 0 {
+	if len(files[generatedDefinitionsFile]) == 0 || len(files[CharacterTOMLFileName("unique")]) == 0 {
 		t.Fatal("UI-created content omitted")
 	}
 }
@@ -200,7 +194,7 @@ func TestPortableExportSnapshotStaysConsistent(t *testing.T) {
 	if !strings.Contains(string(files[CharacterTOMLFileName("survivor")]), "hp = 4") {
 		t.Fatalf("export observed later current HP: %s", files[CharacterTOMLFileName("survivor")])
 	}
-	if !strings.Contains(string(files["ruleset/goblins.toml"]), "hp = 7") {
+	if !strings.Contains(string(files["goblins.toml"]), "hp = 7") {
 		t.Fatal("export observed later preset mutation")
 	}
 }
@@ -262,15 +256,11 @@ func TestPortableExportGeneratedMediaPathAndUnsafeID(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := unpackPortable(t, archive.Bytes())
-	if !bytes.Contains(files[CharacterTOMLFileName("survivor")], []byte("media/character-image9.png")) {
+	if !bytes.Contains(files[CharacterTOMLFileName("survivor")], []byte("character-artwork-image9.png")) {
 		t.Fatal("missing generated media mapping")
 	}
-	var manifest portableExportManifest
-	if err := toml.Unmarshal(files["manifest.toml"], &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if len(manifest.MediaFiles) != 1 || manifest.MediaFiles[0] != "media/character-image9.png" {
-		t.Fatalf("missing media manifest path: %+v", manifest)
+	if _, exists := files["manifest.toml"]; exists {
+		t.Fatal("legacy manifest exported")
 	}
 	if _, err := mediaSourcePath(t.TempDir(), Asset{ID: "../../etc", Kind: assetKindAvatar}); err == nil {
 		t.Fatal("unsafe asset path accepted")
