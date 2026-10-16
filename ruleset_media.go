@@ -31,24 +31,14 @@ type ArtworkWarning struct {
 }
 
 func validateRulesetMediaPath(name string) error {
-	if len(name) < len("media/a.png") || len(name) > 255 || !strings.HasPrefix(name, "media/") || name != path.Clean(name) || strings.ContainsAny(name, "\\:") {
-		return fmt.Errorf("invalid ruleset media path %q", name)
-	}
-	for _, segment := range strings.Split(name, "/") {
-		if segment == "." || segment == ".." || segment == "" || strings.HasPrefix(segment, ".") {
-			return fmt.Errorf("invalid ruleset media path %q", name)
-		}
-		for _, ch := range segment {
-			if unicode.IsControl(ch) {
-				return fmt.Errorf("invalid ruleset media path %q", name)
-			}
-		}
+	if err := validateLibraryFilePath(name); err != nil {
+		return err
 	}
 	switch strings.ToLower(path.Ext(name)) {
 	case ".png", ".jpg", ".jpeg", ".webp":
 		return nil
 	}
-	return fmt.Errorf("unsupported ruleset media path %q", name)
+	return fmt.Errorf("unsupported image path %q", name)
 }
 
 func validateRulesetMediaAssets(session *Session, snapshot RulesetSnapshot) error {

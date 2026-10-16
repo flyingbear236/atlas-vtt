@@ -412,7 +412,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 				campaign.Stats = map[string]StatDefinition{}
 			}
 			campaign.Stats[command.StatID] = definition
-			merged, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign})
+			_, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign})
 			if err != nil {
 				return err
 			}
@@ -510,7 +510,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 				campaign.Stats = map[string]StatDefinition{}
 			}
 			campaign.Stats[definition.ID] = definition
-			validated, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign})
+			_, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign})
 			if err != nil {
 				return err
 			}

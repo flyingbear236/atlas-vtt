@@ -91,7 +91,7 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 		return
 	}
 	base := cloneForPortableImport(ss)
-	regRev, charRev, campaignRev := ss.RegistryRevision, ss.CharacterRevision, ss.CampaignRevision
+	regRev, charRev, campaignRev, libRev := ss.RegistryRevision, ss.CharacterRevision, ss.CampaignRevision, ss.LibraryRevision
 	s.mu.Unlock()
 	if apply {
 		expectedCampaign, e0 := strconv.ParseUint(r.FormValue("campaignRevision"), 10, 64)
@@ -175,7 +175,7 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	}
 	s.mu.Lock()
 	live, actor := s.auth(r)
-	if live != ss || !memberIsGM(actor) || s.stopping || ss.RegistryRevision != regRev || ss.CharacterRevision != charRev || ss.CampaignRevision != campaignRev {
+	if live != ss || !memberIsGM(actor) || s.stopping || ss.RegistryRevision != regRev || ss.CharacterRevision != charRev || ss.CampaignRevision != campaignRev || ss.LibraryRevision != libRev {
 		s.mu.Unlock()
 		fail(w, http.StatusConflict, "Состояние кампании изменилось: повторите preview")
 		return
@@ -184,18 +184,22 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	oldChars := ss.CharacterInstances
 	oldSources := ss.CharacterSources
 	oldAssets := ss.Assets
-	oldReg, oldChar, oldDirty := ss.RegistryRevision, ss.CharacterRevision, s.dirty
+	oldUnknown, oldDirs := ss.UnknownTOML, ss.LibraryDirectories
+	oldReg, oldChar, oldLibrary, oldDirty := ss.RegistryRevision, ss.CharacterRevision, ss.LibraryRevision, s.dirty
 	ss.Ruleset = next.Ruleset
 	ss.CharacterInstances = next.Characters
 	ss.CharacterSources = next.Sources
 	ss.Assets = next.Assets
+	ss.UnknownTOML, ss.LibraryDirectories = next.Unknown, next.Directories
 	ss.RegistryRevision++
 	ss.CharacterRevision++
+	ss.LibraryRevision++
 	refreshAssetOrphans(ss, time.Now())
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
 		ss.Ruleset, ss.CharacterInstances, ss.CharacterSources, ss.Assets = oldRuleset, oldChars, oldSources, oldAssets
-		ss.RegistryRevision, ss.CharacterRevision, s.dirty = oldReg, oldChar, oldDirty
+		ss.UnknownTOML, ss.LibraryDirectories = oldUnknown, oldDirs
+		ss.RegistryRevision, ss.CharacterRevision, ss.LibraryRevision, s.dirty = oldReg, oldChar, oldLibrary, oldDirty
 		s.mu.Unlock()
 		fail(w, http.StatusInternalServerError, "Ошибка сохранения импорта: "+err.Error())
 		return

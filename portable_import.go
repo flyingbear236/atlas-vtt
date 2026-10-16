@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"path"
 	"slices"
 	"strings"
 
@@ -32,6 +31,7 @@ type portableImportArchive struct {
 	Campaign   []byte
 	Characters map[string][]byte
 	Media      map[string]*zip.File
+	Unknown    map[string]string
 }
 type portableImportPreview struct {
 	AvailableFiles        []string               `json:"availableFiles"`
@@ -50,12 +50,14 @@ type portableImportPreview struct {
 	MissingMedia          []string               `json:"missingMedia"`
 }
 type portableImportCandidate struct {
-	Ruleset    RulesetSnapshot
-	Campaign   CampaignRegistry
-	Characters map[string]CharacterInstance
-	Sources    map[string]CharacterTOMLSource
-	Assets     map[string]Asset
-	Preview    portableImportPreview
+	Ruleset     RulesetSnapshot
+	Campaign    CampaignRegistry
+	Characters  map[string]CharacterInstance
+	Sources     map[string]CharacterTOMLSource
+	Assets      map[string]Asset
+	Unknown     map[string]string
+	Directories []string
+	Preview     portableImportPreview
 }
 
 const maxPortableImportFiles = 2048
@@ -63,17 +65,7 @@ const maxPortableImportCompressed int64 = 512 << 20
 const maxPortableImportUncompressed uint64 = 768 << 20
 const maxPortableImportImage uint64 = 32 << 20
 
-func importSafeName(name string) bool {
-	if name == "" || path.Clean(name) != name || strings.HasPrefix(name, "/") || strings.ContainsAny(name, "\\:\x00\r\n") {
-		return false
-	}
-	for _, part := range strings.Split(name, "/") {
-		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, ".") {
-			return false
-		}
-	}
-	return true
-}
+func importSafeName(name string) bool { return validateLibraryPath(name) == nil }
 
 func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error) {
 	if len(reader.File) > maxPortableImportFiles {
@@ -85,7 +77,7 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 		if !importSafeName(f.Name) || !f.Mode().IsRegular() {
 			return portableImportArchive{}, fmt.Errorf("unsafe archive entry %q", f.Name)
 		}
-		low := strings.ToLower(f.Name)
+		low := libraryKey(f.Name)
 		if _, ok := entries[low]; ok {
 			return portableImportArchive{}, fmt.Errorf("duplicate archive entry %q", f.Name)
 		}
@@ -116,14 +108,14 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 		if !importSafeName(name) || !strings.HasPrefix(name, prefix) {
 			return nil, fmt.Errorf("invalid manifest path %q", name)
 		}
-		f := entries[strings.ToLower(name)]
-		if f == nil || f.Name != name || listed[strings.ToLower(name)] {
+		f := entries[libraryKey(name)]
+		if f == nil || f.Name != name || listed[libraryKey(name)] {
 			return nil, fmt.Errorf("missing, duplicated or case-conflicting entry %q", name)
 		}
 		if f.UncompressedSize64 > max {
 			return nil, fmt.Errorf("archive entry %q exceeds size limit", name)
 		}
-		listed[strings.ToLower(name)] = true
+		listed[libraryKey(name)] = true
 		return f, nil
 	}
 	var rulesetBytes uint64
@@ -134,9 +126,6 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 			return out, e
 		}
 		short := strings.TrimPrefix(name, "ruleset/")
-		if strings.Contains(short, "/") {
-			return out, fmt.Errorf("ruleset file must be flat: %q", name)
-		}
 		if e = validateRulesetFileName(short); e != nil {
 			return out, e
 		}
@@ -178,7 +167,7 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 		if e := validateCharacterSourceFileName(name); e != nil {
 			return out, e
 		}
-		f, e := add(name, "characters/", MaxDefinitionDocumentBytes)
+		f, e := add(name, "", MaxDefinitionDocumentBytes)
 		if e != nil {
 			return out, e
 		}
@@ -199,20 +188,60 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 	}
 	seenMediaPaths := map[string]bool{}
 	for _, name := range manifest.MediaFiles {
-		if seenMediaPaths[strings.ToLower(name)] {
+		if seenMediaPaths[libraryKey(name)] {
 			return out, fmt.Errorf("duplicate media path %q", name)
 		}
-		seenMediaPaths[strings.ToLower(name)] = true
+		seenMediaPaths[libraryKey(name)] = true
 		if e := validateRulesetMediaPath(name); e != nil {
 			return out, e
 		}
 		if manifest.IncludesMedia {
-			f, e := add(name, "media/", maxPortableImportImage)
+			f, e := add(name, "", maxPortableImportImage)
 			if e != nil {
 				return out, e
 			}
 			out.Media[name] = f
 		}
+	}
+	if len(manifest.UnknownFiles) > maxUnknownTOMLFiles || len(manifest.Directories) > maxLibraryDirectories {
+		return out, errors.New("library limit exceeded")
+	}
+	for _, d := range manifest.Directories {
+		if e := validateLibraryPath(d); e != nil {
+			return out, e
+		}
+	}
+	if out.Unknown == nil {
+		out.Unknown = map[string]string{}
+	}
+	for _, name := range manifest.UnknownFiles {
+		if !strings.HasPrefix(name, "unknown/") {
+			return out, fmt.Errorf("invalid unknown TOML entry %q", name)
+		}
+		logical := strings.TrimPrefix(name, "unknown/")
+		if e := validateCharacterSourceFileName(logical); e != nil {
+			return out, e
+		}
+		f, e := add(name, "unknown/", MaxDefinitionDocumentBytes)
+		if e != nil {
+			return out, e
+		}
+		totalTOML += f.UncompressedSize64
+		if totalTOML > uint64(maxPortableTOMLBytes) {
+			return out, errors.New("import TOML exceeds total size limit")
+		}
+		data, e := readImportEntry(f, MaxDefinitionDocumentBytes)
+		if e != nil {
+			return out, e
+		}
+		if _, exists := out.Unknown[logical]; exists {
+			return out, fmt.Errorf("duplicate unknown TOML %q", logical)
+		}
+		var opaque map[string]any
+		if e = toml.Unmarshal(data, &opaque); e != nil {
+			return out, fmt.Errorf("unknown TOML %q: %w", logical, e)
+		}
+		out.Unknown[logical] = string(data)
 	}
 	if len(listed) != len(entries) {
 		return out, errors.New("archive includes unlisted entries")
@@ -253,6 +282,8 @@ func cloneForPortableImport(ss *Session) *Session {
 	copy.CharacterSources = maps.Clone(ss.CharacterSources)
 	copy.ResourceOverlays = cloneResourceOverlayConfig(ss.ResourceOverlays)
 	copy.Assets = cloneAssetRegistry(ss.Assets)
+	copy.UnknownTOML = maps.Clone(ss.UnknownTOML)
+	copy.LibraryDirectories = append([]string(nil), ss.LibraryDirectories...)
 	// Candidate validation never reads or changes scene data before the final locked apply.
 	copy.Scenes = nil
 	return &copy
@@ -394,7 +425,7 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	}
 	pathOwner := map[string]string{}
 	for name := range nextMedia {
-		lower := strings.ToLower(name)
+		lower := libraryKey(name)
 		if first, ok := pathOwner[lower]; ok && first != name {
 			return candidate, fmt.Errorf("media paths %q and %q conflict on case-insensitive filesystems", first, name)
 		}
@@ -414,6 +445,10 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	}
 	next := cloneForPortableImport(base)
 	next.Ruleset = ruleset
+	if opts.Mode == "replace" {
+		next.UnknownTOML = maps.Clone(a.Unknown)
+		next.LibraryDirectories = append([]string(nil), a.Manifest.Directories...)
+	}
 	next.CampaignDefinitions = campaign
 	next.Assets = assets
 	seenCharacters := map[string]bool{}
@@ -465,6 +500,9 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	for id, inst := range updates {
 		next.CharacterInstances[id] = inst
 	}
+	if e = validateLibrary(next); e != nil {
+		return candidate, e
+	}
 	if e = validateSessionCharacterState(next); e != nil {
 		return candidate, e
 	}
@@ -504,6 +542,8 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	candidate.Characters = next.CharacterInstances
 	candidate.Sources = next.CharacterSources
 	candidate.Assets = next.Assets
+	candidate.Unknown = next.UnknownTOML
+	candidate.Directories = next.LibraryDirectories
 	candidate.Preview = info
 	return candidate, nil
 }
