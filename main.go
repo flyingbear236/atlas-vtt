@@ -158,6 +158,7 @@ type Server struct {
 	jobContext      context.Context
 	jobCancel       context.CancelFunc
 	jobWG           sync.WaitGroup
+	peerWG          sync.WaitGroup
 	rotationJobs    map[string]*rotationJob
 	previewPeers    map[string]*peer
 	rollService     *RollService
@@ -594,6 +595,8 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		return
 	}
+	s.peerWG.Add(1)
+	defer s.peerWG.Done()
 	p := &peer{
 		conn:            c,
 		member:          m,

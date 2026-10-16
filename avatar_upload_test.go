@@ -153,17 +153,17 @@ func TestAvatarPresetOverlayAndPersistentGMAccess(t *testing.T) {
 	fixture.server.mu.Unlock()
 
 	status, _, message := uploadAvatarRequest(t, fixture, fixture.gm, "presetId", "ruleset_hero", pipelinePNG(t, 40, 50))
-	if status != http.StatusForbidden {
-		t.Fatalf("ruleset preset upload bypassed draft: %d %s", status, message)
+	if status != http.StatusOK {
+		t.Fatalf("ruleset preset upload failed: %d %s", status, message)
 	}
 	presetAsset, err := prepare(fixture.server.root, pipelinePNG(t, 40, 50), assetKindAvatar)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.server.mu.Lock()
-	if _, created := fixture.session.CampaignDefinitions.Presets["ruleset_hero"]; created {
+	if fixture.session.Ruleset.Registry.Presets["ruleset_hero"].Artwork == "" {
 		fixture.server.mu.Unlock()
-		t.Fatal("ruleset avatar created a campaign preset override")
+		t.Fatal("ruleset avatar was not attached to the preset")
 	}
 	fixture.session.Assets[presetAsset.ID] = presetAsset
 	preset := fixture.session.Ruleset.Registry.Presets["ruleset_hero"]

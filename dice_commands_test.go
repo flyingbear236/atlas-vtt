@@ -59,7 +59,7 @@ func newDiceCommandFixture(t *testing.T) diceCommandFixture {
 			gmMember.Secret: gmMember.ID, aliceMember.Secret: aliceMember.ID, bobMember.Secret: bobMember.ID,
 		}, Receipts: map[string]Receipt{}, CampaignRevision: 1, RegistryRevision: 1, CharacterRevision: 1,
 		DefinitionOperations: map[string]DefinitionOperationReceipt{}, Scenes: map[string]*Scene{sceneA.ID: sceneA, sceneB.ID: sceneB},
-		Ruleset: cloneRulesetSnapshot(server.defaultRuleset), CampaignDefinitions: registry,
+		Ruleset:            RulesetSnapshot{Registry: RulesetRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets}},
 		CharacterInstances: map[string]CharacterInstance{character.ID: character}, RollHistory: []RollEvent{},
 	}
 	rebuildCharacterReferences(session)
@@ -225,9 +225,9 @@ func TestRollHistoryBoundedAndReceiptSurvivesEviction(t *testing.T) {
 		fixture.server.mu.Unlock()
 		t.Fatal("roll history retained an otherwise unreferenced character")
 	}
-	action := fixture.session.CampaignDefinitions.Actions["strike"]
+	action := fixture.session.Ruleset.Registry.Actions["strike"]
 	action.Name = "Renamed after roll"
-	fixture.session.CampaignDefinitions.Actions[action.ID] = action
+	fixture.session.Ruleset.Registry.Actions[action.ID] = action
 	if fixture.session.RollHistory[0].CharacterName != "Hero" || fixture.session.RollHistory[0].ActionName != "Strike" {
 		fixture.server.mu.Unlock()
 		t.Fatal("history did not retain character/action name snapshots")

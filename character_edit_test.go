@@ -12,7 +12,7 @@ func TestCharacterEditAtomicReplaceAndIsolatedConflict(t *testing.T) {
 	session := fixture.session
 	gm := session.Members[session.Keys[fixture.gm["key"]]]
 	alice := session.Members[session.Keys[fixture.alice["key"]]]
-	preset := session.CampaignDefinitions.Presets["wolf"]
+	preset := session.Ruleset.Registry.Presets["wolf"]
 	original := NewCharacterInstance("sheet-edit-test", &preset)
 	session.CharacterInstances[original.ID] = original
 	tracked := StatDefinition{ID: "energy_edit", Name: "Energy", Kind: StatKindResource, Type: StatTypeInteger}
@@ -41,10 +41,10 @@ func TestCharacterEditAtomicReplaceAndIsolatedConflict(t *testing.T) {
 	if _, ok := after.Materialized.Stats["hp"]; ok {
 		t.Fatal("removed inherited characteristic remains")
 	}
-	if session.CampaignDefinitions.Presets["wolf"].Stats["hp"].Integer() != 11 {
+	if session.Ruleset.Registry.Presets["wolf"].Stats["hp"].Integer() != 11 {
 		t.Fatal("original preset changed")
 	}
-	if _, ok := session.CampaignDefinitions.Stats[tracked.ID]; !ok {
+	if _, ok := session.Ruleset.Registry.Stats[tracked.ID]; !ok {
 		t.Fatal("new definition missing")
 	}
 	// Replaying an old snapshot after an unrelated revision increment is a conflict
@@ -82,7 +82,7 @@ func TestCharacterEditInvalidDefinitionDoesNotModifyCharacter(t *testing.T) {
 	if session.CharacterInstances[original.ID].Name != original.Name {
 		t.Fatal("character was modified")
 	}
-	if _, exists := session.CampaignDefinitions.Stats["fractional_new"]; exists {
+	if _, exists := session.Ruleset.Registry.Stats["fractional_new"]; exists {
 		t.Fatal("invalid definition was registered")
 	}
 }
@@ -95,7 +95,7 @@ func TestCharacterEditNameOnlyKeepsPresetInheritance(t *testing.T) {
 	defer fixture.server.mu.Unlock()
 	session := fixture.session
 	member := session.Members[session.Keys[fixture.gm["key"]]]
-	preset := session.CampaignDefinitions.Presets["wolf"]
+	preset := session.Ruleset.Registry.Presets["wolf"]
 	linked := NewCharacterInstance("edit-name-only", &preset)
 	session.CharacterInstances[linked.ID] = linked
 	draft := &CharacterEditPayload{

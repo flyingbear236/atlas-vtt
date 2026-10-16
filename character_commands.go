@@ -23,8 +23,10 @@ func characterCommandType(commandType string) bool {
 }
 
 type characterInstanceBackup struct {
-	instance CharacterInstance
-	existed  bool
+	instance      CharacterInstance
+	existed       bool
+	source        CharacterTOMLSource
+	sourceExisted bool
 }
 
 type characterTokenMutation struct {
@@ -65,7 +67,13 @@ func (mutation *characterMutation) rememberInstance(characterID string) {
 		return
 	}
 	instance, existed := mutation.session.CharacterInstances[characterID]
-	mutation.instances[characterID] = characterInstanceBackup{instance: cloneCharacterInstance(instance), existed: existed}
+	source, sourceExisted := mutation.session.CharacterSources[characterID]
+	mutation.instances[characterID] = characterInstanceBackup{
+		instance:      cloneCharacterInstance(instance),
+		existed:       existed,
+		source:        source,
+		sourceExisted: sourceExisted,
+	}
 }
 
 func (mutation *characterMutation) setInstance(instance CharacterInstance) {
@@ -136,6 +144,11 @@ func (mutation *characterMutation) rollback() {
 		} else {
 			delete(mutation.session.CharacterInstances, characterID)
 		}
+		if backup.sourceExisted {
+			mutation.session.CharacterSources[characterID] = backup.source
+		} else {
+			delete(mutation.session.CharacterSources, characterID)
+		}
 	}
 	if mutation.token != nil {
 		mutation.token.scene.Tokens[mutation.token.old.ID] = cloneToken(mutation.token.old)
@@ -154,6 +167,7 @@ func gcCharacterIfUnreferenced(session *Session, characterID string) (CharacterI
 		return CharacterInstance{}, false
 	}
 	delete(session.CharacterInstances, characterID)
+	delete(session.CharacterSources, characterID)
 	return instance, true
 }
 

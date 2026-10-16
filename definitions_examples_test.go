@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestDefinitionExampleDocuments(t *testing.T) {
+func TestDefinitionExampleCampaignExtensionsConflictWithUnifiedRegistry(t *testing.T) {
 	rulesetData, err := os.ReadFile("examples/definitions/fantasy-ruleset.toml")
 	if err != nil {
 		t.Fatal(err)
@@ -19,7 +19,7 @@ func TestDefinitionExampleDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	preview, err := PreviewCampaignDefinitionsImport(DefinitionRegistries{
+	_, err = PreviewCampaignDefinitionsImport(DefinitionRegistries{
 		Ruleset: ruleset.Registry,
 		Campaign: CampaignRegistry{
 			Stats:   map[string]StatDefinition{},
@@ -27,16 +27,7 @@ func TestDefinitionExampleDocuments(t *testing.T) {
 			Presets: map[string]CharacterPresetDefinition{},
 		},
 	}, campaignData)
-	if err != nil {
-		t.Fatalf("preview example campaign extensions: %v", err)
-	}
-	if preview.Registry.Presets["goblin"].Name != "Гоблин Гринвуда" {
-		t.Fatal("campaign example did not create the expected preset overlay")
-	}
-	if preview.Registry.Actions["sword_attack"].Rolls[1].Count != 2 {
-		t.Fatal("campaign example did not create the expected action overlay")
-	}
-	if _, ok := preview.Registry.Presets["tavern_keeper"]; !ok {
-		t.Fatal("campaign example did not add its campaign-only preset")
+	if err == nil {
+		t.Fatal("legacy campaign overrides were accepted by the unified registry")
 	}
 }

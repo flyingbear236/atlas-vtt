@@ -71,9 +71,9 @@ func TestCharacterDisplaysDeduplicateSharedCharacterAndConfiguredResources(t *te
 func TestResourceOverlayConfigPersistsAndResourceChangeUsesCompactEvent(t *testing.T) {
 	fixture := newCharacterCommandFixture(t)
 	fixture.server.mu.Lock()
-	hp := fixture.session.CampaignDefinitions.Stats["hp"]
+	hp := fixture.session.Ruleset.Registry.Stats["hp"]
 	hp.Kind = StatKindResource
-	fixture.session.CampaignDefinitions.Stats["hp"] = hp
+	fixture.session.Ruleset.Registry.Stats["hp"] = hp
 	fixture.session.ResourceOverlays = nil
 	fixture.session.RegistryRevision++
 	fixture.server.dirty = true

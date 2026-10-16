@@ -87,7 +87,8 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 		total += f.UncompressedSize64
 		entries[low] = f
 	}
-	mf := entries["manifest.toml"]
+	manifestKey := libraryKey("manifest.toml")
+	mf := entries[manifestKey]
 	if mf == nil || mf.UncompressedSize64 > MaxDefinitionDocumentBytes {
 		return portableImportArchive{}, errors.New("missing or oversized manifest.toml")
 	}
@@ -103,7 +104,7 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 		return portableImportArchive{}, fmt.Errorf("unsupported archive format_version %d", manifest.FormatVersion)
 	}
 	out := portableImportArchive{Manifest: manifest, Ruleset: map[string]string{}, Characters: map[string][]byte{}, Media: map[string]*zip.File{}}
-	listed := map[string]bool{"manifest.toml": true}
+	listed := map[string]bool{manifestKey: true}
 	add := func(name, prefix string, max uint64) (*zip.File, error) {
 		if !importSafeName(name) || !strings.HasPrefix(name, prefix) {
 			return nil, fmt.Errorf("invalid manifest path %q", name)

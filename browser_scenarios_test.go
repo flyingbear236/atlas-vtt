@@ -171,11 +171,11 @@ func browserSeedWolfPreset(t *testing.T, s *Server) {
 			Actions: map[string]ActionDefinition{"strike": {ID: "strike", Name: "Strike", Rolls: []RollSpec{{ID: "hit", Name: "Hit", Count: 1, Sides: 20, ModifierStat: "power"}}}},
 			Presets: map[string]CharacterPresetDefinition{},
 		}}
-		session.CampaignDefinitions.Stats["hp"] = StatDefinition{ID: "hp", Name: "Здоровье", Type: StatTypeInteger}
-		session.CampaignDefinitions.Stats["awake"] = StatDefinition{ID: "awake", Name: "Бодрствует", Type: StatTypeBoolean}
-		session.CampaignDefinitions.Stats["motto"] = StatDefinition{ID: "motto", Name: "Девиз", Type: StatTypeString}
-		session.CampaignDefinitions.Actions["bite"] = ActionDefinition{ID: "bite", Name: "Укус", Description: "Атака волка"}
-		session.CampaignDefinitions.Presets["wolf"] = CharacterPresetDefinition{ID: "wolf", Name: "Wolf", Kind: "monster", Stats: map[string]StatValue{"hp": IntegerStatValue(11), "awake": BooleanStatValue(false), "motto": StringStatValue("")}, ActionIDs: []string{"bite"}}
+		session.Ruleset.Registry.Stats["hp"] = StatDefinition{ID: "hp", Name: "Здоровье", Type: StatTypeInteger}
+		session.Ruleset.Registry.Stats["awake"] = StatDefinition{ID: "awake", Name: "Бодрствует", Type: StatTypeBoolean}
+		session.Ruleset.Registry.Stats["motto"] = StatDefinition{ID: "motto", Name: "Девиз", Type: StatTypeString}
+		session.Ruleset.Registry.Actions["bite"] = ActionDefinition{ID: "bite", Name: "Укус", Description: "Атака волка"}
+		session.Ruleset.Registry.Presets["wolf"] = CharacterPresetDefinition{ID: "wolf", Name: "Wolf", Kind: "monster", Stats: map[string]StatValue{"hp": IntegerStatValue(11), "awake": BooleanStatValue(false), "motto": StringStatValue("")}, ActionIDs: []string{"bite"}}
 		session.RegistryRevision++
 		session.CharacterRevision++
 		s.dirty = true

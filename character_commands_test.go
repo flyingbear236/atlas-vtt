@@ -58,10 +58,10 @@ func newCharacterCommandFixture(t *testing.T) characterCommandFixture {
 	sceneB := newScene("second-scene", "Second")
 	sceneB.Published = true
 	session.Scenes[sceneB.ID] = sceneB
-	session.CampaignDefinitions.Stats["hp"] = StatDefinition{ID: "hp", Name: "HP", Type: StatTypeInteger}
-	session.CampaignDefinitions.Stats["dexterity"] = StatDefinition{ID: "dexterity", Name: "Dexterity", Type: StatTypeInteger}
-	session.CampaignDefinitions.Actions["bite"] = ActionDefinition{ID: "bite", Name: "Bite"}
-	session.CampaignDefinitions.Presets["wolf"] = CharacterPresetDefinition{
+	session.Ruleset.Registry.Stats["hp"] = StatDefinition{ID: "hp", Name: "HP", Type: StatTypeInteger}
+	session.Ruleset.Registry.Stats["dexterity"] = StatDefinition{ID: "dexterity", Name: "Dexterity", Type: StatTypeInteger}
+	session.Ruleset.Registry.Actions["bite"] = ActionDefinition{ID: "bite", Name: "Bite"}
+	session.Ruleset.Registry.Presets["wolf"] = CharacterPresetDefinition{
 		ID: "wolf", Name: "Wolf", Kind: "monster",
 		Stats: map[string]StatValue{"hp": IntegerStatValue(11), "dexterity": IntegerStatValue(15)}, ActionIDs: []string{"bite"},
 	}
@@ -173,7 +173,7 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 	fixture.server.mu.Lock()
 	revision := fixture.session.RegistryRevision
 	fixture.server.mu.Unlock()
-	updatedPreset := clonePresetDefinition(fixture.session.CampaignDefinitions.Presets["wolf"])
+	updatedPreset := clonePresetDefinition(fixture.session.Ruleset.Registry.Presets["wolf"])
 	updatedPreset.Stats["dexterity"] = IntegerStatValue(16)
 	writeCharacterCommand(t, gmWS, Command{Type: "definitionUpdate", Client: "preset-update", Seq: 1, DefinitionKind: definitionKindPreset, DefinitionID: "wolf", PresetDefinition: &updatedPreset, ExpectedRegistryRevision: registryRevisionPointer(revision)})
 	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
@@ -225,7 +225,7 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 		fixture.server.mu.Unlock()
 		t.Fatal("wolf instances do not preserve independent overrides and preset inheritance")
 	}
-	if red.PresetID != "wolf" || red.Materialized == nil || red.Materialized.Stats["fur_color"].String() != "red" || fixture.session.CampaignDefinitions.Stats["fur_color"].Type != StatTypeString {
+	if red.PresetID != "wolf" || red.Materialized == nil || red.Materialized.Stats["fur_color"].String() != "red" || fixture.session.Ruleset.Registry.Stats["fur_color"].Type != StatTypeString {
 		fixture.server.mu.Unlock()
 		t.Fatal("unknown stat and red wolf override were not saved atomically")
 	}
@@ -257,7 +257,7 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 	}
 	fixture.server.mu.Lock()
 	_, overrideRemains := fixture.session.CharacterInstances[redID].Materialized.Stats["fur_color"]
-	_, definitionRemains := fixture.session.CampaignDefinitions.Stats["fur_color"]
+	_, definitionRemains := fixture.session.Ruleset.Registry.Stats["fur_color"]
 	fixture.server.mu.Unlock()
 	if overrideRemains || !definitionRemains {
 		t.Fatal("stat reset did not remove only the instance override")
@@ -380,7 +380,7 @@ func TestCharacterGCIndexRelinkSceneDeleteAndSaveRollback(t *testing.T) {
 	writeCharacterCommand(t, aliceWS, atomicStat)
 	read(t, aliceWS, "saveError")
 	fixture.server.mu.Lock()
-	_, definitionLeaked := fixture.session.CampaignDefinitions.Stats["new_stat"]
+	_, definitionLeaked := fixture.session.Ruleset.Registry.Stats["new_stat"]
 	_, valueLeaked := fixture.session.CharacterInstances[persistentID].Materialized.Stats["new_stat"]
 	aliceID := fixture.session.Keys[fixture.alice["key"]]
 	receiptLeaked := fixture.session.Receipts[aliceID+":atomic-stat"].Seq != 0

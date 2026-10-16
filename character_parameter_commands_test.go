@@ -10,7 +10,7 @@ func TestCharacterParameterUnifiedAddRemoveAndPresetIsolation(t *testing.T) {
 	fixture.server.mu.Lock()
 	defer fixture.server.mu.Unlock()
 	session := fixture.session
-	preset := session.CampaignDefinitions.Presets["wolf"]
+	preset := session.Ruleset.Registry.Presets["wolf"]
 	member := session.Members[session.Keys[fixture.gm["key"]]]
 	alice := session.Members[session.Keys[fixture.alice["key"]]]
 	linked := NewCharacterInstance("unified-test", &preset)
@@ -31,7 +31,7 @@ func TestCharacterParameterUnifiedAddRemoveAndPresetIsolation(t *testing.T) {
 	if instance.Materialized == nil || instance.Materialized.ResourceInitial["stamina"].Integer() != 20 || instance.Materialized.Stats["hp"].Integer() != 11 {
 		t.Fatalf("add failed to materialize and retain preset values: %+v", instance)
 	}
-	if session.CampaignDefinitions.Stats["stamina"].Kind != StatKindResource {
+	if session.Ruleset.Registry.Stats["stamina"].Kind != StatKindResource {
 		t.Fatal("missing resource definition")
 	}
 	instance.ResourceCurrent = map[string]StatValue{"stamina": IntegerStatValue(5)}
@@ -46,7 +46,7 @@ func TestCharacterParameterUnifiedAddRemoveAndPresetIsolation(t *testing.T) {
 	if _, ok := instance.ResourceCurrent["stamina"]; ok {
 		t.Fatal("current resource survived removal")
 	}
-	if _, ok := session.CampaignDefinitions.Stats["stamina"]; !ok {
+	if _, ok := session.Ruleset.Registry.Stats["stamina"]; !ok {
 		t.Fatal("removing value deleted global definition")
 	}
 	if err := apply(Command{Type: "characterParameterRemove", CharacterID: linked.ID, StatID: "hp"}); err != nil {
@@ -55,7 +55,7 @@ func TestCharacterParameterUnifiedAddRemoveAndPresetIsolation(t *testing.T) {
 	if _, ok := session.CharacterInstances[linked.ID].Materialized.Stats["hp"]; ok {
 		t.Fatal("inherited stat survived removal")
 	}
-	if preset.Stats["hp"].Integer() != 11 || session.CampaignDefinitions.Presets["wolf"].Stats["hp"].Integer() != 11 {
+	if preset.Stats["hp"].Integer() != 11 || session.Ruleset.Registry.Presets["wolf"].Stats["hp"].Integer() != 11 {
 		t.Fatal("character removal changed preset")
 	}
 	if err := apply(Command{Type: "characterParameterAdd", CharacterID: linked.ID, StatID: "hp", StatValue: statValuePointer(IntegerStatValue(8))}); err != nil {
@@ -114,7 +114,7 @@ func TestCharacterParameterNewFloatDefinitionRejectedAtomically(t *testing.T) {
 		t.Fatal("float definition accepted")
 	}
 	mutation.rollback()
-	if _, ok := session.CampaignDefinitions.Stats[def.ID]; ok {
+	if _, ok := session.Ruleset.Registry.Stats[def.ID]; ok {
 		t.Fatal("invalid definition leaked")
 	}
 	if _, ok := session.CharacterInstances[instance.ID].Materialized.Stats[def.ID]; ok {
