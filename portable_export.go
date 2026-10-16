@@ -28,6 +28,8 @@ type portableExportManifest struct {
 	CampaignFiles  []string `toml:"campaign_files"`
 	CharacterFiles []string `toml:"character_files"`
 	MediaFiles     []string `toml:"media_files"`
+	UnknownFiles   []string `toml:"unknown_files,omitempty"`
+	Directories    []string `toml:"virtual_directories,omitempty"`
 	IncludesMedia  bool     `toml:"includes_media"`
 }
 
@@ -43,6 +45,8 @@ func snapshotPortableExport(session *Session) portableExportSnapshot {
 		Ruleset:            cloneRulesetSnapshot(session.Ruleset),
 		CharacterInstances: make(map[string]CharacterInstance),
 		CharacterSources:   make(map[string]CharacterTOMLSource),
+		LibraryDirectories: append([]string(nil), session.LibraryDirectories...),
+		UnknownTOML:        maps.Clone(session.UnknownTOML),
 	}
 	for id, instance := range session.CharacterInstances {
 		if instance.Persistent {
@@ -139,7 +143,7 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 			if err := validateCharacterSourceFileName(origin.FileName); err != nil {
 				return nil, manifest, err
 			}
-			key := strings.ToLower(origin.FileName)
+			key := libraryKey(origin.FileName)
 			if first := used[key]; first != "" {
 				return nil, manifest, fmt.Errorf("characters %q and %q share %q", first, id, origin.FileName)
 			}
@@ -160,12 +164,12 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 		}
 		// Imported paths were reserved. Generated paths are stable unless
 		// explicitly occupied by a user-provided filename.
-		if used[strings.ToLower(name)] != id {
+		if used[libraryKey(name)] != id {
 			originalName := name
-			for i := 2; used[strings.ToLower(name)] != ""; i++ {
+			for i := 2; used[libraryKey(name)] != ""; i++ {
 				name = strings.TrimSuffix(originalName, ".toml") + fmt.Sprintf("-%d.toml", i)
 			}
-			used[strings.ToLower(name)] = id
+			used[libraryKey(name)] = id
 		}
 		data, err := CurrentCharacterTOML(ss, id)
 		if err != nil {
@@ -175,6 +179,9 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 		if totalTOML > maxPortableTOMLBytes {
 			return nil, manifest, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
 		}
+		if _, exists := files[name]; exists {
+			return nil, manifest, fmt.Errorf("archive path collision %q", name)
+		}
 		files[name] = data
 		manifest.CharacterFiles = append(manifest.CharacterFiles, name)
 	}
@@ -182,6 +189,27 @@ func portableExportFiles(snapshot *portableExportSnapshot, includeMedia bool) (m
 		manifest.MediaFiles = append(manifest.MediaFiles, name)
 	}
 	slices.Sort(manifest.MediaFiles)
+	manifest.Directories = append([]string(nil), ss.LibraryDirectories...)
+	slices.Sort(manifest.Directories)
+	for name, source := range ss.UnknownTOML {
+		if err := validateLibraryFilePath(name); err != nil {
+			return nil, manifest, err
+		}
+		if !strings.EqualFold(path.Ext(name), ".toml") {
+			return nil, manifest, fmt.Errorf("unknown file %q must be TOML", name)
+		}
+		p := "unknown/" + name
+		if _, exists := files[p]; exists {
+			return nil, manifest, fmt.Errorf("archive path collision %q", p)
+		}
+		files[p] = []byte(source)
+		manifest.UnknownFiles = append(manifest.UnknownFiles, p)
+		totalTOML += int64(len(source))
+		if totalTOML > maxPortableTOMLBytes {
+			return nil, manifest, fmt.Errorf("export TOML exceeds %d bytes", maxPortableTOMLBytes)
+		}
+	}
+	slices.Sort(manifest.UnknownFiles)
 	return files, manifest, nil
 }
 
@@ -275,16 +303,6 @@ func ExportPortablePackage(ctx context.Context, snapshot portableExportSnapshot,
 		return err
 	}
 	if includeMedia {
-		for _, preset := range snapshot.Session.Ruleset.Registry.Presets {
-			if preset.Artwork != "" && snapshot.Session.Ruleset.Media[preset.Artwork] == "" {
-				return fmt.Errorf("preset %q artwork %q is unavailable", preset.ID, preset.Artwork)
-			}
-		}
-		for _, instance := range snapshot.Session.CharacterInstances {
-			if instance.ArtworkPath != "" && snapshot.Session.Ruleset.Media[instance.ArtworkPath] == "" {
-				return fmt.Errorf("character %q artwork %q is unavailable", instance.ID, instance.ArtworkPath)
-			}
-		}
 		var total int64
 		for _, name := range manifest.MediaFiles {
 			assetID := snapshot.Session.Ruleset.Media[name]
@@ -314,10 +332,10 @@ func ExportPortablePackage(ctx context.Context, snapshot portableExportSnapshot,
 	// ZIP extractors on Windows can alias names that differ only in case.
 	seenPaths := map[string]string{}
 	for p := range files {
-		seenPaths[strings.ToLower(p)] = p
+		seenPaths[libraryKey(p)] = p
 	}
 	for _, p := range manifest.MediaFiles {
-		key := strings.ToLower(p)
+		key := libraryKey(p)
 		if first, ok := seenPaths[key]; ok {
 			return fmt.Errorf("archive paths %q and %q conflict", first, p)
 		}

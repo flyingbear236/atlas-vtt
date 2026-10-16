@@ -126,7 +126,10 @@ func (err *RulesetDefinitionConflictError) Error() string {
 }
 
 func validateRulesetFileName(name string) error {
-	if name == "" || len(name) > 255 || strings.TrimSpace(name) != name || strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') || !strings.HasSuffix(strings.ToLower(name), ".toml") {
+	if err := validateLibraryFilePath(name); err != nil {
+		return err
+	}
+	if !strings.EqualFold(path.Ext(name), ".toml") {
 		return fmt.Errorf("invalid ruleset filename %q", name)
 	}
 	return nil

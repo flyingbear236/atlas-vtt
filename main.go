@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -112,6 +113,7 @@ type Session struct {
 	Keys                 map[string]string                     `json:"keys"`
 	Receipts             map[string]Receipt                    `json:"receipts,omitempty"`
 	CampaignRevision     uint64                                `json:"campaignRevision"`
+	LibraryRevision      uint64                                `json:"libraryRevision,omitempty"`
 	RegistryRevision     uint64                                `json:"registryRevision"`
 	CharacterRevision    uint64                                `json:"characterRevision"`
 	RollRevision         uint64                                `json:"rollRevision,omitempty"`
@@ -122,6 +124,8 @@ type Session struct {
 	CampaignDefinitions  CampaignRegistry                      `json:"-"`
 	CharacterInstances   map[string]CharacterInstance          `json:"characterInstances"`
 	CharacterSources     map[string]CharacterTOMLSource        `json:"characterSources,omitempty"`
+	LibraryDirectories   []string                              `json:"libraryDirectories,omitempty"`
+	UnknownTOML          map[string]string                     `json:"unknownToml,omitempty"`
 	ResourceOverlays     []ResourceOverlayConfig               `json:"resourceOverlays,omitempty"`
 
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
@@ -311,6 +315,9 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 				return nil, fmt.Errorf("invalid member key in session %s", sessionID)
 			}
 		}
+		if err := validateLibrary(ss); err != nil {
+			return nil, fmt.Errorf("invalid library in session %s: %w", sessionID, err)
+		}
 		if err := validateSessionCharacterState(ss); err != nil {
 			return nil, fmt.Errorf("invalid character state in session %s: %w", sessionID, err)
 		}
@@ -335,13 +342,29 @@ func (s *Server) save() error {
 	defer s.mu.Unlock()
 	return s.saveLocked()
 }
-func (s *Server) saveLocked() error {
+func (s *Server) saveLocked() (saveErr error) {
 	if !s.dirty {
 		return nil
 	}
+	sourcesBefore := map[*Session]map[string]CharacterTOMLSource{}
+	defer func() {
+		if saveErr != nil {
+			for ss, original := range sourcesBefore {
+				ss.CharacterSources = original
+			}
+		}
+	}()
 	for sessionID, session := range s.sessions {
+		sourcesBefore[session] = session.CharacterSources
+		session.CharacterSources = maps.Clone(session.CharacterSources)
 		initializeSessionCharacterCollections(session)
 		initializeSessionDiceState(session)
+		if err := syncLibraryCharacterPaths(session); err != nil {
+			return err
+		}
+		if err := validateLibrary(session); err != nil {
+			return err
+		}
 		if err := validateSessionCharacterState(session); err != nil {
 			return fmt.Errorf("refuse to save invalid character state in session %s: %w", sessionID, err)
 		}
@@ -429,6 +452,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/definitions/ruleset/media/attach", s.attachRulesetMedia)
 	mux.HandleFunc("GET /api/definitions/campaign/export", s.exportCampaignDefinitions)
 	mux.HandleFunc("GET /api/characters", s.readCharacterCatalog)
+	mux.HandleFunc("GET /api/library", s.readLibrary)
+	mux.HandleFunc("POST /api/library/operation", s.libraryOperation)
+	mux.HandleFunc("POST /api/library/toml", s.importUnknownTOML)
 	mux.HandleFunc("POST /api/definitions/ruleset/preview", s.previewRulesetInstall)
 	mux.HandleFunc("POST /api/definitions/ruleset/apply", s.applyRulesetInstall)
 	mux.HandleFunc("POST /api/definitions/campaign/preview", s.previewCampaignImport)
@@ -472,7 +498,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	scene.Published = true
 	ss := &Session{
 		ID: id(), Name: req.Name, Invite: id(), Members: map[string]*Member{m.ID: m}, Keys: map[string]string{m.Secret: m.ID},
-		Assets: map[string]Asset{}, CampaignRevision: 1, RegistryRevision: 1, CharacterRevision: 1, DefinitionOperations: map[string]DefinitionOperationReceipt{}, Scenes: map[string]*Scene{sceneID: scene},
+		Assets: map[string]Asset{}, CampaignRevision: 1, RegistryRevision: 1, CharacterRevision: 1, LibraryRevision: 1, DefinitionOperations: map[string]DefinitionOperationReceipt{}, Scenes: map[string]*Scene{sceneID: scene},
 		Ruleset:            cloneRulesetSnapshot(s.defaultRuleset),
 		CharacterInstances: map[string]CharacterInstance{}, characterReferences: map[string]map[CharacterTokenReference]struct{}{},
 	}

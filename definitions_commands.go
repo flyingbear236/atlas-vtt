@@ -865,8 +865,7 @@ func (s *Server) previewCampaignImport(w http.ResponseWriter, request *http.Requ
 }
 
 func previewCampaignImportForSession(session *Session, data []byte) (CampaignImportPreview, error) {
-	current, err := MergeDefinitionRegistries(sessionRegistries(session))
-	if err != nil {
+	if _, err := MergeDefinitionRegistries(sessionRegistries(session)); err != nil {
 		return CampaignImportPreview{}, err
 	}
 	_, imported, err := prepareDefinitionsImport(session, data)

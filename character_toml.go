@@ -19,6 +19,7 @@ import (
 type CharacterTOMLSource struct {
 	FileName string `json:"fileName"`
 	Source   string `json:"source"`
+	AutoName bool   `json:"autoName,omitempty"`
 }
 
 type characterTOMLDocument struct {
@@ -319,13 +320,11 @@ func CharacterSourceFileName(session *Session, id string) string {
 }
 
 func validateCharacterSourceFileName(name string) error {
-	if !strings.HasPrefix(name, "characters/") || !strings.HasSuffix(name, ".toml") || len(name) > 255 || name != path.Clean(name) || strings.Contains(name, "\\") {
-		return fmt.Errorf("invalid character TOML filename %q", name)
+	if err := validateLibraryFilePath(name); err != nil {
+		return err
 	}
-	for _, segment := range strings.Split(name, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("invalid character TOML filename %q", name)
-		}
+	if !strings.EqualFold(path.Ext(name), ".toml") {
+		return fmt.Errorf("invalid character TOML filename %q", name)
 	}
 	return nil
 }
