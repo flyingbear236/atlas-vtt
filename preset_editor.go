@@ -332,7 +332,7 @@ func (s *Server) savePresetEditor(w http.ResponseWriter, r *http.Request) {
 	}
 	var updates map[string]CharacterInstance
 	if err == nil {
-		updates, err = prepareDefinitionCharacters(session, candidate, session.CampaignDefinitions)
+		updates, err = prepareDefinitionCharacters(session, candidate, emptyCampaignRegistry())
 	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())

@@ -310,20 +310,21 @@ func MergeDefinitionRegistries(registries DefinitionRegistries) (EffectiveRegist
 		merged.Presets[id] = clonePresetDefinition(definition)
 	}
 	for id, definition := range registries.Campaign.Stats {
-		if ruleset, exists := registries.Ruleset.Stats[id]; exists {
-			if ruleset.Type != definition.Type {
-				return EffectiveRegistry{}, fmt.Errorf("stat %q cannot override ruleset type %q with %q", id, ruleset.Type, definition.Type)
-			}
-			if ruleset.Kind != definition.Kind {
-				return EffectiveRegistry{}, fmt.Errorf("stat %q cannot override ruleset kind %q with %q", id, ruleset.Kind, definition.Kind)
-			}
+		if _, exists := merged.Stats[id]; exists {
+			return EffectiveRegistry{}, fmt.Errorf("duplicate stat %q across definition registries", id)
 		}
 		merged.Stats[id] = cloneStatDefinition(definition)
 	}
 	for id, definition := range registries.Campaign.Actions {
+		if _, exists := merged.Actions[id]; exists {
+			return EffectiveRegistry{}, fmt.Errorf("duplicate action %q across definition registries", id)
+		}
 		merged.Actions[id] = cloneActionDefinition(definition)
 	}
 	for id, definition := range registries.Campaign.Presets {
+		if _, exists := merged.Presets[id]; exists {
+			return EffectiveRegistry{}, fmt.Errorf("duplicate preset %q across definition registries", id)
+		}
 		merged.Presets[id] = clonePresetDefinition(definition)
 	}
 	if err := ValidateEffectiveRegistry(merged); err != nil {

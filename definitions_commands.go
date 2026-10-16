@@ -70,7 +70,7 @@ func definitionCommandType(commandType string) bool {
 }
 
 func sessionRegistries(session *Session) DefinitionRegistries {
-	return DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: session.CampaignDefinitions}
+	return DefinitionRegistries{Ruleset: session.Ruleset.Registry}
 }
 
 // prepareDefinitionCharacters validates a prospective registry without changing
@@ -90,10 +90,10 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 	if err != nil {
 		return nil, err
 	}
-	for id, preset := range campaign.Presets {
+	for id, preset := range ruleset.Registry.Presets {
 		if preset.AvatarAssetID != "" {
 			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
-				return nil, fmt.Errorf("campaign preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
+				return nil, fmt.Errorf("preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
 			}
 		}
 	}
@@ -296,67 +296,150 @@ func deleteCampaignDefinition(candidate *CampaignRegistry, kind, definitionID st
 	return nil
 }
 
-func applyDefinitionCommand(session *Session, command Command) (CampaignRegistry, bool, error) {
+// applyDefinitionCommand is the compatibility entry point for both old UI command
+// names. All writes target the single registry and preserve their TOML owner.
+func applyDefinitionCommand(session *Session, command Command) (RulesetSnapshot, bool, error) {
 	if command.ExpectedRegistryRevision == nil || *command.ExpectedRegistryRevision != session.RegistryRevision {
-		return CampaignRegistry{}, false, fmt.Errorf("stale registry revision: current is %d", session.RegistryRevision)
+		return RulesetSnapshot{}, false, fmt.Errorf("stale registry revision: current is %d", session.RegistryRevision)
 	}
-	registries := sessionRegistries(session)
-	currentEffective, err := MergeDefinitionRegistries(registries)
+	original, err := RulesetSnapshotWithSources(session.Ruleset)
 	if err != nil {
-		return CampaignRegistry{}, false, err
+		return RulesetSnapshot{}, false, err
 	}
-	candidate := cloneCampaignRegistry(session.CampaignDefinitions)
+	candidate := cloneRulesetSnapshot(original)
+	current, err := MergeDefinitionRegistries(sessionRegistries(session))
+	if err != nil {
+		return RulesetSnapshot{}, false, err
+	}
+	kind, id := command.DefinitionKind, command.DefinitionID
+	currentExists := effectiveHasDefinition(current, kind, id)
+	changes := emptyCampaignRegistry()
 	switch command.Type {
 	case "definitionCreate":
-		if definitionExistsInCampaign(candidate, command.DefinitionKind, command.DefinitionID) {
-			return CampaignRegistry{}, false, errors.New("campaign definition already exists")
+		if currentExists {
+			return RulesetSnapshot{}, false, fmt.Errorf("duplicate %s %q: already owned by %s", kind, id, mustDefinitionOwner(original, kind, id))
 		}
-		if err := setCommandDefinition(&candidate, registries, command); err != nil {
-			return CampaignRegistry{}, false, err
+		if err := setCommandDefinition(&changes, DefinitionRegistries{Ruleset: candidate.Registry}, command); err != nil {
+			return RulesetSnapshot{}, false, err
 		}
-	case "definitionUpdate":
-		if !definitionExistsInCampaign(candidate, command.DefinitionKind, command.DefinitionID) {
-			return CampaignRegistry{}, false, errors.New("campaign definition not found")
+		if err := addGeneratedDefinitions(&candidate, changes); err != nil {
+			return RulesetSnapshot{}, false, err
 		}
-		if command.DefinitionKind == definitionKindStat && command.StatDefinition != nil {
-			old := currentEffective.Stats[command.DefinitionID]
-			if old.ID != "" && old.Type != command.StatDefinition.Type {
-				if references := definitionReferences(session, currentEffective, definitionKindStat, command.DefinitionID); len(references) > 0 {
-					return CampaignRegistry{}, false, fmt.Errorf("cannot change type of referenced stat %q: %s", command.DefinitionID, strings.Join(references, ", "))
+	case "definitionDuplicate":
+		targetID := command.DuplicateDefinitionID
+		if !currentExists {
+			return RulesetSnapshot{}, false, errors.New("source definition not found")
+		}
+		if targetID == "" || effectiveHasDefinition(current, kind, targetID) {
+			return RulesetSnapshot{}, false, errors.New("duplicate target id is missing or already exists")
+		}
+		if err := cloneEffectiveDefinitionIntoCampaign(&changes, current, kind, id, targetID); err != nil {
+			return RulesetSnapshot{}, false, err
+		}
+		if err := addGeneratedDefinitions(&candidate, changes); err != nil {
+			return RulesetSnapshot{}, false, err
+		}
+	case "definitionUpdate", "definitionRulesetUpdate":
+		if !currentExists {
+			return RulesetSnapshot{}, false, errors.New("definition not found")
+		}
+		if _, err := definitionFileOwner(candidate, kind, id); err != nil {
+			return RulesetSnapshot{}, false, err
+		}
+		if kind == definitionKindStat && command.StatDefinition != nil {
+			if old := current.Stats[id]; old.Type != command.StatDefinition.Type {
+				if refs := definitionReferences(session, current, kind, id); len(refs) > 0 {
+					return RulesetSnapshot{}, false, fmt.Errorf("cannot change type of referenced stat %q: %s", id, strings.Join(refs, ", "))
 				}
 			}
 		}
-		if err := setCommandDefinition(&candidate, registries, command); err != nil {
-			return CampaignRegistry{}, false, err
+		if err := setCommandDefinition(&changes, DefinitionRegistries{Ruleset: candidate.Registry}, command); err != nil {
+			return RulesetSnapshot{}, false, err
 		}
-	case "definitionDuplicate":
-		if command.DuplicateDefinitionID == "" || effectiveHasDefinition(currentEffective, command.DefinitionKind, command.DuplicateDefinitionID) {
-			return CampaignRegistry{}, false, errors.New("duplicate target id is missing or already exists")
-		}
-		if err := cloneEffectiveDefinitionIntoCampaign(&candidate, currentEffective, command.DefinitionKind, command.DefinitionID, command.DuplicateDefinitionID); err != nil {
-			return CampaignRegistry{}, false, err
-		}
-	case "definitionDelete":
-		if !definitionExistsInCampaign(candidate, command.DefinitionKind, command.DefinitionID) {
-			return CampaignRegistry{}, false, errors.New("campaign definition not found")
-		}
-		if err := deleteCampaignDefinition(&candidate, command.DefinitionKind, command.DefinitionID); err != nil {
-			return CampaignRegistry{}, false, err
-		}
-		candidateEffective, mergeErr := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: candidate})
-		if mergeErr == nil && command.DefinitionKind != definitionKindPreset && !effectiveHasDefinition(candidateEffective, command.DefinitionKind, command.DefinitionID) {
-			if references := definitionReferences(session, currentEffective, command.DefinitionKind, command.DefinitionID); len(references) > 0 {
-				return CampaignRegistry{}, false, fmt.Errorf("definition %q is referenced by %s", command.DefinitionID, strings.Join(references, ", "))
+		// Preset stats not previously defined are generated in their own file.
+		additions := emptyCampaignRegistry()
+		for statID, stat := range changes.Stats {
+			if _, exists := candidate.Registry.Stats[statID]; !exists {
+				additions.Stats[statID] = stat
 			}
 		}
+		if err := addGeneratedDefinitions(&candidate, additions); err != nil {
+			return RulesetSnapshot{}, false, err
+		}
+		switch kind {
+		case definitionKindStat:
+			candidate.Registry.Stats[id] = changes.Stats[id]
+		case definitionKindAction:
+			candidate.Registry.Actions[id] = changes.Actions[id]
+		case definitionKindPreset:
+			candidate.Registry.Presets[id] = changes.Presets[id]
+		default:
+			return RulesetSnapshot{}, false, errors.New("unknown definition kind")
+		}
+	case "definitionDelete", "definitionRulesetDelete":
+		if !currentExists {
+			return RulesetSnapshot{}, false, errors.New("definition not found")
+		}
+		owner, err := definitionFileOwner(candidate, kind, id)
+		if err != nil {
+			return RulesetSnapshot{}, false, err
+		}
+		if refs := definitionReferences(session, current, kind, id); len(refs) > 0 {
+			return RulesetSnapshot{}, false, fmt.Errorf("definition %q is referenced by %s", id, strings.Join(refs, ", "))
+		}
+		manifest := candidate.Files[owner]
+		remove := func(ids []string) []string {
+			next := make([]string, 0, len(ids))
+			for _, item := range ids {
+				if item != id {
+					next = append(next, item)
+				}
+			}
+			return next
+		}
+		switch kind {
+		case definitionKindStat:
+			delete(candidate.Registry.Stats, id)
+			manifest.Stats = remove(manifest.Stats)
+		case definitionKindAction:
+			delete(candidate.Registry.Actions, id)
+			manifest.Actions = remove(manifest.Actions)
+		case definitionKindPreset:
+			delete(candidate.Registry.Presets, id)
+			manifest.Presets = remove(manifest.Presets)
+		default:
+			return RulesetSnapshot{}, false, errors.New("unknown definition kind")
+		}
+		candidate.Files[owner] = manifest
 	default:
-		return CampaignRegistry{}, false, errors.New("unknown definition command")
+		return RulesetSnapshot{}, false, errors.New("unknown definition command")
 	}
-	if err := validateDefinitionState(session, session.Ruleset, candidate); err != nil {
-		return CampaignRegistry{}, false, err
+	if err := validateUnifiedDefinitionCandidate(session, candidate); err != nil {
+		return RulesetSnapshot{}, false, err
 	}
-	changed := !campaignRegistriesEqual(session.CampaignDefinitions, candidate)
-	return candidate, changed, nil
+	return candidate, !equalRulesetRegistries(original.Registry, candidate.Registry), nil
+}
+
+func validateUnifiedDefinitionCandidate(session *Session, candidate RulesetSnapshot) error {
+	if err := validateDefinitionState(session, candidate, emptyCampaignRegistry()); err != nil {
+		return err
+	}
+	files := make(map[string]string, len(candidate.Files))
+	for name := range candidate.Files {
+		content, err := RenderRulesetFileTOML(candidate, name)
+		if err != nil {
+			return fmt.Errorf("render %q: %w", name, err)
+		}
+		files[name] = content
+	}
+	parsed, err := CompileRulesetFiles(files)
+	if err != nil {
+		return err
+	}
+	if !equalRulesetRegistries(parsed.Registry, candidate.Registry) {
+		return errors.New("TOML output differs from updated registry")
+	}
+	return nil
 }
 
 func campaignRegistriesEqual(left, right CampaignRegistry) bool {
@@ -410,7 +493,6 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 		return
 	}
 
-	oldCampaign := cloneCampaignRegistry(session.CampaignDefinitions)
 	oldRuleset := cloneRulesetSnapshot(session.Ruleset)
 	oldRevision, oldCharacterRevision, oldDirty := session.RegistryRevision, session.CharacterRevision, s.dirty
 	oldCharacters := map[string]CharacterInstance{}
@@ -419,12 +501,12 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 	changed := false
 	if !memberIsGM(peer.member) {
 		issue = "Действие доступно ведущему"
-	} else if command.Type == "definitionRulesetUpdate" || command.Type == "definitionRulesetDelete" {
-		candidate, candidateChanged, err := applyRulesetDefinitionCommand(session, command)
+	} else {
+		candidate, candidateChanged, err := applyDefinitionCommand(session, command)
 		if err != nil {
 			issue = err.Error()
 		} else if candidateChanged {
-			updates, projectionErr := prepareDefinitionCharacters(session, candidate, session.CampaignDefinitions)
+			updates, projectionErr := prepareDefinitionCharacters(session, candidate, emptyCampaignRegistry())
 			if projectionErr != nil {
 				issue = projectionErr.Error()
 			} else {
@@ -440,37 +522,12 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 				changed = true
 			}
 		}
-	} else {
-		candidate, candidateChanged, err := applyDefinitionCommand(session, command)
-		if err != nil {
-			issue = err.Error()
-		} else if candidateChanged {
-			updates, projectionErr := prepareDefinitionCharacters(session, session.Ruleset, candidate)
-			if projectionErr != nil {
-				issue = projectionErr.Error()
-			} else {
-				for characterID, next := range updates {
-					oldCharacters[characterID] = cloneCharacterInstance(session.CharacterInstances[characterID])
-					session.CharacterInstances[characterID] = next
-				}
-				oldAssets = make(map[string]Asset, len(session.Assets))
-				for assetID, asset := range session.Assets {
-					oldAssets[assetID] = asset
-				}
-				session.CampaignDefinitions = candidate
-				session.RegistryRevision++
-				session.CharacterRevision++
-				refreshAssetOrphans(session, time.Now())
-				changed = true
-			}
-		}
 	}
 	session.Receipts[stream] = Receipt{Seq: command.Seq, Error: issue, Digest: digest, Updated: time.Now().Unix()}
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
 		if changed {
 			session.Ruleset = oldRuleset
-			session.CampaignDefinitions = oldCampaign
 			for characterID, original := range oldCharacters {
 				session.CharacterInstances[characterID] = original
 			}
@@ -689,7 +746,7 @@ func (s *Server) readDefinitions(w http.ResponseWriter, request *http.Request) {
 		RegistryRevision: session.RegistryRevision,
 		Ruleset:          ruleset,
 		ArtworkWarnings:  rulesetArtworkWarnings(session.Ruleset, session.Assets),
-		Campaign:         cloneCampaignRegistry(session.CampaignDefinitions),
+		Campaign:         emptyCampaignRegistry(),
 		Effective:        effective,
 	})
 }
@@ -729,12 +786,12 @@ func (s *Server) exportCampaignDefinitions(w http.ResponseWriter, request *http.
 		fail(w, http.StatusForbidden, "Нужны права ведущего")
 		return
 	}
-	data, err := ExportCampaignDefinitionsTOML(sessionRegistries(session))
+	data, err := ExportRulesetSnapshotTOML(session.Ruleset)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeDefinitionsTOML(w, data, "campaign-extensions.toml")
+	writeDefinitionsTOML(w, data, "definitions.toml")
 }
 
 func rulesetInstalled(snapshot RulesetSnapshot) bool {
@@ -762,7 +819,7 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 	}
 	snapshot, err := compileRulesetPackage(packageData)
 	if err == nil {
-		err = validateDefinitionState(session, snapshot, session.CampaignDefinitions)
+		err = validateDefinitionState(session, snapshot, emptyCampaignRegistry())
 	}
 	if err != nil {
 		var conflict *RulesetDefinitionConflictError
@@ -812,21 +869,85 @@ func previewCampaignImportForSession(session *Session, data []byte) (CampaignImp
 	if err != nil {
 		return CampaignImportPreview{}, err
 	}
-	preview, err := PreviewCampaignDefinitionsImport(sessionRegistries(session), data)
+	_, imported, err := prepareDefinitionsImport(session, data)
 	if err != nil {
 		return CampaignImportPreview{}, err
 	}
-	for id, definition := range preview.Registry.Stats {
-		if old, exists := current.Stats[id]; exists && old.Type != definition.Type {
-			if references := definitionReferences(session, current, definitionKindStat, id); len(references) > 0 {
-				return CampaignImportPreview{}, fmt.Errorf("cannot change type of referenced stat %q: %s", id, strings.Join(references, ", "))
-			}
+	return CampaignImportPreview{Registry: imported, Diff: addedDefinitionsDiff(imported)}, nil
+}
+
+// Imports are additional TOML sources. A duplicate ID conflicts instead of
+// silently replacing a definition, regardless of its current file owner.
+func prepareDefinitionsImport(session *Session, data []byte) (RulesetSnapshot, CampaignRegistry, error) {
+	current, err := MergeDefinitionRegistries(sessionRegistries(session))
+	if err != nil {
+		return RulesetSnapshot{}, CampaignRegistry{}, err
+	}
+	imported, metadata, err := decodeDefinitionsTOML(data, current)
+	if err != nil {
+		return RulesetSnapshot{}, CampaignRegistry{}, err
+	}
+	if metadata != nil {
+		return RulesetSnapshot{}, CampaignRegistry{}, errors.New("imported definitions must not contain ruleset metadata")
+	}
+	for id := range imported.Stats {
+		if _, exists := current.Stats[id]; exists {
+			return RulesetSnapshot{}, CampaignRegistry{}, fmt.Errorf("duplicate stat %q", id)
 		}
 	}
-	if err := validateDefinitionState(session, session.Ruleset, preview.Registry); err != nil {
-		return CampaignImportPreview{}, err
+	for id := range imported.Actions {
+		if _, exists := current.Actions[id]; exists {
+			return RulesetSnapshot{}, CampaignRegistry{}, fmt.Errorf("duplicate action %q", id)
+		}
 	}
-	return preview, nil
+	for id := range imported.Presets {
+		if _, exists := current.Presets[id]; exists {
+			return RulesetSnapshot{}, CampaignRegistry{}, fmt.Errorf("duplicate preset %q", id)
+		}
+	}
+	candidate, err := RulesetSnapshotWithSources(session.Ruleset)
+	if err != nil {
+		return RulesetSnapshot{}, CampaignRegistry{}, err
+	}
+	files := make(map[string]string, len(candidate.Files)+1)
+	for name := range candidate.Files {
+		files[name], err = RenderRulesetFileTOML(candidate, name)
+		if err != nil {
+			return RulesetSnapshot{}, CampaignRegistry{}, err
+		}
+	}
+	name := "imported-definitions.toml"
+	for n := 2; ; n++ {
+		if _, exists := files[name]; !exists {
+			break
+		}
+		name = fmt.Sprintf("imported-definitions-%d.toml", n)
+	}
+	files[name] = string(data)
+	combined, err := CompileRulesetFiles(files)
+	if err != nil {
+		return RulesetSnapshot{}, CampaignRegistry{}, err
+	}
+	combined.Media = candidate.Media
+	if err := validateUnifiedDefinitionCandidate(session, combined); err != nil {
+		return RulesetSnapshot{}, CampaignRegistry{}, err
+	}
+	return combined, imported, nil
+}
+
+func addedDefinitionsDiff(reg CampaignRegistry) CampaignImportDiff {
+	diff := CampaignImportDiff{}
+	for id := range reg.Stats {
+		diff.Stats.Added = append(diff.Stats.Added, id)
+	}
+	for id := range reg.Actions {
+		diff.Actions.Added = append(diff.Actions.Added, id)
+	}
+	for id := range reg.Presets {
+		diff.Presets.Added = append(diff.Presets.Added, id)
+	}
+	sortImportDiff(&diff)
+	return diff
 }
 
 func cloneDefinitionOperationReceipts(receipts map[string]DefinitionOperationReceipt) map[string]DefinitionOperationReceipt {
@@ -953,7 +1074,6 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	}
 
 	oldRuleset := cloneRulesetSnapshot(session.Ruleset)
-	oldCampaign := cloneCampaignRegistry(session.CampaignDefinitions)
 	oldOperations := cloneDefinitionOperationReceipts(session.DefinitionOperations)
 	oldCharacters := map[string]CharacterInstance{}
 	var oldAssets map[string]Asset
@@ -967,7 +1087,7 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 		snapshot, parseErr := compileRulesetPackage(candidatePackage)
 		var updates map[string]CharacterInstance
 		if parseErr == nil {
-			updates, parseErr = prepareDefinitionCharacters(session, snapshot, session.CampaignDefinitions)
+			updates, parseErr = prepareDefinitionCharacters(session, snapshot, emptyCampaignRegistry())
 		}
 		if parseErr != nil {
 			var conflict *RulesetDefinitionConflictError
@@ -990,18 +1110,13 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 			result.RulesetMetadata = &metadata
 		}
 	case definitionOperationCampaignImport:
-		preview, previewErr := previewCampaignImportForSession(session, data)
-		if previewErr != nil {
-			fail(w, http.StatusBadRequest, previewErr.Error())
+		candidate, imported, importErr := prepareDefinitionsImport(session, data)
+		if importErr != nil {
+			fail(w, http.StatusBadRequest, importErr.Error())
 			return
 		}
-		oldAssets = make(map[string]Asset, len(session.Assets))
-		for assetID, asset := range session.Assets {
-			oldAssets[assetID] = asset
-		}
-		session.CampaignDefinitions = cloneCampaignRegistry(preview.Registry)
-		refreshAssetOrphans(session, time.Now())
-		result.Diff = cloneCampaignImportDiff(preview.Diff)
+		session.Ruleset = candidate
+		result.Diff = addedDefinitionsDiff(imported)
 	default:
 		fail(w, http.StatusBadRequest, "Неизвестная операция definitions")
 		return
@@ -1014,7 +1129,6 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
 		session.Ruleset = oldRuleset
-		session.CampaignDefinitions = oldCampaign
 		session.DefinitionOperations = oldOperations
 		for characterID, original := range oldCharacters {
 			session.CharacterInstances[characterID] = original
@@ -1044,17 +1158,7 @@ func (s *Server) readCurrentRulesetFile(w http.ResponseWriter, r *http.Request) 
 	name := r.URL.Query().Get("name")
 	var source string
 	var err error
-	if name == "campaign/generated-definitions.toml" {
-		if len(session.CampaignDefinitions.Stats) == 0 && len(session.CampaignDefinitions.Actions) == 0 && len(session.CampaignDefinitions.Presets) == 0 {
-			fail(w, http.StatusNotFound, "Нет definitions кампании")
-			return
-		}
-		var data []byte
-		data, err = ExportCampaignDefinitionsTOML(sessionRegistries(session))
-		source = string(data)
-	} else {
-		source, err = RenderRulesetFileTOML(session.Ruleset, name)
-	}
+	source, err = RenderRulesetFileTOML(session.Ruleset, name)
 	if err != nil {
 		fail(w, http.StatusConflict, err.Error())
 		return
