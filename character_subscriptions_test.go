@@ -25,12 +25,12 @@ func TestCharacterWatchCrossSceneRevisionRevocationAndReconnect(t *testing.T) {
 	token := fixture.sceneB.Tokens[fixture.tokens["cross-b"]]
 	token.OwnerIDs = []string{bobID}
 	fixture.sceneB.Tokens[token.ID] = token
-	fixture.session.CampaignDefinitions.Stats["modifier"] = StatDefinition{ID: "modifier", Name: "Modifier", Type: StatTypeInteger}
-	fixture.session.CampaignDefinitions.Stats["unused"] = StatDefinition{ID: "unused", Name: "Unused", Type: StatTypeString}
-	bite := fixture.session.CampaignDefinitions.Actions["bite"]
+	fixture.session.Ruleset.Registry.Stats["modifier"] = StatDefinition{ID: "modifier", Name: "Modifier", Type: StatTypeInteger}
+	fixture.session.Ruleset.Registry.Stats["unused"] = StatDefinition{ID: "unused", Name: "Unused", Type: StatTypeString}
+	bite := fixture.session.Ruleset.Registry.Actions["bite"]
 	bite.Rolls = []RollSpec{{ID: "attack", Name: "Attack", Count: 1, Sides: 20, ModifierStat: "modifier"}}
-	fixture.session.CampaignDefinitions.Actions["bite"] = bite
-	fixture.session.CampaignDefinitions.Actions["unused"] = ActionDefinition{ID: "unused", Name: "Unused"}
+	fixture.session.Ruleset.Registry.Actions["bite"] = bite
+	fixture.session.Ruleset.Registry.Actions["unused"] = ActionDefinition{ID: "unused", Name: "Unused"}
 	fixture.server.dirty = true
 	if err := fixture.server.saveLocked(); err != nil {
 		fixture.server.mu.Unlock()
@@ -85,7 +85,7 @@ func TestCharacterWatchCrossSceneRevisionRevocationAndReconnect(t *testing.T) {
 
 	fixture.server.mu.Lock()
 	registryRevision := fixture.session.RegistryRevision
-	preset := clonePresetDefinition(fixture.session.CampaignDefinitions.Presets["wolf"])
+	preset := clonePresetDefinition(fixture.session.Ruleset.Registry.Presets["wolf"])
 	fixture.server.mu.Unlock()
 	preset.Stats["dexterity"] = IntegerStatValue(21)
 	writeCharacterCommand(t, gmWS, Command{Type: "definitionUpdate", Client: "watch-def", Seq: 1, DefinitionKind: definitionKindPreset, DefinitionID: "wolf", PresetDefinition: &preset, ExpectedRegistryRevision: &registryRevision})

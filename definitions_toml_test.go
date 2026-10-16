@@ -169,14 +169,13 @@ func TestDefinitionsTOMLRejectsOversizeInput(t *testing.T) {
 	}
 }
 
-func TestPreviewCampaignDefinitionsImportUpsertsWithoutDeletion(t *testing.T) {
+func TestPreviewCampaignDefinitionsImportAddsWithoutDeletion(t *testing.T) {
 	ruleset := selfContainedTOMLRegistry()
 	registries := DefinitionRegistries{
 		Ruleset: RulesetRegistry{Stats: ruleset.Stats, Actions: ruleset.Actions, Presets: ruleset.Presets},
 		Campaign: CampaignRegistry{
 			Stats: map[string]StatDefinition{
 				"legacy": {ID: "legacy", Name: "Legacy", Type: StatTypeString},
-				"speed":  {ID: "speed", Name: "Campaign speed", Type: StatTypeNumber},
 			},
 			Actions: map[string]ActionDefinition{},
 			Presets: map[string]CharacterPresetDefinition{},
@@ -184,8 +183,8 @@ func TestPreviewCampaignDefinitionsImportUpsertsWithoutDeletion(t *testing.T) {
 	}
 	document := []byte(`schema_version = 1
 
-[stats.speed]
-name = "Movement speed"
+[stats.mobility]
+name = "Mobility"
 type = "number"
 
 [stats.armor]
@@ -218,7 +217,7 @@ armor = 14
 	if preview.Registry.Presets["guard_wolf"].ActionIDs[0] != "bite" {
 		t.Fatal("TOML actions were not mapped to runtime action IDs")
 	}
-	if !reflect.DeepEqual(preview.Diff.Stats.Added, []string{"armor"}) || !reflect.DeepEqual(preview.Diff.Stats.Updated, []string{"speed"}) || !reflect.DeepEqual(preview.Diff.Actions.Added, []string{"guard"}) || !reflect.DeepEqual(preview.Diff.Presets.Added, []string{"guard_wolf"}) {
+	if !reflect.DeepEqual(preview.Diff.Stats.Added, []string{"armor", "mobility"}) || len(preview.Diff.Stats.Updated) != 0 || !reflect.DeepEqual(preview.Diff.Actions.Added, []string{"guard"}) || !reflect.DeepEqual(preview.Diff.Presets.Added, []string{"guard_wolf"}) {
 		t.Fatalf("unexpected preview diff: %#v", preview.Diff)
 	}
 }

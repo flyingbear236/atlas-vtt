@@ -125,9 +125,9 @@ func TestEffectiveResourceCurrentInitialAndScalarTypes(t *testing.T) {
 func TestResourceCommandsMaterializationAndPermissions(t *testing.T) {
 	fixture := newCharacterCommandFixture(t)
 	fixture.server.mu.Lock()
-	hp := fixture.session.CampaignDefinitions.Stats["hp"]
+	hp := fixture.session.Ruleset.Registry.Stats["hp"]
 	hp.Kind = StatKindResource
-	fixture.session.CampaignDefinitions.Stats["hp"] = hp
+	fixture.session.Ruleset.Registry.Stats["hp"] = hp
 	fixture.server.dirty = true
 	if err := fixture.server.saveLocked(); err != nil {
 		fixture.server.mu.Unlock()
@@ -203,10 +203,9 @@ func TestResourceRulesetCompatibilityAndPresetRemoval(t *testing.T) {
 	linked := NewCharacterInstance("linked", &preset)
 	linked = WithResourceCurrent(linked, "hp", IntegerStatValue(44))
 	session := &Session{
-		Ruleset:             old,
-		CampaignDefinitions: emptyCampaignRegistry(),
-		CharacterInstances:  map[string]CharacterInstance{"linked": linked},
-		Assets:              map[string]Asset{},
+		Ruleset:            old,
+		CharacterInstances: map[string]CharacterInstance{"linked": linked},
+		Assets:             map[string]Asset{},
 	}
 
 	incompatible := cloneRulesetSnapshot(old)
@@ -241,9 +240,9 @@ func TestResourceRulesetCompatibilityAndPresetRemoval(t *testing.T) {
 func TestResourceCurrentSaveFailureRollsBack(t *testing.T) {
 	fixture := newCharacterCommandFixture(t)
 	fixture.server.mu.Lock()
-	hp := fixture.session.CampaignDefinitions.Stats["hp"]
+	hp := fixture.session.Ruleset.Registry.Stats["hp"]
 	hp.Kind = StatKindResource
-	fixture.session.CampaignDefinitions.Stats["hp"] = hp
+	fixture.session.Ruleset.Registry.Stats["hp"] = hp
 	fixture.server.dirty = true
 	if err := fixture.server.saveLocked(); err != nil {
 		fixture.server.mu.Unlock()

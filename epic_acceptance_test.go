@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestEpicExistingCampaignRulesetRestartAndOverlay(t *testing.T) {
+func TestEpicExistingCampaignRulesetRestartAndEdit(t *testing.T) {
 	root := t.TempDir()
 	server := testServer(t, root)
 	host := httptest.NewServer(server.routes())
@@ -49,7 +49,7 @@ func TestEpicExistingCampaignRulesetRestartAndOverlay(t *testing.T) {
 	overlay.Name = "Campaign wolf"
 	overlay.Stats["hp"] = IntegerStatValue(17)
 	command := Command{
-		Type: "definitionCreate", Client: "acceptance-overlay", Seq: 1,
+		Type: "definitionUpdate", Client: "acceptance-edit", Seq: 1,
 		DefinitionKind: definitionKindPreset, DefinitionID: "wolf", PresetDefinition: &overlay,
 		ExpectedRegistryRevision: registryRevisionPointer(session.RegistryRevision),
 	}
@@ -66,8 +66,8 @@ func TestEpicExistingCampaignRulesetRestartAndOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.Ruleset.Registry.Presets["wolf"].Stats["hp"].Integer() != 11 || session.CampaignDefinitions.Presets["wolf"].Stats["hp"].Integer() != 17 || effective.Presets["wolf"].Stats["hp"].Integer() != 17 {
-		t.Fatalf("ruleset snapshot or campaign overlay changed across restart: ruleset=%#v campaign=%#v effective=%#v", session.Ruleset.Registry.Presets["wolf"], session.CampaignDefinitions.Presets["wolf"], effective.Presets["wolf"])
+	if session.Ruleset.Registry.Presets["wolf"].Stats["hp"].Integer() != 17 || effective.Presets["wolf"].Stats["hp"].Integer() != 17 {
+		t.Fatalf("ruleset edit changed across restart: ruleset=%#v effective=%#v", session.Ruleset.Registry.Presets["wolf"], effective.Presets["wolf"])
 	}
 }
 

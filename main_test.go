@@ -24,6 +24,20 @@ func testServer(t *testing.T, root string) *Server {
 	if e != nil {
 		t.Fatal(e)
 	}
+	t.Cleanup(func() {
+		// Individual tests may intentionally leave invalid in-memory state. The
+		// cleanup owns background jobs and connections; assertions own save errors.
+		_ = s.stop()
+		var cleanupErr error
+		for attempt := 0; attempt < 10; attempt++ {
+			cleanupErr = os.RemoveAll(root)
+			if cleanupErr == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Errorf("remove test server root: %v", cleanupErr)
+	})
 	return s
 }
 

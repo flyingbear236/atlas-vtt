@@ -88,8 +88,8 @@ func TestPortableCharacterTOMLSourcePreservation(t *testing.T) {
 	registry := portableTestRegistry()
 	instance := CharacterInstance{ID: "goblin", Name: "Goblin", PresetID: "goblin", Persistent: true, ResourceCurrent: map[string]StatValue{"hp": IntegerStatValue(4)}}
 	session := &Session{CharacterInstances: map[string]CharacterInstance{"goblin": instance},
-		CampaignDefinitions: CampaignRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets},
-		CharacterSources:    map[string]CharacterTOMLSource{"goblin": {FileName: "characters/goblin.toml", Source: "schema_version = 1\n# authored note\n\n[character]\nid = 'goblin'\nname = 'Goblin'\npreset_id = 'goblin'\npersistent = true\nmaterialized = false\n\n[character.resource_current]\nhp = 7 # damage\n"}}}
+		Ruleset:          RulesetSnapshot{Registry: RulesetRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets}},
+		CharacterSources: map[string]CharacterTOMLSource{"goblin": {FileName: "characters/goblin.toml", Source: "schema_version = 1\n# authored note\n\n[character]\nid = 'goblin'\nname = 'Goblin'\npreset_id = 'goblin'\npersistent = true\nmaterialized = false\n\n[character.resource_current]\nhp = 7 # damage\n"}}}
 	data, err := CurrentCharacterTOML(session, "goblin")
 	if err != nil {
 		t.Fatal(err)

@@ -66,7 +66,11 @@ func createSessionForStorageTest(t *testing.T, server *Server, name string) *Ses
 
 func addPersistedCharacterFixture(t *testing.T, server *Server, session *Session) {
 	t.Helper()
-	session.CampaignDefinitions.Stats["speed"] = StatDefinition{ID: "speed", Name: "Speed", Type: StatTypeNumber}
+	definitions := emptyCampaignRegistry()
+	definitions.Stats["speed"] = StatDefinition{ID: "speed", Name: "Speed", Type: StatTypeNumber}
+	if err := addGeneratedDefinitions(&session.Ruleset, definitions); err != nil {
+		t.Fatal(err)
+	}
 	registry, err := MergeDefinitionRegistries(sessionRegistries(session))
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +239,7 @@ func TestLegacyStorageInitializesEmptyCharacterCollections(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := restored.sessions[session.ID]
-	if got.CharacterInstances == nil || len(got.CharacterInstances) != 0 || got.CampaignDefinitions.Stats == nil || got.Ruleset.Registry.Stats == nil {
+	if got.CharacterInstances == nil || len(got.CharacterInstances) != 0 || got.Ruleset.Registry.Stats == nil {
 		t.Fatalf("legacy collections were not initialized: %#v", got)
 	}
 	for _, scene := range got.Scenes {

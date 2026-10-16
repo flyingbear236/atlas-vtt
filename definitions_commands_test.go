@@ -40,7 +40,6 @@ func definitionHTTP(t *testing.T, serverURL, path string, credentials map[string
 	return response.StatusCode, data.Bytes()
 }
 
-
 func rulesetPackageHTTP(t *testing.T, serverURL, path string, credentials map[string]string, files map[string]string, query url.Values) (int, []byte) {
 	t.Helper()
 	if query == nil {
@@ -173,14 +172,14 @@ func TestDefinitionCommandsAreReliableGMOnlyAndReferenceSafe(t *testing.T) {
 		t.Fatal(issue)
 	}
 	server.mu.Lock()
-	if session.RegistryRevision != 2 || len(session.CampaignDefinitions.Stats) != 1 {
+	if session.RegistryRevision != 2 || len(session.Ruleset.Registry.Stats) != 1 {
 		server.mu.Unlock()
-		t.Fatalf("create did not update registry once: revision=%d stats=%d", session.RegistryRevision, len(session.CampaignDefinitions.Stats))
+		t.Fatalf("create did not update registry once: revision=%d stats=%d", session.RegistryRevision, len(session.Ruleset.Registry.Stats))
 	}
 	server.mu.Unlock()
 	reloaded := testServer(t, root)
 	reloadedSession := reloaded.sessions[gm["session"]]
-	if reloadedSession.RegistryRevision != 2 || len(reloadedSession.CampaignDefinitions.Stats) != 1 || reloadedSession.Receipts[session.Members[session.Keys[gm["key"]]].ID+":definitions"].Seq != 1 {
+	if reloadedSession.RegistryRevision != 2 || len(reloadedSession.Ruleset.Registry.Stats) != 1 || reloadedSession.Receipts[session.Members[session.Keys[gm["key"]]].ID+":definitions"].Seq != 1 {
 		t.Fatal("definition and lost-ACK receipt were not persisted together")
 	}
 
@@ -191,7 +190,7 @@ func TestDefinitionCommandsAreReliableGMOnlyAndReferenceSafe(t *testing.T) {
 		t.Fatal(issue)
 	}
 	server.mu.Lock()
-	if session.RegistryRevision != 2 || len(session.CampaignDefinitions.Stats) != 1 {
+	if session.RegistryRevision != 2 || len(session.Ruleset.Registry.Stats) != 1 {
 		server.mu.Unlock()
 		t.Fatal("lost ACK retry duplicated a definition")
 	}
@@ -208,7 +207,7 @@ func TestDefinitionCommandsAreReliableGMOnlyAndReferenceSafe(t *testing.T) {
 		t.Fatal(issue)
 	}
 	server.mu.Lock()
-	if inferred := session.CampaignDefinitions.Stats["luck"]; inferred.Type != StatTypeInteger {
+	if inferred := session.Ruleset.Registry.Stats["luck"]; inferred.Type != StatTypeInteger {
 		server.mu.Unlock()
 		t.Fatalf("preset save did not infer campaign stat: %#v", inferred)
 	}
@@ -236,7 +235,7 @@ func TestDefinitionCommandsAreReliableGMOnlyAndReferenceSafe(t *testing.T) {
 		t.Fatal(issue)
 	}
 	server.mu.Lock()
-	if session.CampaignDefinitions.Actions["strike"].Description != "" || session.CampaignDefinitions.Actions["strike_copy"].Description != "Independent copy" {
+	if session.Ruleset.Registry.Actions["strike"].Description != "" || session.Ruleset.Registry.Actions["strike_copy"].Description != "Independent copy" {
 		server.mu.Unlock()
 		t.Fatal("duplicate shares mutable state with its source")
 	}
@@ -345,22 +344,17 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 		t.Fatalf("single-file replacement: %d %s", status, body)
 	}
 
-	// A campaign overlay can still be removed safely on the backend when it
-	// reveals the compatible ruleset definition underneath.
+	// IDs are globally unique across all TOML source files.
 	gmWS := dialRaw(t, host.URL, gm)
 	read(t, gmWS, "campaignSnapshot")
 	override := StatDefinition{ID: "hp", Name: "Campaign HP", Type: StatTypeInteger}
 	gmWS.WriteJSON(Command{Type: "definitionCreate", Client: "overlay", Seq: 1, DefinitionKind: definitionKindStat, DefinitionID: "hp", StatDefinition: &override, ExpectedRegistryRevision: registryRevisionPointer(4)})
-	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
-		t.Fatal(issue)
-	}
-	gmWS.WriteJSON(Command{Type: "definitionDelete", Client: "overlay", Seq: 2, DefinitionKind: definitionKindStat, DefinitionID: "hp", ExpectedRegistryRevision: registryRevisionPointer(5)})
-	if issue := ackError(t, read(t, gmWS, "ack")); issue != "" {
-		t.Fatal(issue)
+	if issue := ackError(t, read(t, gmWS, "ack")); !strings.Contains(issue, "duplicate") {
+		t.Fatalf("duplicate definition was accepted: %q", issue)
 	}
 	status, registry := readDefinitionsHTTP(t, host.URL, gm)
-	if status != http.StatusOK || registry.RegistryRevision != 6 || registry.Effective.Stats["hp"].Name != "Hit points" {
-		t.Fatalf("overlay reset did not reveal ruleset: status=%d %#v", status, registry.Effective.Stats["hp"])
+	if status != http.StatusOK || registry.RegistryRevision != 4 || registry.Effective.Stats["hp"].Name != "Hit points" {
+		t.Fatalf("duplicate changed registry: status=%d %#v", status, registry.Effective.Stats["hp"])
 	}
 
 	largeRegistry := emptyCampaignRegistry()
@@ -436,7 +430,7 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 		t.Fatalf("save failure apply status = %d", status)
 	}
 	server.mu.Lock()
-	_, leaked := session.CampaignDefinitions.Stats["must_not_persist"]
+	_, leaked := session.Ruleset.Registry.Stats["must_not_persist"]
 	if leaked || session.RegistryRevision != beforeRevision || len(session.DefinitionOperations) != beforeOperations {
 		server.mu.Unlock()
 		t.Fatal("failed apply left registry revision or operation receipt behind")
@@ -449,7 +443,7 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 		t.Fatalf("retry after rolled-back save failure: %d %s", status, body)
 	}
 	status, exportedCampaign, exportHeaders := exportDefinitionsHTTP(t, host.URL, "/api/definitions/campaign/export", gm)
-	if status != http.StatusOK || !strings.Contains(exportHeaders.Get("Content-Disposition"), "campaign-extensions.toml") {
+	if status != http.StatusOK || !strings.Contains(exportHeaders.Get("Content-Disposition"), "definitions.toml") {
 		t.Fatalf("campaign export: %d %s", status, exportedCampaign)
 	}
 	if status, _, _ := exportDefinitionsHTTP(t, host.URL, "/api/definitions/campaign/export", player); status != http.StatusForbidden {
@@ -458,12 +452,11 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 	if bytes.Contains(exportedCampaign, []byte("characters")) || bytes.Contains(exportedCampaign, []byte("instances")) {
 		t.Fatalf("campaign export leaked runtime state: %s", exportedCampaign)
 	}
-	preview, err := PreviewCampaignDefinitionsImport(DefinitionRegistries{Ruleset: exportedSnapshot.Registry}, exportedCampaign)
-	if err != nil || len(preview.Registry.Actions) == 0 {
-		t.Fatalf("campaign export round trip: %v %#v", err, preview.Registry)
+	exported, err := ParseRulesetTOML(exportedCampaign)
+	if err != nil || len(exported.Registry.Actions) == 0 {
+		t.Fatalf("definitions export round trip: %v %#v", err, exported.Registry)
 	}
 }
-
 
 func TestDefinitionHTTPMultiFileRulesetDraftCandidate(t *testing.T) {
 	root := t.TempDir()
@@ -510,8 +503,8 @@ modifier_stat = "power"
 	}
 	apply := url.Values{
 		"expectedRevision": {fmt.Sprint(preview.RegistryRevision)},
-		"digest": {preview.Digest},
-		"key": {"multi-install"},
+		"digest":           {preview.Digest},
+		"key":              {"multi-install"},
 	}
 	status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, files, apply)
 	if status != http.StatusOK {
@@ -540,8 +533,8 @@ modifier_stat = "power"
 	}
 	candidateApply := url.Values{
 		"expectedRevision": {fmt.Sprint(candidatePreview.RegistryRevision)},
-		"digest": {candidatePreview.Digest},
-		"key": {"candidate-save"},
+		"digest":           {candidatePreview.Digest},
+		"key":              {"candidate-save"},
 	}
 	if status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, candidate, candidateApply); status != http.StatusOK {
 		t.Fatalf("candidate apply: %d %s", status, body)
@@ -573,8 +566,8 @@ name = "Duplicate"
 	}
 	emptyApply := url.Values{
 		"expectedRevision": {fmt.Sprint(emptyPreview.RegistryRevision)},
-		"digest": {emptyPreview.Digest},
-		"key": {"empty-ruleset"},
+		"digest":           {emptyPreview.Digest},
+		"key":              {"empty-ruleset"},
 	}
 	if status, body = rulesetPackageHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, map[string]string{}, emptyApply); status != http.StatusOK {
 		t.Fatalf("empty ruleset apply: %d %s", status, body)

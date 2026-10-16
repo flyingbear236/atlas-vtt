@@ -68,7 +68,7 @@ func newDiceFixture(t *testing.T) diceFixture {
 	scene.rebuildRuntime()
 	session := &Session{
 		ID: "campaign", Members: map[string]*Member{alice.ID: alice, gm.ID: gm}, Scenes: map[string]*Scene{scene.ID: scene},
-		Ruleset: RulesetSnapshot{Registry: emptyRulesetRegistry()}, CampaignDefinitions: registry,
+		Ruleset:            RulesetSnapshot{Registry: RulesetRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets}},
 		CharacterInstances: map[string]CharacterInstance{character.ID: character},
 	}
 	rebuildCharacterReferences(session)
@@ -149,7 +149,7 @@ func TestActionRollUsesEffectiveServerDefinitionAndModifiers(t *testing.T) {
 	}
 
 	character := fixture.session.CharacterInstances["hero-1"]
-	preset := fixture.session.CampaignDefinitions.Presets["hero"]
+	preset := fixture.session.Ruleset.Registry.Presets["hero"]
 	registry, err := rollRegistry(fixture.session)
 	if err != nil {
 		t.Fatal(err)
@@ -243,10 +243,10 @@ func TestCharacterRollRequiresAccessibleLinkedTokenInScene(t *testing.T) {
 
 func TestRollRejectsUnsafeTotalBeforeRNG(t *testing.T) {
 	fixture := newDiceFixture(t)
-	action := fixture.session.CampaignDefinitions.Actions["strike"]
+	action := fixture.session.Ruleset.Registry.Actions["strike"]
 	action.Rolls[0].ModifierFixed = float64(MaxSafeInteger)
 	action.Rolls[0].ModifierStat = ""
-	fixture.session.CampaignDefinitions.Actions[action.ID] = action
+	fixture.session.Ruleset.Registry.Actions[action.ID] = action
 	_, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage"})
 	if err == nil || fixture.rng.next != 0 {
 		t.Fatalf("unsafe total should fail before RNG: calls=%d err=%v", fixture.rng.next, err)

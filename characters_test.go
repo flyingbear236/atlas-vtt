@@ -36,18 +36,18 @@ func baseCharacterRegistries() DefinitionRegistries {
 	}
 }
 
-func TestMergeDefinitionRegistriesPrecedenceAndNamespaces(t *testing.T) {
+func TestMergeDefinitionRegistriesCombinesNamespaces(t *testing.T) {
 	registries := baseCharacterRegistries()
-	registries.Campaign.Stats["hp"] = StatDefinition{ID: "hp", Name: "Hit points", Type: StatTypeInteger}
+	registries.Campaign.Stats["stamina"] = StatDefinition{ID: "stamina", Name: "Stamina", Type: StatTypeInteger}
 	registries.Campaign.Stats["воля.духа"] = StatDefinition{ID: "воля.духа", Name: "Воля духа", Type: StatTypeBoolean}
-	registries.Campaign.Actions["wolf"] = ActionDefinition{ID: "wolf", Name: "Wolf action"}
-	registries.Campaign.Presets["wolf"] = CharacterPresetDefinition{ID: "wolf", Name: "Red wolf", Kind: "monster"}
+	registries.Campaign.Actions["howl"] = ActionDefinition{ID: "howl", Name: "Howl"}
+	registries.Campaign.Presets["red_wolf"] = CharacterPresetDefinition{ID: "red_wolf", Name: "Red wolf", Kind: "monster"}
 
 	merged, err := MergeDefinitionRegistries(registries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if merged.Stats["hp"].Name != "Hit points" || merged.Actions["wolf"].Name != "Wolf action" || merged.Presets["wolf"].Name != "Red wolf" {
+	if merged.Stats["stamina"].Name != "Stamina" || merged.Actions["howl"].Name != "Howl" || merged.Presets["red_wolf"].Name != "Red wolf" {
 		t.Fatalf("unexpected merged registry: %#v", merged)
 	}
 	if _, ok := merged.Stats["воля.духа"]; !ok {

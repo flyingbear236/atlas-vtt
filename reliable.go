@@ -973,15 +973,15 @@ func (s *Server) stop() error {
 	s.mu.Lock()
 	s.stopping = true
 	s.jobCancel()
-	s.mu.Unlock()
-	s.jobWG.Wait()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	err := s.saveLocked()
 	for p := range s.peers {
 		p.conn.Close()
 	}
-	return err
+	s.mu.Unlock()
+	s.jobWG.Wait()
+	s.peerWG.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
 }
 func (s *Server) serve(ctx context.Context, listener net.Listener) error {
 	h := &http.Server{Handler: s.routes(), ReadHeaderTimeout: 10 * time.Second}

@@ -27,7 +27,7 @@ func portableExportFixture(t *testing.T) *Session {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Session{Ruleset: ruleset, CampaignDefinitions: emptyCampaignRegistry(), CharacterInstances: map[string]CharacterInstance{
+	return &Session{Ruleset: ruleset, CharacterInstances: map[string]CharacterInstance{
 		"survivor":     {ID: "survivor", Name: "Survivor", Persistent: true, PresetID: "goblin", ResourceCurrent: map[string]StatValue{"hp": IntegerStatValue(4)}},
 		"materialized": {ID: "materialized", Name: "Independent", Persistent: true, PresetID: "goblin", Materialized: &CharacterMechanicalState{Stats: map[string]StatValue{}, ResourceInitial: map[string]StatValue{"hp": IntegerStatValue(7)}}, ResourceCurrent: map[string]StatValue{"hp": IntegerStatValue(4)}},
 		"temporary":    {ID: "temporary", Name: "Temporary", PresetID: "goblin"},
@@ -165,16 +165,20 @@ func TestPortableExportMediaToggleAndConversion(t *testing.T) {
 	}
 }
 
-func TestPortableExportEmptyCampaignGeneratedDefinitions(t *testing.T) {
-	ss := &Session{Ruleset: RulesetSnapshot{Registry: emptyRulesetRegistry()}, CampaignDefinitions: emptyCampaignRegistry(), CharacterInstances: map[string]CharacterInstance{}}
-	ss.CampaignDefinitions.Stats["luck"] = StatDefinition{ID: "luck", Name: "Luck", Type: StatTypeInteger}
+func TestPortableExportGeneratedDefinitions(t *testing.T) {
+	ss := &Session{Ruleset: RulesetSnapshot{Registry: emptyRulesetRegistry()}, CharacterInstances: map[string]CharacterInstance{}}
+	definitions := emptyCampaignRegistry()
+	definitions.Stats["luck"] = StatDefinition{ID: "luck", Name: "Luck", Type: StatTypeInteger}
+	if err := addGeneratedDefinitions(&ss.Ruleset, definitions); err != nil {
+		t.Fatal(err)
+	}
 	ss.CharacterInstances["unique"] = CharacterInstance{ID: "unique", Name: "New", Persistent: true, Materialized: &CharacterMechanicalState{Stats: map[string]StatValue{"luck": IntegerStatValue(3)}}}
 	var zipped bytes.Buffer
 	if err := ExportPortablePackage(context.Background(), snapshotPortableExport(ss), t.TempDir(), false, &zipped); err != nil {
 		t.Fatal(err)
 	}
 	files := unpackPortable(t, zipped.Bytes())
-	if len(files["campaign/generated-definitions.toml"]) == 0 || len(files[CharacterTOMLFileName("unique")]) == 0 {
+	if len(files["ruleset/"+generatedDefinitionsFile]) == 0 || len(files[CharacterTOMLFileName("unique")]) == 0 {
 		t.Fatal("UI-created content omitted")
 	}
 }

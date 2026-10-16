@@ -27,12 +27,12 @@ func TestTokenCreationAndReassignmentMaintainCharacterInvariant(t *testing.T) {
 
 	server.mu.Lock()
 	session := server.sessions[gm["session"]]
-	session.CampaignDefinitions.Presets["wolf"] = CharacterPresetDefinition{ID: "wolf", Name: "Wolf", Stats: map[string]StatValue{}}
+	session.Ruleset.Registry.Presets["wolf"] = CharacterPresetDefinition{ID: "wolf", Name: "Wolf", Stats: map[string]StatValue{}}
 	persistent := NewCharacterInstance("roster-hero", nil)
 	persistent.Name = "Roster hero"
 	persistent.Persistent = true
 	persistent.Materialized.Stats["legacy"] = StringStatValue("untouched")
-	session.CampaignDefinitions.Stats["legacy"] = StatDefinition{ID: "legacy", Name: "Legacy", Type: StatTypeString}
+	session.Ruleset.Registry.Stats["legacy"] = StatDefinition{ID: "legacy", Name: "Legacy", Type: StatTypeString}
 	session.CharacterInstances[persistent.ID] = persistent
 	session.RegistryRevision++
 	server.mu.Unlock()
@@ -82,7 +82,7 @@ func TestLegacyTokenMigrationMovesNameAndArtworkToCharacter(t *testing.T) {
 	server := testServer(t, t.TempDir())
 	session := &Session{
 		Scenes: map[string]*Scene{"scene": newScene("scene", "Legacy")}, Assets: map[string]Asset{},
-		Ruleset: cloneRulesetSnapshot(server.defaultRuleset), CampaignDefinitions: emptyCampaignRegistry(),
+		Ruleset:            cloneRulesetSnapshot(server.defaultRuleset),
 		CharacterInstances: map[string]CharacterInstance{}, CharacterRevision: 1,
 	}
 	scene := session.Scenes["scene"]

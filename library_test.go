@@ -105,7 +105,7 @@ func TestLibraryMoveDirectoryCarriesNestedAndEmpty(t *testing.T) {
 }
 func TestLibraryMoveImageUpdatesArtworkWithSameAsset(t *testing.T) {
 	s := libraryFixture(t)
-	s.CharacterInstances["character-a12f"] = CharacterInstance{ID: "character-a12f", Name: "Валера", Persistent: true, PresetID: "goblin", ResourceCurrent: map[string]StatValue{"hp": IntegerStatValue(6)}, ArtworkPath: "pictures/monsters/goblin.png", ResourceCurrent: map[string]StatValue{"hp": IntegerStatValue(6)}}
+	s.CharacterInstances["character-a12f"] = CharacterInstance{ID: "character-a12f", Name: "Валера", Persistent: true, PresetID: "goblin", ResourceCurrent: map[string]StatValue{"hp": IntegerStatValue(6)}, ArtworkPath: "pictures/monsters/goblin.png"}
 	before := s.Ruleset.Files["dnd/stats.toml"].Source
 	libraryApply(t, s, "moveFile", "pictures/monsters/goblin.png", "pictures/goblin.png")
 	if s.Ruleset.Media["pictures/goblin.png"] != "img1" {
@@ -233,7 +233,7 @@ func TestLibraryNonPersistentCharacterNotInTreeOrExport(t *testing.T) {
 			t.Fatal("temporary character file in tree")
 		}
 	}
-	files, manifest, err := portableExportFiles(&portableExportSnapshot{Session: *s})
+	files, manifest, err := portableExportFiles(&portableExportSnapshot{Session: *s}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
