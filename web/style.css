@@ -108,3 +108,16 @@
 .lb-import-issues li{margin:4px 0}
 .lb-import-errors{color:var(--danger,#e88)}
 .lb-import-danger{color:var(--danger,#e88);overflow-wrap:anywhere}
+
+/* Formula builder: narrow side panels wrap independent dice pickers. */
+.dice-options{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-start}
+.dice-pick{display:flex;flex:0 0 44px;flex-direction:column;align-items:center;gap:4px;min-width:0}
+.dice-pick .dice-option{width:44px;min-height:56px;box-sizing:border-box;pointer-events:none}
+.dice-pick.active .dice-option{border:2px solid #87a878;background:#293c30;color:#edf8d5}
+.dice-pick output{font-size:12px;min-height:16px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--muted)}
+.dice-pick.active output{color:#edf8d5}
+.dice-adjust{width:30px;height:26px;padding:0!important;border:1px solid var(--border);border-radius:7px;background:#263330;color:inherit;cursor:pointer;font-size:17px;line-height:1}
+.dice-adjust:hover:not(:disabled){background:#395044;border-color:#87a878}
+.dice-adjust:disabled{opacity:.35;cursor:default}
+.dice-manual .dice-error{color:#f2a4a4}
+.dice-expression-label input:invalid{border-color:#bd6565}

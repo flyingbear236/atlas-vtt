@@ -62,3 +62,24 @@ export function statValueFromInput(type,raw,checked=false){
 }
 
 export function statInputValue(stat){return stat?.type==='boolean'?'':String(stat?.value??'');}
+
+// Current roll specs have a single, direct numeric modifier dependency.
+// Definitions are kept separate from instance values: a default is offered
+// when adding a stat, but is not silently treated as an effective value.
+export function actionDependencies(action,effective,definitions){
+  const missing=[],errors=[],invalidIds=[],seen=new Set();
+  for(const roll of action?.rolls||[]){
+    const id=roll.modifierStat;
+    if(!id||seen.has(id))continue;
+    seen.add(id);
+    const definition=definitions?.[id];
+    if(!definition){invalidIds.push(id);errors.push(`Не найдено определение характеристики «${id}»`);continue;}
+    if(!['integer','number'].includes(definition.type)){
+      invalidIds.push(id);errors.push(`Характеристика «${definition.name||id}» должна быть числовой`);continue;
+    }
+    const value=effective?.stats?.[id]??effective?.resources?.[id]?.current;
+    if(value===undefined)missing.push({id,definition});
+    else if(!['integer','number'].includes(value.type)||!Number.isFinite(value.value)){invalidIds.push(id);errors.push(`Некорректное значение «${definition.name||id}»`);}
+  }
+  return {missing,errors,invalidIds};
+}
