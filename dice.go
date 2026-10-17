@@ -17,6 +17,7 @@ type RollRequest struct {
 	Count               *int        `json:"count,omitempty"`
 	Sides               *int        `json:"sides,omitempty"`
 	Groups              []DiceGroup `json:"groups,omitempty"`
+	ManualModifier      *float64    `json:"manualModifier,omitempty"`
 	CharacterInstanceID string      `json:"characterInstanceId,omitempty"`
 	ActionID            string      `json:"actionId,omitempty"`
 	RollSpecID          string      `json:"rollSpecId,omitempty"`
@@ -220,6 +221,12 @@ func resolveRoll(session *Session, scene *Scene, member *Member, request RollReq
 			return resolvedRoll{}, errors.New("manual roll requires count and sides")
 		}
 		resolved := resolvedRoll{groups: append([]DiceGroup(nil), request.Groups...)}
+		if request.ManualModifier != nil {
+			if err := validateRollNumber("manual modifier", *request.ManualModifier); err != nil {
+				return resolvedRoll{}, err
+			}
+			resolved.modifier = *request.ManualModifier
+		}
 		if len(request.Groups) == 0 {
 			resolved.count, resolved.sides = *request.Count, *request.Sides
 		}
@@ -241,7 +248,7 @@ func resolveRoll(session *Session, scene *Scene, member *Member, request RollReq
 	if request.CharacterInstanceID == "" || request.ActionID == "" || request.RollSpecID == "" {
 		return resolvedRoll{}, errors.New("action roll requires character, action, and roll spec ids")
 	}
-	if request.Count != nil || request.Sides != nil || len(request.Groups) != 0 {
+	if request.Count != nil || request.Sides != nil || len(request.Groups) != 0 || request.ManualModifier != nil {
 		return resolvedRoll{}, errors.New("action roll count and sides are server-owned")
 	}
 	registry, err := rollRegistry(session)

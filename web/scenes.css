@@ -419,3 +419,14 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 
 .character-avatar-editable {cursor:pointer;outline-offset:4px}
 .character-avatar-editable:hover,.character-avatar-editable:focus-visible {outline:2px solid #91bc98}
+
+/* Action dependency setup shares the character editor's atomic save flow. */
+.action-dependencies-dialog{border:1px solid #527465;border-radius:12px;background:#1b302b;color:inherit;padding:20px;max-width:min(440px,calc(100vw - 40px));width:100%;box-sizing:border-box;max-height:85vh;overflow:auto;box-shadow:0 16px 48px #0009}
+.action-dependencies-dialog::backdrop{background:#0009}
+.action-dependencies-dialog h3{margin:0 0 9px}
+.action-dependencies-dialog p{line-height:1.4}
+.action-dependencies-dialog [data-dependencies-fields]{display:grid;gap:10px;margin:16px 0}
+.action-dependencies-dialog [data-dependencies-fields] label{display:grid;gap:5px}
+.action-dependencies-dialog [data-dependencies-fields] input{width:100%;box-sizing:border-box}
+.action-dependencies-buttons{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:16px}
+.character-dependencies-hint{font-size:11px;color:#e6b5a6;margin:2px 0;overflow-wrap:anywhere}

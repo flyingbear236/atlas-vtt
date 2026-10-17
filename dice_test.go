@@ -304,3 +304,33 @@ func TestCryptoDiceRNGRange(t *testing.T) {
 		}
 	}
 }
+
+func TestManualCompoundRollWithModifier(t *testing.T) {
+	fixture := newDiceFixture(t)
+	fixture.rng.values = []int{19, 4, 5}
+	bonus := 3.0
+	request := RollRequest{Groups: []DiceGroup{{Count: 2, Sides: 20}, {Count: 1, Sides: 6}}, ManualModifier: &bonus}
+	event, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Total != 34 || event.Modifier != 3 || !reflect.DeepEqual(event.Results, []int{20, 5, 6}) || len(event.Groups) != 2 {
+		t.Fatalf("compound modifier result = %#v", event)
+	}
+	if err := validateRollEvent(event); err != nil {
+		t.Fatalf("compound modifier event invalid: %v", err)
+	}
+	minus := -2.0
+	fixture.rng.values = []int{5}
+	single, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Count: rollInt(1), Sides: rollInt(6), ManualModifier: &minus})
+	if err != nil || single.Modifier != -2 || single.Total != 4 {
+		t.Fatalf("single modifier event=%#v err=%v", single, err)
+	}
+	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage", ManualModifier: &bonus}); err == nil {
+		t.Fatal("client changed the modifier of an action roll")
+	}
+	tooLarge := float64(MaxSafeInteger) + 10
+	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Count: rollInt(1), Sides: rollInt(6), ManualModifier: &tooLarge}); err == nil {
+		t.Fatal("unbounded modifier accepted")
+	}
+}

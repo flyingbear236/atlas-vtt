@@ -6,7 +6,7 @@ import {ScenesRuntime,needsActiveTokenRequest} from './scenes.js';
 import {FloorRenderBoundsPathCache,FloorRenderBoundsResourceCache,SceneRenderIndex,abortUnwantedImageLoads,clipFloorRenderBounds,compositeFloors,drawPlayerWalkableOverlay,drawPlayerTransitionMarkers,drawRenderBoundsEditor,drawSceneStack,drawTransitionOverlay,drawWalkableEditor,elementHandleAt,elementsAtPoint,floorCameraBounds,hitElement,inversePoint,orderedFloors,orderedLayers,pointInPlayableArea,pointInRenderBounds,renderBoundsAABB,renderBoundsHit,transitionHit,transformedFromDrag,validRenderBounds,validRenderBoundsChange,walkableComponentAt} from './scene-content.js';
 import {SceneTreeRuntime} from './scene-tree.js';
 import {constrainTokenMovement} from './movement-geometry.js';
-import {CharacterCatalog,CharacterWatch,statInputValue,statValueFromInput} from './characters.js';
+import {CharacterCatalog,CharacterWatch,statInputValue,statValueFromInput,actionDependencies} from './characters.js';
 import {DefinitionsEditor} from './definitions.js';
 import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
@@ -671,7 +671,17 @@ function renderCharacterActions(snapshot){
  for(const actionID of ids){
   const action=snapshot.actions?.[actionID],row=document.createElement('section');row.className='character-action-card';row.dataset.sheetItem=`action:${actionID}`;const title=document.createElement('strong');title.textContent=action?.name||actionID;row.append(title);
   if(action?.description){const description=document.createElement('p');description.className='character-action-description';description.textContent=action.description;row.append(description);if(action.description.length>120){description.classList.add('collapsed');const toggle=document.createElement('button');toggle.type='button';toggle.className='character-description-toggle subtle';toggle.textContent='Подробнее';toggle.onclick=()=>{const collapsed=description.classList.toggle('collapsed');toggle.textContent=collapsed?'Подробнее':'Свернуть';};row.append(toggle);}}
-  for(const roll of characterEditSession?[]:action?.rolls||[]){const button=document.createElement('button');button.type='button';button.className='subtle character-roll';button.textContent=`${roll.name||roll.id}: ${formatRoll(roll)}`;button.onclick=()=>dice.rollAction(snapshot.characterId,actionID,roll.id);row.append(button);}
+  const status=action?dependencyStatus(action,snapshot):{missing:[],errors:[],invalidIds:[]};
+  const invalid=new Set([...status.missing.map(item=>item.id),...status.invalidIds]);
+  for(const roll of characterEditSession?[]:action?.rolls||[]){const button=document.createElement('button');button.type='button';button.className='subtle character-roll';button.textContent=`${roll.name||roll.id}: ${formatRoll(roll)}`;
+   const blocked=invalid.has(roll.modifierStat);
+   button.disabled=blocked;button.onclick=()=>dice.rollAction(snapshot.characterId,actionID,roll.id);row.append(button);}
+  if(!characterEditSession&&(status.missing.length||status.errors.length)){
+   const hint=document.createElement('p');hint.className='character-dependencies-hint';hint.textContent=[...status.missing.map(item=>`Нет значения: ${item.definition.name||item.id}`),...status.errors].join('; ');row.append(hint);
+   if(status.missing.length&&snapshot.permissions?.manage&&isEditorView()){
+    const fix=document.createElement('button');fix.type='button';fix.className='subtle';fix.textContent='Настроить характеристики';fix.onclick=()=>{openCharacterEdit();if(characterEditSession)showActionDependencies(action,editSnapshot(snapshot));};row.append(fix);
+   }
+  }
   if(characterEditSession)row.append(editRemoveButton(actionID,'action'));container.append(row);
   if(!characterEditSession&&snapshot.permissions?.manage&&isEditorView()){
    const removeRow=document.createElement('div');removeRow.className='character-action-remove';const name=document.createElement('span');name.textContent=action?.name||actionID;const remove=document.createElement('button');remove.type='button';remove.className='danger';remove.textContent='Убрать';remove.onclick=()=>confirmMechanicalEdit(snapshot)&&queueCommand('characterActionRemove',{characterId:snapshot.characterId,actionId:actionID});removeRow.append(name,remove);removal.append(removeRow);
@@ -682,6 +692,53 @@ function renderCharacterActions(snapshot){
 }
 let characterActiveTab='stats',characterSettingsOpen=false,characterMechanicsOpen=false,characterDisplayedID='';
 let characterEditSession=null;
+const actionDependenciesDialog=document.createElement('dialog');actionDependenciesDialog.className='action-dependencies-dialog';
+actionDependenciesDialog.innerHTML='<form method="dialog"><h3>Настройка действия</h3><p data-dependencies-intro></p><div data-dependencies-fields></div><p class="muted" data-dependencies-errors hidden></p><div class="action-dependencies-buttons"><button type="button" class="subtle" data-dependencies-skip>Пропустить</button><button type="submit" class="primary" data-dependencies-confirm>Добавить характеристики</button></div></form>';
+document.body.append(actionDependenciesDialog);
+actionDependenciesDialog.querySelector('[data-dependencies-skip]').onclick=()=>actionDependenciesDialog.close();
+function selectedActionDefinition(id){return characterEditSession?.newActions.find(a=>a.id===id)||actionDefinitionRegistry?.[id]||characterWatch.snapshot?.actions?.[id];}
+function dependencyDefinitions(snapshot){return {...(resourceDefinitionRegistry||{}),...(snapshot?.statDefinitions||{}),...Object.fromEntries((characterEditSession?.definitions||[]).map(d=>[d.id,d]))};}
+function dependencyStatus(action,snapshot){return actionDependencies(action,snapshot.effective,dependencyDefinitions(snapshot));}
+function showActionDependencies(action,snapshot){
+ if(!characterEditSession||!action)return;
+ const {missing,errors}=dependencyStatus(action,snapshot);
+ if(!missing.length&&!errors.length)return;
+ const d=characterEditSession,dialog=actionDependenciesDialog,fields=dialog.querySelector('[data-dependencies-fields]');fields.replaceChildren();
+ dialog.querySelector('[data-dependencies-intro]').textContent=`Для «${action.name||action.id}» требуются дополнительные характеристики. Изменения будут сохранены вместе с персонажем.`;
+ const problem=dialog.querySelector('[data-dependencies-errors]');problem.hidden=!errors.length;problem.textContent=errors.join('. ');
+ dialog.querySelector('[data-dependencies-confirm]').disabled=!missing.length;
+ const inputs=[];
+ for(const {id,definition} of missing){
+  const label=document.createElement('label');label.textContent=definition.name||id;
+  const input=document.createElement('input');input.type=definition.type==='boolean'?'checkbox':definition.type==='string'?'text':'number';input.step=definition.type==='number'?'any':'1';input.required=input.type!=='checkbox';
+  if(definition.default!==undefined&&definition.default!==null){if(input.type==='checkbox')input.checked=!!definition.default.value;else input.value=statInputValue(definition.default);}
+  else if(input.type==='checkbox')input.checked=false;
+  input.dataset.statId=id;label.append(input);fields.append(label);inputs.push({id,definition,input});
+ }
+ dialog.querySelector('form').onsubmit=e=>{
+  e.preventDefault();if(characterEditSession!==d)return dialog.close();
+  const values=[];
+  try{for(const {id,definition,input} of inputs)values.push({id,definition,value:statValueFromInput(definition.type,input.value,input.checked)});}
+  catch(error){problem.hidden=false;problem.textContent=error.message;return;}
+  for(const {id,definition,value} of values){
+   if(definition.kind==='resource'){d.resourceInitial[id]=value;d.resourceCurrent[id]=value;}
+   else d.stats[id]=value;
+   addEditPlacement(`stat:${id}`);
+  }
+  dialog.close();renderCharacterPanel();
+ };
+ if(!dialog.open)dialog.showModal();
+}
+async function assignActionToEdit(id){
+ const d=characterEditSession;if(!d||!id||d.actionIds.includes(id))return;
+ // Catalog entries are summaries; load full ruleset definitions before checking rolls.
+ if(!actionDefinitionRegistry){try{await refreshResourceDefinitions();}catch{return;}}
+ if(characterEditSession!==d||d.actionIds.includes(id))return;
+ const action=selectedActionDefinition(id);
+ if(!action){toast('Не удалось загрузить определение действия');return;}
+ d.actionIds.push(id);addEditPlacement(`action:${id}`);renderCharacterPanel();showActionDependencies(action,editSnapshot(characterWatch.snapshot));
+}
+
 function discardCharacterPanelDisplay(){characterDisplayedID='';characterPanel.dataset.characterId='';characterPanel.hidden=true;characterPanel.inert=false;characterPanel.removeAttribute('aria-busy');$('characterSummary').hidden=true;showCharacterAvatar('','');}
 const cloneEdit=value=>JSON.parse(JSON.stringify(value));
 function makeCharacterEdit(snapshot){
@@ -694,7 +751,7 @@ function makeCharacterEdit(snapshot){
 function editSnapshot(snapshot){
  if(!characterEditSession||characterEditSession.characterId!==snapshot.characterId)return snapshot;
  const d=characterEditSession,resources={};for(const [id,initial] of Object.entries(d.resourceInitial))resources[id]={initial,current:d.resourceCurrent[id]||initial};
- return {...snapshot,effective:{...snapshot.effective,stats:d.stats,resources,actionIds:d.actionIds},statDefinitions:{...snapshot.statDefinitions,...Object.fromEntries(d.definitions.map(x=>[x.id,x]))},actions:{...snapshot.actions,...Object.fromEntries(d.newActions.map(x=>[x.id,x]))}};
+ return {...snapshot,effective:{...snapshot.effective,stats:d.stats,resources,actionIds:d.actionIds},statDefinitions:{...snapshot.statDefinitions,...Object.fromEntries(d.definitions.map(x=>[x.id,x]))},actions:{...snapshot.actions,...Object.fromEntries(d.actionIds.filter(id=>actionDefinitionRegistry?.[id]).map(id=>[id,actionDefinitionRegistry[id]])),...Object.fromEntries(d.newActions.map(x=>[x.id,x]))}};
 }
 function editChangeValue(id,kind,definition,input,field){
  const d=characterEditSession;if(!d)return;
@@ -732,7 +789,7 @@ function updateEditButtons(){
  $('characterEditCancel').disabled=d.saving;
  $('characterEditFeedback').textContent=d.conflict?'Данные изменились на сервере. Отмените редактирование и повторите.':d.saving?'Сохранение…':d.invalid.size?'Исправьте недопустимые значения':'';
 }
-function releaseEditSession(){const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);characterAssetPicker.close();characterEditSession=null;updateEditButtons();}
+function releaseEditSession(){if(actionDependenciesDialog.open)actionDependenciesDialog.close();const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);characterAssetPicker.close();characterEditSession=null;updateEditButtons();}
 function discardEdit(){if(!characterEditSession||characterEditSession.saving)return false;releaseEditSession();renderCharacterPanel();return true;}
 function confirmLeaveEdit(){if(!characterEditSession)return true;if(characterEditSession.saving){toast('Дождитесь подтверждения сохранения');return false;}if(!confirm('Несохранённые изменения персонажа будут потеряны. Выйти?'))return false;return discardEdit();}
 function openCharacterEdit(){const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage||!isEditorView())return;
@@ -980,7 +1037,7 @@ $('characterLink').onclick=()=>{const token=state?.tokens?.[selected],characterI
 $('characterPersistent').onchange=()=>{const token=state?.tokens?.[selected];if(token?.characterInstanceId&&isEditorView())queueCommand('characterSetPersistent',{characterId:token.characterInstanceId,persistent:$('characterPersistent').checked});};
 $('characterRosterMore').onclick=()=>characterCatalog.more('roster').catch(error=>toast(error.message));
 $('characterActionAdd').onchange=()=>{$('characterActionAddButton').disabled=!$('characterActionAdd').value;};
-$('characterActionAddButton').onclick=()=>{const id=$('characterActionAdd').value;if(!characterEditSession||!id||characterEditSession.actionIds.includes(id))return;characterEditSession.actionIds.push(id);addEditPlacement(`action:${id}`);renderCharacterPanel();};
+$('characterActionAddButton').onclick=()=>assignActionToEdit($('characterActionAdd').value);
 $('characterActionMore').onclick=()=>characterCatalog.more('actions').catch(error=>toast(error.message));
 function removeCharacterParameter(snapshot,id,name){
  if(!snapshot?.permissions?.manage||!isEditorView()||!confirm(`Убрать «${name}» только у этого персонажа? Значение будет удалено.`)||!confirmMechanicalEdit(snapshot))return;
@@ -1029,7 +1086,7 @@ $('characterParameterAdd').onsubmit=e=>{
  e.preventDefault();const d=characterEditSession;if(!d)return;
  if($('characterParameterKind').value==='action'){
   const id=$('characterExistingAction').value;if(!id||d.actionIds.includes(id))return;
-  d.actionIds.push(id);addEditPlacement(`action:${id}`);renderCharacterPanel();return;
+  assignActionToEdit(id);return;
  }
  const id=$('characterParameterSelect').value,definition=resourceDefinitionRegistry?.[id]||characterWatch.snapshot?.statDefinitions?.[id];if(!definition)return;
  try{const value=statValueFromInput(definition.type,$('characterParameterValue').value,$('characterParameterBoolean').checked);
