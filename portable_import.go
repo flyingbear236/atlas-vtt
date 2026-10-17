@@ -34,6 +34,11 @@ type portableImportArchive struct {
 	Characters  map[string][]byte
 	Media       map[string]*zip.File
 	Unknown     map[string]string
+	Diagnostics []portableImportIssue
+}
+type portableImportIssue struct {
+	File    string `json:"file,omitempty"`
+	Message string `json:"message"`
 }
 type portableImportPreview struct {
 	AvailableFiles        []string               `json:"availableFiles"`
@@ -55,6 +60,9 @@ type portableImportPreview struct {
 	ConflictingMedia      []string               `json:"conflictingMedia"`
 	ConflictingUnknown    []string               `json:"conflictingUnknown"`
 	MissingMedia          []string               `json:"missingMedia"`
+	Errors                []portableImportIssue  `json:"errors,omitempty"`
+	Warnings              []portableImportIssue  `json:"warnings,omitempty"`
+	ChecksIncomplete      bool                   `json:"checksIncomplete,omitempty"`
 }
 type portableImportCandidate struct {
 	Ruleset     RulesetSnapshot
@@ -95,6 +103,10 @@ func portableOptionsDigest(opts portableImportOptions) string {
 }
 
 func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error) {
+	return readPortableImportArchiveWithDiagnostics(reader, false)
+}
+
+func readPortableImportArchiveWithDiagnostics(reader *zip.Reader, collectDiagnostics bool) (portableImportArchive, error) {
 	if len(reader.File) > maxPortableImportFiles {
 		return portableImportArchive{}, errors.New("too many ZIP entries")
 	}
@@ -150,6 +162,10 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 			}
 			var root map[string]any
 			if err := toml.Unmarshal(data, &root); err != nil {
+				if collectDiagnostics {
+					a.Diagnostics = append(a.Diagnostics, portableImportIssue{File: name, Message: err.Error()})
+					continue
+				}
 				return a, fmt.Errorf("TOML %q: %w", name, err)
 			}
 			if libraryKey(name) == libraryKey("manifest.toml") {
@@ -167,6 +183,10 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 				}
 			}
 			if character && known {
+				if collectDiagnostics {
+					a.Diagnostics = append(a.Diagnostics, portableImportIssue{File: name, Message: "Смешаны секции персонажа и определений"})
+					continue
+				}
 				return a, fmt.Errorf("TOML %q mixes character and definitions", name)
 			}
 			if character {
@@ -180,6 +200,10 @@ func readPortableImportArchive(reader *zip.Reader) (portableImportArchive, error
 					return a, errors.New("ruleset package exceeds limits")
 				}
 				if _, err = decodeRulesetSourceFile(name, string(data)); err != nil {
+					if collectDiagnostics {
+						a.Diagnostics = append(a.Diagnostics, portableImportIssue{File: name, Message: err.Error()})
+						continue
+					}
 					return a, err
 				}
 				a.Ruleset[name] = string(data)

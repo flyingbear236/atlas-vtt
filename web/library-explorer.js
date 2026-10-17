@@ -68,6 +68,58 @@ export class ViewportPreviews {
   destroy(){this.closed=true;this.observer?.disconnect();for(const el of this.active.keys())this.active.get(el).abort();for(const el of this.urls.keys())this.release(el);this.pending=[];this.queued.clear();this.active.clear();this.visible.clear();}
 }
 
+export function filterLibraryImages(tree, query='') {
+  const needle=String(query).trim().toLocaleLowerCase('ru');
+  return (tree?.files||[]).filter(file=>file.type==='image'&&(!needle||file.path.toLocaleLowerCase('ru').includes(needle)));
+}
+
+// Read-only picker over the same image tree and thumbnail pipeline as the
+// campaign library. Callers only decide what selecting an asset means.
+export class LibraryAssetPicker {
+  constructor(api){
+    this.api=api;this.tree=null;this.onSelect=null;this.previewLoader=null;this.generation=0;this.pending=false;this.previousFocus=null;this.searchTimer=null;
+    this.backdrop=element('div','asset-picker-backdrop');this.backdrop.hidden=true;
+    this.panel=element('section','asset-picker-panel');this.panel.setAttribute('role','dialog');this.panel.setAttribute('aria-modal','true');
+    const header=element('header'),heading=element('div'),eyebrow=element('small','','БИБЛИОТЕКА'),title=element('h2','','Выбор изображения');title.id=`asset-picker-title-${Math.random().toString(36).slice(2)}`;this.panel.setAttribute('aria-labelledby',title.id);heading.append(eyebrow,title);
+    const close=button('Закрыть',()=>this.close());header.append(heading,close);
+    const toolbar=element('div','asset-picker-toolbar'),label=element('label','','Поиск по названию или папке');this.search=element('input');this.search.type='search';this.search.placeholder='Например: barrel, token, portrait';label.append(this.search);this.count=element('small','muted');toolbar.append(label,this.count);
+    this.message=element('div','lb-message');this.message.hidden=true;this.gallery=element('div','asset-picker-gallery lb-left');
+    this.panel.append(header,toolbar,this.message,this.gallery);this.backdrop.append(this.panel);document.body.append(this.backdrop);
+    this.title=title;this.closeButton=close;
+    this.search.addEventListener('input',()=>{clearTimeout(this.searchTimer);this.searchTimer=setTimeout(()=>this.render(),80);});
+    this.backdrop.addEventListener('pointerdown',event=>{if(event.target===this.backdrop)this.close();});
+    this.onKeyDown=event=>{if(event.key==='Escape'&&!this.backdrop.hidden){event.preventDefault();this.close();}};document.addEventListener('keydown',this.onKeyDown);
+  }
+  async open({title='Выберите изображение',actionLabel='Выбрать',onSelect}={}){
+    if(typeof onSelect!=='function')throw Error('Для выбора изображения нужен обработчик');
+    this.close(false);this.onSelect=onSelect;this.actionLabel=actionLabel;this.title.textContent=title;this.previousFocus=document.activeElement;this.search.value='';this.tree=null;this.backdrop.hidden=false;this.gallery.textContent='Загрузка библиотеки…';this.setMessage('');this.search.focus();
+    const generation=++this.generation;
+    try{const tree=await this.api.list();if(generation!==this.generation||this.backdrop.hidden)return;this.tree=tree;this.render();}
+    catch(error){if(generation===this.generation&&!this.backdrop.hidden){this.gallery.replaceChildren();this.setMessage(error.message,true);}}
+  }
+  render(){
+    if(this.backdrop.hidden||!this.tree)return;this.previewLoader?.destroy();this.previewLoader=new ViewportPreviews(this.api.thumbnail);this.gallery.replaceChildren();
+    const files=filterLibraryImages(this.tree,this.search.value),groups=libraryGalleryGroups({...this.tree,files});this.count.textContent=`Изображений: ${files.length}`;
+    const container=element('div','lb-gallery-scroll');this.gallery.append(container);
+    for(const group of groups){const section=element('section','lb-gallery-group');section.append(element('h3','asset-picker-group',(group.path||'Корень')+` · ${group.files.length}`));const grid=element('div','lb-gallery-grid');
+      for(const file of group.files){const card=element('article','lb-gallery-card asset-picker-card'),img=element('img','lb-gallery-image');img.alt=libraryBasename(file.path);img.loading='lazy';const preview=element('div','lb-gallery-open');preview.append(img);const footer=element('div','lb-gallery-footer'),name=element('span','lb-gallery-filename',libraryBasename(file.path));name.title=file.path;const choose=button(this.actionLabel,()=>this.choose(file,choose),'primary');footer.append(name,choose);card.append(preview,footer);grid.append(card);this.previewLoader.observe(img,file.assetId);}
+      section.append(grid);container.append(section);}
+    if(!groups.length)container.append(element('p','muted',this.search.value.trim()?'По запросу ничего не найдено.':'В библиотеке пока нет изображений.'));
+  }
+  async choose(file,control){
+    if(this.pending)return;this.pending=true;control.disabled=true;this.setMessage('Выбираем изображение…');
+    try{await this.onSelect(file);this.close();}
+    catch(error){this.setMessage(error.message,true);control.disabled=false;}
+    finally{this.pending=false;}
+  }
+  setMessage(message,error=false){this.message.textContent=message||'';this.message.hidden=!message;this.message.classList.toggle('error',error);}
+  close(restoreFocus=true){
+    clearTimeout(this.searchTimer);this.searchTimer=null;this.generation++;this.previewLoader?.destroy();this.previewLoader=null;this.tree=null;this.onSelect=null;this.pending=false;this.backdrop.hidden=true;this.gallery.replaceChildren();this.setMessage('');
+    if(restoreFocus&&this.previousFocus?.isConnected)this.previousFocus.focus();this.previousFocus=null;
+  }
+  destroy(){this.close(false);document.removeEventListener('keydown',this.onKeyDown);this.backdrop.remove();}
+}
+
 export class LibraryBrowser {
   constructor(mount,api){this.mount=mount;this.api=api;this.tree=null;this.registry=null;this.mode='explorer';this.selection='';this.activeDirectory='';this.scrollPositions={explorer:0,gallery:0};this.expanded=new Set();this.collapsedGallery=new Set();this.generation=0;this.pending=false;this.previewLoader=null;this.zip=null;this.zipPreview=null;this.choices={characters:{},media:{},unknown:{}};this.dialogKind='';this.destroyed=false;
     mount.innerHTML=`<div class="lb-top"><div class="lb-switch" role="group" aria-label="Режим библиотеки"><button data-lb-mode="explorer" class="active" type="button">Explorer</button><button data-lb-mode="gallery" type="button">Галерея</button></div><div class="lb-actions"><button type="button" data-lb-add>＋ Добавить</button><button type="button" data-lb-import>Импорт ZIP</button><button type="button" data-lb-export class="primary">Экспорт ZIP</button></div></div><div class="lb-message" role="status" aria-live="polite" hidden></div><div class="lb-columns"><div class="lb-left" data-lb-left></div><div class="lb-right" data-lb-right></div></div><div class="lb-menu" data-lb-menu hidden></div><input type="file" data-lb-files multiple accept=".toml,image/png,image/jpeg,image/webp" hidden><dialog class="lb-dialog" data-lb-dialog aria-label="Операция с библиотекой"><div data-lb-dialog-body></div><div class="lb-dialog-actions"><button type="button" data-lb-dialog-close>Закрыть</button></div></dialog>`;
@@ -146,16 +198,46 @@ export class LibraryBrowser {
   }
   showDialog(kind,body){this.dialogKind=kind;this.dialog.querySelector('[data-lb-dialog-body]').replaceChildren();this.dialog.querySelector('[data-lb-dialog-body]').append(body);if(!this.dialog.open)this.dialog.showModal();}
   openExport(){const body=element('section','lb-dialog-content');body.append(element('h3','','Экспорт библиотеки ZIP'));const label=element('label','lb-check'),check=element('input');check.type='checkbox';check.checked=true;label.append(check,document.createTextNode(' Включить медиа'));body.append(label);body.append(button('Скачать ZIP',async()=>{if(this.pending)return;this.pending=true;try{await this.api.exportPackage(check.checked);this.dialog.close();this.message('ZIP экспортирован');}catch(e){this.message(e.message,true);}finally{this.pending=false;}},'primary'));this.showDialog('export',body);}
-  openImport(file=null,presetFiles=null){this.zip=file;this.zipPreview=null;this.choices={characters:{},media:{},unknown:{}};this.importSelection=presetFiles;const body=element('section','lb-dialog-content');body.append(element('h3','','Импорт ZIP'));const input=element('input');input.type='file';input.accept='.zip,application/zip';if(!file)body.append(input);else body.append(element('p','',file.name));const mode=element('select');for(const [value,label] of [['selected','Добавить / выборочная замена'],['replace','Полная замена definitions']]){const o=element('option');o.value=value;o.textContent=label;mode.append(o);}body.append(element('label','','Режим импорта'),mode);const listing=element('div','lb-import-files');const conflicts=element('div','lb-import-conflicts');const report=element('pre','lb-import-report');body.append(listing,report,conflicts);const row=element('div','lb-dialog-actions');const preview=button('Проверить',()=>runPreview()),apply=button('Применить',()=>runApply(),'primary');apply.disabled=true;row.append(preview,apply);body.append(row);
-    const options=()=>({mode:mode.value,selectedFiles:mode.value==='selected'?[...listing.querySelectorAll('input:checked')].map(el=>el.value):[],characters:{...this.choices.characters},media:{...this.choices.media},unknown:{...this.choices.unknown}});
-    const renderSelections=paths=>{const previous=new Map([...listing.querySelectorAll('input')].map(el=>[el.value,el.checked]));listing.replaceChildren();for(const path of paths){const l=element('label','lb-check'),c=element('input');c.type='checkbox';c.value=path;c.checked=previous.get(path)??(this.importSelection?this.importSelection.has(path):true);c.onchange=()=>{apply.disabled=true;this.zipPreview=null;report.textContent+='\nВыбор изменён — повторите проверку.';};l.append(c,document.createTextNode(' '+path));listing.append(l);}};
-    const runPreview=async()=>{const source=this.zip||input.files[0];if(!source){this.message('Выберите архив',true);return;}preview.disabled=true;apply.disabled=true;this.zipPreview=null;report.textContent='Проверка…';try{if(mode.value==='selected'&&!listing.querySelector('input')){const inventory=await this.api.inventoryImport(source);renderSelections(inventory.availableFiles||[]);}const result=await this.api.previewImport(source,options());this.zip=source;this.zipPreview=result;renderSelections(result.availableFiles||[]);const diff=result.rulesetDiff||{};const changes=kind=>[...(diff[kind]?.added||[]).map(id=>'+'+id),...(diff[kind]?.changed||[]).map(id=>'~'+id),...(diff[kind]?.removed||[]).map(id=>'−'+id)].join(', ')||'нет';const parts=[`Файлы: +${result.addedFiles?.length||0} / ~${result.replacedFiles?.length||0} / −${result.removedFiles?.length||0}`,`Новые: ${(result.addedFiles||[]).join(', ')||'нет'}`,`Замена: ${(result.replacedFiles||[]).join(', ')||'нет'}`,`Удаление: ${(result.removedFiles||[]).join(', ')||'нет'}`,`Характеристики: ${changes('stats')}; действия: ${changes('actions')}; шаблоны: ${changes('presets')}`,`Персонажи: +${result.addedCharacters?.length||0}; конфликты: ${result.conflictingCharacters?.length||0}`,`Изображения: +${result.addedMedia?.length||0}; конфликты: ${result.conflictingMedia?.length||0}`,`Opaque TOML: ${(result.unknownFiles||[]).join(', ')||'нет'}`,`Пропущенные файлы: ${(result.skippedFiles||[]).join(', ')||'нет'}`,`Отсутствующие artwork: ${(result.missingMedia||[]).join(', ')||'нет'}`];report.textContent=parts.join('\n');conflicts.replaceChildren();let unresolved=false;
-      for(const [kind,choices,labels] of [['characters',['skip','replace'],['Пропустить','Заменить']],['media',['keep','replace'],['Сохранить','Заменить']],['unknown',['keep','replace'],['Сохранить','Заменить']]])for(const path of result['conflicting'+kind[0].toUpperCase()+kind.slice(1)]||[]){const label=element('label','lb-conflict',kind+': '+path);const select=element('select');const empty=element('option','','Выберите действие');empty.value='';select.append(empty);for(let i=0;i<choices.length;i++){const o=element('option','',labels[i]);o.value=choices[i];select.append(o);}select.value=this.choices[kind][path]||'';if(!select.value)unresolved=true;select.onchange=()=>{this.choices[kind][path]=select.value;apply.disabled=true;this.zipPreview=null;};label.append(select);conflicts.append(label);}
+  openImport(file=null,presetFiles=null){
+    this.zip=file;this.zipPreview=null;this.choices={characters:{},media:{},unknown:{}};this.importSelection=presetFiles;
+    let importMode='selected';
+    const body=element('section','lb-dialog-content');body.append(element('h3','','Импорт ZIP'));
+    const input=element('input');input.type='file';input.accept='.zip,application/zip';
+    if(!file)body.append(input);else body.append(element('p','',file.name));
+    const modeLabel=element('p','lb-import-mode','Добавить / обновить файлы');body.append(modeLabel);
+    const advanced=element('details','lb-import-advanced');const summary=element('summary','','Дополнительные действия');advanced.append(summary);
+    const replaceButton=button('Заменить все определения',()=>switchMode('replace'),'subtle');
+    advanced.append(element('p','muted','Полная замена удалит TOML правил, которых нет в архиве. Персонажи и изображения останутся.'));
+    advanced.append(replaceButton);body.append(advanced);
+    const listing=element('div','lb-import-files'),conflicts=element('div','lb-import-conflicts'),report=element('pre','lb-import-report');
+    const issues=element('div','lb-import-issues');body.append(listing,report,issues,conflicts);
+    const row=element('div','lb-dialog-actions'),preview=button('Проверить',()=>runPreview()),apply=button('Применить',()=>runApply(),'primary');apply.disabled=true;row.append(preview,apply);body.append(row);
+    const options=()=>({mode:importMode,selectedFiles:importMode==='selected'?[...listing.querySelectorAll('input:checked')].map(el=>el.value):[],characters:{...this.choices.characters},media:{...this.choices.media},unknown:{...this.choices.unknown}});
+    const invalidate=()=>{apply.disabled=true;this.zipPreview=null;};
+    const switchMode=value=>{if(importMode===value)return;importMode=value;invalidate();modeLabel.textContent=value==='replace'?'Полная замена definitions — удалятся отсутствующие в ZIP TOML':'Добавить / обновить файлы';replaceButton.textContent=value==='replace'?'Вернуться к добавлению':'Заменить все определения';listing.hidden=value==='replace';report.textContent='Режим изменён — повторите проверку.';issues.replaceChildren();conflicts.replaceChildren();};
+    const renderSelections=paths=>{const previous=new Map([...listing.querySelectorAll('input')].map(el=>[el.value,el.checked]));listing.replaceChildren();for(const path of paths){const l=element('label','lb-check'),c=element('input');c.type='checkbox';c.value=path;c.checked=previous.get(path)??(this.importSelection?this.importSelection.has(path):true);c.onchange=()=>{invalidate();report.textContent+='\nВыбор изменён — повторите проверку.';};l.append(c,document.createTextNode(' '+path));listing.append(l);}};
+    const renderIssues=result=>{issues.replaceChildren();const errors=result.errors||[],warnings=result.warnings||[];
+      for(const [items,title,className] of [[errors,`Ошибки (${errors.length})`,'lb-import-errors'],[warnings,`Предупреждения (${warnings.length})`,'lb-import-warnings']]){if(!items.length)continue;const section=element('section',className);section.append(element('h4','',title));const list=element('ul');for(const issue of items){const text=(issue.file?issue.file+': ':'')+issue.message;list.append(element('li','',text));}section.append(list);issues.append(section);}
+      if(result.checksIncomplete)issues.append(element('p','muted','Проверка зависимостей не завершена из-за ошибок выше. Исправьте их и повторите проверку.'));
+    };
+    const runPreview=async()=>{const source=this.zip||input.files[0];if(!source){this.message('Выберите архив',true);return;}preview.disabled=true;invalidate();report.textContent='Проверка…';issues.replaceChildren();conflicts.replaceChildren();try{
+      if(importMode==='selected'&&!listing.querySelector('input')){const inventory=await this.api.inventoryImport(source);renderSelections(inventory.availableFiles||[]);}
+      const result=await this.api.previewImport(source,options());this.zip=source;renderSelections(result.availableFiles||[]);renderIssues(result);
+      if((result.errors||[]).length){report.textContent=`Найдено ${result.errors.length} ошибок и ${(result.warnings||[]).length} предупреждений. Применение заблокировано.`;return;}
+      this.zipPreview=result;
+      const diff=result.rulesetDiff||{};const changes=kind=>[...(diff[kind]?.added||[]).map(id=>'+'+id),...(diff[kind]?.changed||[]).map(id=>'~'+id),...(diff[kind]?.removed||[]).map(id=>'−'+id)].join(', ')||'нет';
+      const parts=[`Файлы: +${result.addedFiles?.length||0} / ~${result.replacedFiles?.length||0} / −${result.removedFiles?.length||0}`,`Новые: ${(result.addedFiles||[]).join(', ')||'нет'}`,`Замена: ${(result.replacedFiles||[]).join(', ')||'нет'}`,`Удаление: ${(result.removedFiles||[]).join(', ')||'нет'}`,`Характеристики: ${changes('stats')}; действия: ${changes('actions')}; шаблоны: ${changes('presets')}`,`Персонажи: +${result.addedCharacters?.length||0}; конфликты: ${result.conflictingCharacters?.length||0}`,`Изображения: +${result.addedMedia?.length||0}; конфликты: ${result.conflictingMedia?.length||0}`,`Opaque TOML: ${(result.unknownFiles||[]).join(', ')||'нет'}`,`Пропущенные файлы: ${(result.skippedFiles||[]).join(', ')||'нет'}`,`Отсутствующие artwork: ${(result.missingMedia||[]).join(', ')||'нет'}`];report.textContent=parts.join('\n');
+      if(importMode==='replace'){const removed=[...(result.removedFiles||[])];for(const kind of ['stats','actions','presets'])for(const id of diff[kind]?.removed||[])removed.push(kind+': '+id);if(removed.length)issues.prepend(element('p','lb-import-danger','Будут удалены при полной замене: '+removed.join(', ')));}
+      let unresolved=false;
+      for(const [kind,choices,labels] of [['characters',['skip','replace'],['Пропустить','Заменить']],['media',['keep','replace'],['Сохранить','Заменить']],['unknown',['keep','replace'],['Сохранить','Заменить']]])for(const path of result['conflicting'+kind[0].toUpperCase()+kind.slice(1)]||[]){const label=element('label','lb-conflict',kind+': '+path);const select=element('select');const empty=element('option','','Выберите действие');empty.value='';select.append(empty);for(let i=0;i<choices.length;i++){const o=element('option','',labels[i]);o.value=choices[i];select.append(o);}select.value=this.choices[kind][path]||'';if(!select.value)unresolved=true;select.onchange=()=>{this.choices[kind][path]=select.value;invalidate();};label.append(select);conflicts.append(label);}
       if(unresolved){report.textContent+='\nВыберите решения конфликтов и повторите проверку.';return;}
       apply.disabled=false;
     }catch(e){report.textContent=e.message;this.message(e.message,true);}finally{preview.disabled=false;}};
-    const runApply=async()=>{if(!this.zipPreview||this.pending)return;this.pending=true;apply.disabled=true;try{await this.api.applyImport(this.zip,options(),this.zipPreview);this.dialog.close();await this.refresh();await this.api.reloadRegistry();this.message('Импорт завершён');}catch(e){this.zipPreview=null;this.message(e.message,true);report.textContent+='\n'+e.message;}finally{this.pending=false;}};
-    mode.onchange=()=>{apply.disabled=true;this.zipPreview=null;};input.onchange=()=>{this.zip=null;apply.disabled=true;this.zipPreview=null;listing.replaceChildren();report.textContent='';};this.showDialog('import',body);if(file)runPreview();
+    const runApply=async()=>{if(!this.zipPreview||this.pending)return;
+      if(importMode==='replace'){const diff=this.zipPreview.rulesetDiff||{},removed=(this.zipPreview.removedFiles||[]).map(x=>'Файл: '+x);for(const kind of ['stats','actions','presets'])for(const id of diff[kind]?.removed||[])removed.push(kind+': '+id);if(!confirm('Заменить ВСЕ определения? Отсутствующие в ZIP будут удалены.\n'+(removed.length?removed.join('\n'):'Удаляемых определений нет.')))return;}
+      this.pending=true;apply.disabled=true;try{await this.api.applyImport(this.zip,options(),this.zipPreview);this.dialog.close();await this.refresh();await this.api.reloadRegistry();this.message('Импорт завершён');}catch(e){this.zipPreview=null;this.message(e.message,true);report.textContent+='\n'+e.message;}finally{this.pending=false;}};
+    input.onchange=()=>{this.zip=null;invalidate();listing.replaceChildren();report.textContent='';issues.replaceChildren();conflicts.replaceChildren();};
+    this.showDialog('import',body);if(file)runPreview();
   }
   async uploadFiles(files){if(this.pending)return;const total=files.reduce((n,f)=>n+f.size,0);if(total>64*1048576){this.message('За один раз можно добавить не больше 64 МиБ. Для больших библиотек используйте импорт ZIP.',true);return;}
     this.pending=true;this.message('Подготовка файлов…');try{const selected=this.tree?.files.find(f=>f.path===this.selection);const prefix=this.activeDirectory|| (selected?libraryParent(selected.path):'');const zip=await libraryFilesZip(files,prefix?prefix+'/':'');this.openImport(zip,new Set(files.map(f=>(prefix?prefix+'/':'')+f.name)));}catch(e){this.message(e.message,true);}finally{this.pending=false;}}

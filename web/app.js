@@ -12,6 +12,7 @@ import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
 import {createDicePanel,DiceAnimator,DiceRuntime} from './dice.js';
 import {DiceRendererAdapter} from './dice-renderer.js';
+import {LibraryAssetPicker} from './library-explorer.js';
 const $ = id => document.getElementById(id);
 const isGM=member=>!!(member?.gm||member?.role==='gm');
 const isEditorView=()=>!!state&&isGM(state.you)&&!state.playerPreview&&!previewSwitchPending;
@@ -55,7 +56,7 @@ characterPanel.innerHTML=`
       <h3>Настройки персонажа</h3>
       <details id="characterIdentitySection" class="character-settings-section"><summary>Персонаж</summary>
         <label id="characterRenameRow">Имя персонажа<input id="characterRename" maxlength="200"></label>
-        <div id="characterAvatarControls"><label class="file-button">Загрузить изображение<input id="characterAvatarUpload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><button id="characterMediaPick" class="subtle" type="button">Выбрать из /media</button><select id="characterMediaSelect" hidden aria-label="Изображение из медиабиблиотеки"></select><button id="characterAvatarReset" class="subtle" type="button">Наследовать</button><button id="characterAvatarPlaceholder" class="subtle" type="button">Без изображения</button></div>
+        <div id="characterAvatarControls"><label class="file-button">Загрузить изображение<input id="characterAvatarUpload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><button id="characterMediaPick" class="subtle gm" type="button">Выбрать из галереи</button><button id="characterAvatarReset" class="subtle" type="button">Наследовать</button><button id="characterAvatarPlaceholder" class="subtle" type="button">Без изображения</button></div>
         <label id="characterPersistentLabel" class="check gm" hidden><input id="characterPersistent" type="checkbox"> Сохранить в кампании</label>
       </details>
       <details id="characterMechanicsSection" class="character-settings-section" hidden><summary>Редактирование механики</summary>
@@ -169,7 +170,7 @@ let resourceDefinitionRegistry=null,actionDefinitionRegistry=null;const characte
 const characterWatch=new CharacterWatch(value=>send(value),onCharacterWatchChange);let characterWatchNeedsResume=true,characterCatalogSession='';
 async function loadCharacterCatalogPage(kind,cursor){const query=new URLSearchParams({session:credentials.session,kind,limit:'50'});if(cursor)query.set('cursor',cursor);const response=await fetch(`/api/characters?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error(await response.text());return response.json();}
 const characterCatalog=new CharacterCatalog(loadCharacterCatalogPage,()=>renderCharacterPanel());
-const diceAnimator=new DiceAnimator({createRenderer:()=>new DiceRendererAdapter(),onError:error=>toast(`3D-анимация кубиков недоступна: ${error.message}`),onFinished:event=>dice.showTotal(event)});
+const diceAnimator=new DiceAnimator({createRenderer:()=>new DiceRendererAdapter(),onError:error=>toast(`3D-анимация кубиков недоступна: ${error.message}`),onFinished:event=>dice.finishAnimation(event)});
 const dice=new DiceRuntime(createDicePanel(),{queue:queueCommand,getCharacterId:()=>state?.tokens?.[selected]?.characterInstanceId||'',toast,animator:diceAnimator});
 function refreshCharacterCatalog(){if(!credentials||!isGM(state?.you||campaign?.you))return Promise.resolve();return characterCatalog.reload().catch(error=>toast(error.message));}
 async function loadDefinitions(){const query=new URLSearchParams({session:credentials.session});const response=await fetch(`/api/definitions?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error(await response.text());return response.json();}
@@ -210,6 +211,7 @@ const libraryTransport={
   applyImport:definitionDocuments.applyImport,
   openCharacter:id=>{const tokenID=Object.keys(state?.tokens||{}).find(key=>state.tokens[key].characterInstanceId===id);if(tokenID){definitionsEditor.close(true);select(tokenID);}else toast('Для открытия чарлиста персонаж должен находиться на текущей сцене');},
 };
+const characterAssetPicker=new LibraryAssetPicker({list:libraryTransport.list,thumbnail:libraryTransport.thumbnail});
 const definitionsEditor=new DefinitionsEditor($('definitionsMount'),{load:loadDefinitions,queue:queueCommand,getCharacter:()=>characterWatch.snapshot,toast,documents:definitionDocuments,uploadPresetAvatar,loadAvatar:loadDefinitionAvatar,mediaTransport,libraryTransport});
 async function loadRulesetMediaThumbnail(assetID,signal){const query=new URLSearchParams({session:credentials.session}),response=await fetch(`/api/definitions/ruleset/media/asset/${encodeURIComponent(assetID)}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal});if(!response.ok)throw new Error('Изображение недоступно');return response.blob();}
 const presetEditor=new PresetEditor({request:presetAPI,upload:uploadSharedMedia,thumbnail:loadRulesetMediaThumbnail,toast,onSaved:()=>{definitionsEditor.registryChanged();refreshCharacterCatalog();}});
@@ -310,7 +312,7 @@ const DISK_WRITE_QUEUE_LIMIT=32*1024*1024,DISK_WRITE_QUEUE_COUNT=64;
 const ARTWORK_LIMIT=8*MIB;const tokenIndex=new SpatialIndex(),movingTokens=new Set(),artwork=new ArtworkCache(ARTWORK_LIMIT);
 function readImageMemorySetting(){try{const value=localStorage.getItem(IMAGE_MEMORY_SETTING_KEY)||'auto';return IMAGE_MEMORY_SETTINGS.has(value)?value:'auto';}catch{return 'auto';}}
 let imageMemorySetting=readImageMemorySetting(),memoryLimit=resolveImageMemoryBudgetMiB(navigator.deviceMemory,imageMemorySetting)*MIB,assetLimit=memoryLimit-ARTWORK_LIMIT;
-const METADATA_CACHE_LIMIT=4096,tokenRows=new Map(),diskTouches=new MetadataTouchTracker(METADATA_CACHE_LIMIT);
+const METADATA_CACHE_LIMIT=4096,tokenRows=new Map(),tokenRowAvatars=new Map(),diskTouches=new MetadataTouchTracker(METADATA_CACHE_LIMIT);
 let memoryBytes = 0, diskBytes = 0, diskEnabled = true, cacheQueue = Promise.resolve();
 let diskReads=0,diskWrites=0,diskEvictions=0,diskDrops=0,decodeCount=0,decodeMs=0;
 const diskWriteBudget=new CacheWriteBudget(DISK_WRITE_QUEUE_COUNT,DISK_WRITE_QUEUE_LIMIT);
@@ -478,13 +480,14 @@ function connect(){
    if(!state||msg.sceneId!==state.scene.id||isEditorView())return;
    const prior=state.ownedTokens?.[msg.id];
    if(msg.type==='tokenLocatorDelete'){
-    delete state.ownedTokens[msg.id];removeTokenRow(msg.id);
+    delete state.ownedTokens[msg.id];delete state.tokenListAvatars?.[msg.id];removeTokenRow(msg.id);
     if(drag?.type==='token'&&drag.id===msg.id)drag=null;
     if(selected===msg.id)select(null);
    }else if(msg.type==='tokenLocatorMove'){
     if(!prior){send({type:'sync'});return;}
     const locator={...prior,x:msg.x,y:msg.y};state.ownedTokens[msg.id]=locator;updateTokenRow(locator);
    }else if(msg.locator){
+    state.tokenListAvatars=state.tokenListAvatars||{};if(msg.avatarAssetId)state.tokenListAvatars[msg.id]=msg.avatarAssetId;else delete state.tokenListAvatars[msg.id];
     state.ownedTokens[msg.id]=msg.locator;updateTokenRow(msg.locator);
    }
    if(Number.isSafeInteger(msg.revision))state.revision=msg.revision;
@@ -495,7 +498,7 @@ function connect(){
 	  const draggedFloor=drag?.type==='token'?state?.tokens?.[drag.id]?.floorId:'',priorCatalog=state?.elementCatalog,priorCatalogVersion=state?._catalogVersion||0,wasPreview=!!state?.playerPreview;const initialRegion=msg.region==null;state=msg;if(isGM(state.you)&&!state.playerPreview){if(state.elementCatalog)state._catalogVersion=priorCatalogVersion+1;else{state.elementCatalog=priorCatalog||{};state._catalogVersion=priorCatalogVersion;}}else{state.elementCatalog={};state._catalogVersion=0;}if(!initialRegion)regionInFlight=false;desiredSceneID=msg.scene.id;scenes.update(campaign);scenes.showScene();retry=0;
    preferredPlayerPreview=!!state.playerPreview;if(previewSwitchPending&&previewSwitchPending.enabled===preferredPlayerPreview)previewSwitchPending=null;clearTimeout(previewSwitchTimer);previewSwitchTimer=null;$('connection').textContent='● В сети';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;dice.setScene(msg.scene.id,msg.you.id);renderInteractionMode();
    if(!sceneCameraInitialized){initializeSceneCamera(msg);sceneCameraInitialized=true;}
-	  state.ownedTokens=state.ownedTokens||{};currentFloorID=msg.currentFloorId||orderedFloors(state)[0]?.id||'';confirmedActiveTokenID=state.activeTokenId||'';confirmedFloorID=currentFloorID;pendingActiveSwitch=null;sceneRenderIndex.reset();renderBoundsPaths.syncState(state);renderBoundsResources.syncState(state);if(usesPlayerInteraction())rememberActiveToken(state.scene.id,state.activeTokenId||'');resolveCreatedTransition();if(selectedTransition&&!state.transitions?.[selectedTransition])selectedTransition='';if(selectedWalkableComponent&&!state.floors?.[currentFloorID]?.walkableComponents?.some(component=>component.id===selectedWalkableComponent))selectedWalkableComponent='';if(drag?.type==='token'&&draggedFloor&&state.tokens?.[drag.id]?.floorId!==draggedFloor)drag=null;if(drag?.type?.startsWith('walkable')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision)drag=null;if(drag?.type?.startsWith('renderBounds')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision){drag=null;selectedRenderBoundsVertex=-1;}if(renderBoundsDraft&&renderBoundsDraft.geometryRevision!==state.floors?.[renderBoundsDraft.floorId]?.geometryRevision)renderBoundsDraft=null;
+	  state.ownedTokens=state.ownedTokens||{};state.tokenListAvatars=state.tokenListAvatars||{};currentFloorID=msg.currentFloorId||orderedFloors(state)[0]?.id||'';confirmedActiveTokenID=state.activeTokenId||'';confirmedFloorID=currentFloorID;pendingActiveSwitch=null;sceneRenderIndex.reset();renderBoundsPaths.syncState(state);renderBoundsResources.syncState(state);if(usesPlayerInteraction())rememberActiveToken(state.scene.id,state.activeTokenId||'');resolveCreatedTransition();if(selectedTransition&&!state.transitions?.[selectedTransition])selectedTransition='';if(selectedWalkableComponent&&!state.floors?.[currentFloorID]?.walkableComponents?.some(component=>component.id===selectedWalkableComponent))selectedWalkableComponent='';if(drag?.type==='token'&&draggedFloor&&state.tokens?.[drag.id]?.floorId!==draggedFloor)drag=null;if(drag?.type?.startsWith('walkable')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision)drag=null;if(drag?.type?.startsWith('renderBounds')&&drag.geometryRevision!==state.floors?.[drag.floorId]?.geometryRevision){drag=null;selectedRenderBoundsVertex=-1;}if(renderBoundsDraft&&renderBoundsDraft.geometryRevision!==state.floors?.[renderBoundsDraft.floorId]?.geometryRevision)renderBoundsDraft=null;
    if(pendingActiveFocus&&pendingActiveFocus===state.activeTokenId){const token=navigationToken(pendingActiveFocus);if(token){camera.x=token.x-viewport.w/(2*camera.scale);camera.y=token.y-viewport.h/(2*camera.scale);scheduleViewportSave();}pendingActiveFocus='';}
    for(const id of visuals.keys())if(!state.tokens[id])visuals.delete(id);
 	  rebuildTokenIndex();if(isEditorView()&&previewSelection&&state.tokens[previewSelection]){select(previewSelection);previewSelection='';}if(selected&&!state.tokens[selected]&&!state.ownedTokens?.[selected])select(null);else if(selected)syncCharacterWatch();if(selectedElement&&!state.elementCatalog?.[selectedElement])selectElement(null);renderPanels();if(!wasPreview&&state.playerPreview&&previewSelection&&state.ownedTokens[previewSelection]&&state.activeTokenId!==previewSelection)activatePlayerToken(state.ownedTokens[previewSelection],false);dirty=true;ensureSceneRegion(currentViewRegion());if(!outbox.inflight)outbox.flush();if(!positionOutbox.inflight)positionOutbox.flush();return;
@@ -570,16 +573,20 @@ function renderPanels(){
 	 renderMembers();renderTokenList();fillProperties();fillElementProperties();fillTransitionProperties();sceneTree.update(state,selectedElement,selectedTransition,gm);
 }
 function createTokenRow(id){
- const row=document.createElement('button');row.dataset.tokenId=id;const swatch=document.createElement('span');swatch.className='swatch';const info=document.createElement('span');info.className='token-row-info';const name=document.createElement('span');name.className='row-name';const locator=document.createElement('small');locator.className='token-row-location';info.append(name,locator);const extra=document.createElement('small');row.append(swatch,info,extra);
+ const row=document.createElement('button');row.dataset.tokenId=id;const swatch=document.createElement('span');swatch.className='swatch';const image=document.createElement('img');image.alt='';image.hidden=true;const fallback=document.createElement('span');swatch.append(image,fallback);const info=document.createElement('span');info.className='token-row-info';const name=document.createElement('span');name.className='row-name';const locator=document.createElement('small');locator.className='token-row-location';info.append(name,locator);const extra=document.createElement('small');row.append(swatch,info,extra);
  row.onclick=()=>{const current=navigationToken(id);if(!current)return;if(activatePlayerToken(current,true))return;select(id);camera.x=current.x-viewport.w/(2*camera.scale);camera.y=current.y-viewport.h/(2*camera.scale);scheduleViewportSave();dirty=true;};
  tokenRows.set(id,row);$('tokens').append(row);return row;
 }
+async function updateTokenRowAvatar(id,assetID,swatch){
+ const current=tokenRowAvatars.get(id);if(current?.asset===assetID)return;if(current){current.controller?.abort();if(current.url)URL.revokeObjectURL(current.url);tokenRowAvatars.delete(id);}const image=swatch.querySelector('img'),fallback=swatch.querySelector('span');image.hidden=true;image.removeAttribute('src');fallback.hidden=false;if(!assetID)return;
+ const controller=new AbortController(),entry={asset:assetID,controller,url:''};tokenRowAvatars.set(id,entry);try{const response=await fetch(avatarPath(assetID),{headers:{Authorization:`Bearer ${credentials.key}`},signal:controller.signal});if(!response.ok)throw new Error();const blob=await response.blob();if(controller.signal.aborted||tokenRowAvatars.get(id)!==entry||!swatch.isConnected)return;entry.url=URL.createObjectURL(blob);image.src=entry.url;image.hidden=false;fallback.hidden=true;}catch{}finally{if(entry.controller===controller)entry.controller=null;}
+}
 function updateTokenRow(t){
  let row=tokenRows.get(t.id);if(!row)row=createTokenRow(t.id);
- row.className='token-row'+(t.id===selected?' selected':'')+(t.id===state?.activeTokenId?' active':'');const [swatch,info,extra]=row.children;swatch.style.background=t.color;swatch.textContent=t.name.slice(0,1)||'◆';info.firstElementChild.textContent=t.name;info.lastElementChild.textContent=`${state?.floors?.[t.floorId]?.name||'Этаж'} · #${t.id.slice(0,6)}`;extra.textContent=t.hidden?'◌':t.id===state?.activeTokenId?'●':canMove(t)?'↗':'';
+ row.className='token-row'+(t.id===selected?' selected':'')+(t.id===state?.activeTokenId?' active':'');const [swatch,info,extra]=row.children;swatch.style.background=t.color;swatch.querySelector('span').textContent=t.name.slice(0,1)||'◆';updateTokenRowAvatar(t.id,t.asset||state?.tokenListAvatars?.[t.id]||'',swatch);info.firstElementChild.textContent=t.name;info.lastElementChild.textContent=`${state?.floors?.[t.floorId]?.name||'Этаж'} · #${t.id.slice(0,6)}`;extra.textContent=t.hidden?'◌':t.id===state?.activeTokenId?'●':canMove(t)?'↗':'';
  $('emptyTokens').hidden=tokenRows.size>0;
 }
-function removeTokenRow(id){const row=tokenRows.get(id);if(row){row.remove();tokenRows.delete(id);}$('emptyTokens').hidden=tokenRows.size>0;}
+function removeTokenRow(id){const row=tokenRows.get(id),avatar=tokenRowAvatars.get(id);avatar?.controller?.abort();if(avatar?.url)URL.revokeObjectURL(avatar.url);tokenRowAvatars.delete(id);if(row){row.remove();tokenRows.delete(id);}$('emptyTokens').hidden=tokenRows.size>0;}
 function renderTokenList(){
  if(!state)return;$('revision').textContent=`Ревизия ${state.revision}`;const listed=usesPlayerInteraction()?Object.values(state.ownedTokens||{}):Object.values(state.tokens).filter(t=>t.floorId===currentFloorID),ids=new Set(listed.map(t=>t.id));
  for(const id of tokenRows.keys())if(!ids.has(id))removeTokenRow(id);
@@ -725,7 +732,7 @@ function updateEditButtons(){
  $('characterEditCancel').disabled=d.saving;
  $('characterEditFeedback').textContent=d.conflict?'Данные изменились на сервере. Отмените редактирование и повторите.':d.saving?'Сохранение…':d.invalid.size?'Исправьте недопустимые значения':'';
 }
-function releaseEditSession(){const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);characterEditSession=null;updateEditButtons();}
+function releaseEditSession(){const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);characterAssetPicker.close();characterEditSession=null;updateEditButtons();}
 function discardEdit(){if(!characterEditSession||characterEditSession.saving)return false;releaseEditSession();renderCharacterPanel();return true;}
 function confirmLeaveEdit(){if(!characterEditSession)return true;if(characterEditSession.saving){toast('Дождитесь подтверждения сохранения');return false;}if(!confirm('Несохранённые изменения персонажа будут потеряны. Выйти?'))return false;return discardEdit();}
 function openCharacterEdit(){const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage||!isEditorView())return;
@@ -884,6 +891,7 @@ $('characterSettingsToggle').onclick=()=>{if(characterEditSession)return toast('
 $('characterMechanicsToggle').onclick=()=>characterEditSession?confirmLeaveEdit():openCharacterEdit();
 function renderCharacterPanel(){
  const token=state?.tokens?.[selected],snapshot=characterWatch.snapshot,linkedID=token?.characterInstanceId||'',gm=isEditorView(),ready=!!linkedID&&snapshot?.characterId===linkedID;
+ if(!gm)characterSettingsOpen=false;
  const loading=!!linkedID&&!ready&&(characterWatchReason==='pending'||characterWatchReason==='replaced'),retainDisplayed=!!token&&loading&&!!characterDisplayedID&&!$('characterSummary').hidden,deferInitial=!!token&&loading&&!characterDisplayedID;
  characterPanel.hidden=!token||deferInitial;
  characterPanel.inert=retainDisplayed;if(retainDisplayed)characterPanel.setAttribute('aria-busy','true');else characterPanel.removeAttribute('aria-busy');
@@ -891,6 +899,7 @@ function renderCharacterPanel(){
  if(retainDisplayed||deferInitial)return;
  if(characterDisplayedID!==linkedID){if(characterEditSession)releaseEditSession();characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';sheetEdit=false;$('characterMechanicsSection').open=false;}
  characterPanel.dataset.characterId=linkedID;
+ $('characterSettingsToggle').hidden=!gm;
  fillCatalogSelect($('tokenCreatePreset'),characterCatalog.presets,characterCatalog.loading.has('presets')?'Загрузка…':'Шаблон для нового токена');fillCatalogSelect($('tokenCreateCharacter'),characterCatalog.roster,characterCatalog.loading.has('roster')?'Загрузка…':'Существующий персонаж');$('addPresetToken').disabled=!gm||!$('tokenCreatePreset').value;$('addCharacterToken').disabled=!gm||!$('tokenCreateCharacter').value;
  const instance=ready?snapshot.instance:null;
  const unavailable=!!linkedID&&!ready&&['accessRevoked','unavailable','closed'].includes(characterWatchReason);$('characterUnavailable').hidden=!unavailable;$('characterPending').hidden=ready||unavailable;$('characterSummary').hidden=!ready;characterRecoveryToggle.hidden=!unavailable||!gm;$('characterIdentitySection').hidden=true;$('characterLinkSection').hidden=!gm;$('characterTechnicalSection').hidden=!gm||!ready;$('characterMechanicsSection').hidden=true;if(!ready)$('characterSettingsPanel').hidden=!gm||!characterSettingsOpen;
@@ -924,7 +933,7 @@ function renderCharacterPanel(){
  $('characterPersistentLabel').hidden=!gm||!ready;$('characterPersistent').checked=!!instance?.persistent;
 }
 function hasTransitionSelection(){return isEditorView()&&(!!transitionDraft||!!state?.transitions?.[selectedTransition]);}
-function updateInspectorState(){renderCharacterPanel();const tokenVisible=!!state?.tokens?.[selected]&&!characterPanel.hidden;document.querySelector('.inspector .panel-heading').textContent=tokenVisible?'ПЕРСОНАЖ':'СВОЙСТВА ОБЪЕКТА';const visible=tokenVisible||!!state?.elements?.[selectedElement]||isEditorView()&&!!state?.elementCatalog?.[selectedElement]||hasTransitionSelection();$('noSelection').hidden=visible;document.querySelector('.inspector').classList.toggle('has-selection',visible);inspectorFrame.classList.toggle('has-selection',visible);}
+function updateInspectorState(){renderCharacterPanel();const tokenVisible=!!state?.tokens?.[selected]&&!characterPanel.hidden,heading=document.querySelector('.inspector .panel-heading');heading.hidden=tokenVisible;heading.textContent='СВОЙСТВА ОБЪЕКТА';const visible=tokenVisible||!!state?.elements?.[selectedElement]||isEditorView()&&!!state?.elementCatalog?.[selectedElement]||hasTransitionSelection();$('noSelection').hidden=visible;document.querySelector('.inspector').classList.toggle('has-selection',visible);inspectorFrame.classList.toggle('has-selection',visible);}
 function elementRotationAllowed(element){if(!element)return false;const lowest=orderedLayers(state,element.floorId).find(layer=>layer.kind==='visual');return lowest?.id!==element.layerId||rotationOverrides.has(element.id);}
 function cancelTransitionDraft(){transitionDraft=null;transitionCursor=null;if(drag?.type?.startsWith('transition'))drag=null;fillTransitionProperties();if(state)sceneTree.update(state,selectedElement,selectedTransition,isEditorView());dirty=true;}
 function beginTransition(){if(!isEditorView())return;select(null);selectElement(null);selectedTransition='';transitionDraft={phase:'placingA',endpointA:null,endpointB:null,direction:'bidirectional',showToPlayers:false};transitionCursor=null;fillTransitionProperties();sceneTree.update(state,selectedElement,selectedTransition,true);canvas.focus();toast('Поставьте точку A перехода');dirty=true;}
@@ -1054,31 +1063,21 @@ $('characterAvatarUpload').onchange=e=>{
 $('characterRename').oninput=()=>{if(characterEditSession)characterEditSession.name=$('characterRename').value;};$('characterRename').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('characterRename').blur();}};
 function clearCharacterImageDraft(d){
  d.avatarFile=null;d.selectedMediaAsset='';d.artworkPath='';if(d.avatarPreview){URL.revokeObjectURL(d.avatarPreview);d.avatarPreview='';}
- $('characterMediaSelect').hidden=true;
+ characterAssetPicker.close();
 }
 $('characterAvatarReset').onclick=()=>{const d=characterEditSession;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=true;d.placeholderAvatar=false;renderCharacterPanel();};
 $('characterAvatarPlaceholder').onclick=()=>{const d=characterEditSession;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=false;d.placeholderAvatar=true;renderCharacterPanel();};
-$('characterMediaPick').onclick=async()=>{
- const d=characterEditSession;if(!d)return;
- const control=$('characterMediaSelect');
- if(!control.hidden){control.hidden=true;return;}
- try{
-  const data=await presetAPI('/api/definitions/ruleset/media/assets');if(characterEditSession!==d)return;
-  control.replaceChildren();const prompt=new Option('Выберите изображение…','');control.add(prompt);
-  const names={};for(const [name,id] of Object.entries(data.rulesetMedia||{})){(names[id]??=[]).push(name);}
-  for(const asset of data.assets||[]){control.add(new Option((names[asset.id]||[]).sort()[0]||asset.id,asset.id));}
-  control.hidden=false;control.value='';
- }catch(error){toast(error.message);}
-};
-$('characterMediaSelect').onchange=async()=>{
- const d=characterEditSession,assetID=$('characterMediaSelect').value;if(!d||!assetID)return;
- d.selectedMediaAsset=assetID;d.artworkPath='';d.avatarFile=null;d.resetAvatar=false;d.placeholderAvatar=false;
+async function selectCharacterLibraryAsset(d,file){
+ if(!d||!file?.assetId||!file.path)return;
+ d.selectedMediaAsset='';d.artworkPath=file.path;d.avatarFile=null;d.resetAvatar=false;d.placeholderAvatar=false;
  if(d.avatarPreview)URL.revokeObjectURL(d.avatarPreview);d.avatarPreview='';
- try{
-  const blob=await loadRulesetMediaThumbnail(assetID);
-  if(characterEditSession!==d||d.selectedMediaAsset!==assetID)return;
-  d.avatarPreview=URL.createObjectURL(blob);renderCharacterPanel();
- }catch(error){toast(error.message);}
+ const blob=await loadRulesetMediaThumbnail(file.assetId);
+ if(characterEditSession!==d||d.artworkPath!==file.path)return;
+ d.avatarPreview=URL.createObjectURL(blob);renderCharacterPanel();
+}
+$('characterMediaPick').onclick=()=>{
+ const d=characterEditSession;if(!d||!isEditorView())return;
+ characterAssetPicker.open({title:'Выберите аватар персонажа',actionLabel:'Выбрать',onSelect:file=>selectCharacterLibraryAsset(d,file)}).catch(error=>toast(error.message));
 };
 function rememberElementField(id,field){const element=state?.elements?.[selectedElement]||state?.elementCatalog?.[selectedElement];if(!element)return;const control=$(id);let value=control.type==='checkbox'?control.checked:control.type==='number'||control.type==='range'?Number(control.value):control.value;if(field==='layerId'){const layer=state.layers[value];if(!layer)return;elementDrafts.set(element.id,'floorId',layer.floorId);}elementDrafts.set(element.id,field,value);}
 function commitElementProperties(id=selectedElement){clearTimeout(elementAutosaveTimer);elementAutosaveTimer=null;const loaded=state?.elements?.[id],element=loaded||state?.elementCatalog?.[id];if(!element||!isEditorView()||!$('elementProperties').checkValidity())return;const draft={...elementDrafts.get(id)},properties={},transform={},unchanged={},unavailable={};for(const [field,raw] of Object.entries(draft)){const transformField=field in element.transform;if(transformField&&!loaded){unavailable[field]=raw;continue;}const value=field==='name'?String(raw).trim():raw,base=transformField?element.transform[field]:element[field],type=transformField?'elementTransform':'elementUpdate',box=transformField?positionOutbox:outbox;if(value!==raw)elementDrafts.set(id,field,value);if(base===value)unchanged[field]=value;else if(!commandAlreadyQueued(box,type,id,field,value))(transformField?transform:properties)[field]=value;}if(Object.keys(unavailable).length)elementDrafts.confirm(id,unavailable);if(Object.keys(unchanged).length)elementDrafts.confirm(id,unchanged);if(Object.keys(properties).length)queueCommand('elementUpdate',{element:{id},elementProperties:properties});if(Object.keys(transform).length)queueTransform('elementTransform',{element:{id,transform:{...element.transform,...transform}}});if(!Object.keys(properties).length&&!Object.keys(transform).length&&id===selectedElement)fillElementProperties();}

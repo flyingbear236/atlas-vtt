@@ -528,6 +528,22 @@ func ownedTokenLocators(session *Session, registry EffectiveRegistry, scene *Sce
 	return owned
 }
 
+func ownedTokenListAvatars(session *Session, registry EffectiveRegistry, scene *Scene, member *Member) map[string]string {
+	avatars := map[string]string{}
+	if scene == nil || member == nil || memberIsGM(member) {
+		return avatars
+	}
+	for tokenID, token := range scene.Tokens {
+		if !tokenHasLocator(token, member) {
+			continue
+		}
+		if assetID := presentToken(session, registry, token).Asset; assetID != "" {
+			avatars[tokenID] = assetID
+		}
+	}
+	return avatars
+}
+
 func tokenLocatorsForPeer(session *Session, registry EffectiveRegistry, scene *Scene, peer *peer) map[string]TokenLocator {
 	if peer == nil || peer.member == nil || scene == nil {
 		return map[string]TokenLocator{}
@@ -648,6 +664,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		"tokens":            tokens,
 		"characterDisplays": characterDisplaysForTokens(ss, registry, tokens),
 		"ownedTokens":       ownedTokenLocators(ss, registry, scene, member),
+		"tokenListAvatars":  ownedTokenListAvatars(ss, registry, scene, member),
 		"transitions":       transitions,
 		"transitionMarkers": markers,
 		"assets":            assets,

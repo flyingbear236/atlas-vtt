@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import {strict as assert} from 'node:assert';
-import {DiceAnimator,normalizeDiceCount,cycleDiceSides} from './dice.js';
+import {DiceAnimator,normalizeDiceCount,normalizeDiceGroups,cycleDiceSides,diceNotation} from './dice.js';
 
 test('manual selector retains supported sides and count boundaries',()=>{
   assert.deepEqual([4,6,8,10,12,20].map(side=>cycleDiceSides(side)),[6,8,10,12,20,4]);
@@ -8,6 +8,13 @@ test('manual selector retains supported sides and count boundaries',()=>{
   assert.equal(normalizeDiceCount(101),null);
   assert.equal(normalizeDiceCount(0),null);
   assert.equal(normalizeDiceCount(2.5),null);
+});
+
+test('compound dice expressions are normalized and bounded',()=>{
+  assert.deepEqual(normalizeDiceGroups('1d10 + 2d20'),[{count:1,sides:10},{count:2,sides:20}]);
+  assert.equal(normalizeDiceGroups('1d7 + 2d20'),null);
+  assert.equal(normalizeDiceGroups('60d10 + 41d20'),null);
+  assert.equal(diceNotation({groups:[{count:1,sides:10},{count:2,sides:20}]}),'1d10 + 2d20');
 });
 
 test('a single renderer is prewarmed and reused for server outcomes',async()=>{

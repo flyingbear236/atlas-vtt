@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {File} from 'node:buffer';
-import {libraryHierarchy,libraryGalleryGroups,libraryFilesZip,ViewportPreviews,LibraryBrowser} from './library-explorer.js';
+import {libraryHierarchy,libraryGalleryGroups,filterLibraryImages,libraryFilesZip,ViewportPreviews,LibraryBrowser} from './library-explorer.js';
 
 const tree={directories:['rules','rules/monsters','art','art/monsters','empty'],files:[
   {path:'rules/stats.toml',type:'definitions'},
@@ -17,6 +17,10 @@ test('Explorer derives directories and keeps folders ahead of files',()=>{
 });
 test('Gallery groups images only by the exact virtual parent folder',()=>{
  const groups=libraryGalleryGroups(tree);assert.deepEqual(groups.map(g=>[g.path,g.files.length]),[['art',1],['art/monsters',1]]);
+});
+test('Asset picker search only returns matching images',()=>{
+ assert.deepEqual(filterLibraryImages(tree,'MONSTERS').map(file=>file.path),['art/monsters/goblin.png']);
+ assert.deepEqual(filterLibraryImages(tree,'rules'),[]);
 });
 test('single-file ZIP uses user paths and preserves original file data',async()=>{
  const original='schema_version = 1\n# original comment\n[stats.strength]\ntype = "integer"\n';

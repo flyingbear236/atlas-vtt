@@ -6,9 +6,10 @@ export class DiceOutcomeMismatchError extends Error {
 }
 
 export function predeterminedNotation(event){
-  const count=Number(event?.count),sides=Number(event?.sides),results=event?.results;
-  if(!Number.isSafeInteger(count)||count<1||!SUPPORTED_SIDES.has(sides)||!Array.isArray(results)||results.length!==count||results.some(value=>!Number.isSafeInteger(value)||value<1||value>sides))throw new Error('Invalid server RollEvent for 3D rendering');
-  return `${count}d${sides}@${results.join(',')}`;
+	const groups=Array.isArray(event?.groups)&&event.groups.length?event.groups:[{count:event?.count,sides:event?.sides,results:event?.results}];
+	let total=0;const notation=[],results=[];
+	for(const group of groups){const count=Number(group?.count),sides=Number(group?.sides),values=group?.results;if(!Number.isSafeInteger(count)||count<1||!SUPPORTED_SIDES.has(sides)||!Array.isArray(values)||values.length!==count||values.some(value=>!Number.isSafeInteger(value)||value<1||value>sides)||(total+=count)>100)throw new Error('Invalid server RollEvent for 3D rendering');notation.push(`${count}d${sides}`);results.push(...values);}
+	return `${notation.join('+')}@${results.join(',')}`;
 }
 
 export function renderedValues(result,diceList){

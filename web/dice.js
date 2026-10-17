@@ -4,6 +4,9 @@ export const MAX_ROLL_JOURNAL=500;
 export const MAX_ANIMATED_DICE=30;
 export const MAX_PENDING_ANIMATIONS=8;
 export const ROLL_ANIMATION_TIMEOUT_MS=20000;
+export const MAX_DICE_GROUPS=16;
+
+function eventDiceCount(event){return Array.isArray(event?.groups)&&event.groups.length?event.groups.reduce((sum,group)=>sum+Number(group.count||0),0):Number(event?.count);}
 
 export class DiceAnimator {
   constructor({createRenderer,timeoutMs=ROLL_ANIMATION_TIMEOUT_MS,onError=()=>{},onFinished=()=>{}}={}){
@@ -23,7 +26,7 @@ export class DiceAnimator {
   }
 
   enqueue(event){
-    if(!this.#eligible(event)||!Number.isSafeInteger(event.count)||event.count<1||event.count>MAX_ANIMATED_DICE)return false;
+    const count=eventDiceCount(event);if(!this.#eligible(event)||!Number.isSafeInteger(count)||count<1||count>MAX_ANIMATED_DICE)return false;
     if(this.working&&this.pending.length>=MAX_PENDING_ANIMATIONS)return false;
     this.pending.push(event);this.#drain();return true;
   }
@@ -64,7 +67,7 @@ export class DiceAnimator {
     if(this.working)return;this.working=true;
     try{
       while(this.pending.length){
-        const event=this.pending.shift();if(!this.#eligible(event)||event.count>MAX_ANIMATED_DICE)continue;
+        const event=this.pending.shift();if(!this.#eligible(event)||eventDiceCount(event)>MAX_ANIMATED_DICE)continue;
         const generation=this.generation;await this.cleanupPromise;if(generation!==this.generation)continue;
         if(!this.renderer)this.renderer=this.createRenderer();this.active=event;
         let timeout,wasCancelled=false;
@@ -90,7 +93,7 @@ const diceIcon=sides=>`<svg viewBox="0 0 24 24" width="23" height="23" fill="non
 
 export function createDicePanel(inspector=document.querySelector('.inspector')){
   const root=document.createElement('section');root.id='dicePanel';root.className='dice-panel';root.hidden=true;
-  root.innerHTML=`<div class="panel-heading">БЫСТРЫЙ БРОСОК</div><form class="dice-manual"><span class="dice-label">Выберите кубик</span><div class="dice-options" role="group" aria-label="Тип кубика">${DICE_SIDES.map(sides=>`<button type="button" class="dice-option" data-dice-sides="${sides}" aria-pressed="false">${diceIcon(sides)}<span>d${sides}</span></button>`).join('')}</div><div class="dice-count-row"><label for="diceCount">Количество кубиков<small>От 1 до 100</small></label><div class="dice-stepper"><button class="subtle" type="button" data-dice-minus aria-label="Уменьшить число кубиков">−</button><input id="diceCount" type="number" min="1" max="100" step="1" value="1" inputmode="numeric" data-dice-count aria-label="Число кубиков"><button class="subtle" type="button" data-dice-plus aria-label="Увеличить число кубиков">+</button></div></div><button class="primary dice-submit" data-dice-submit type="submit">Бросить 1d20</button></form><div class="dice-last-result" data-dice-last hidden><small>Результат броска</small><strong data-dice-total></strong><span data-dice-values></span></div><label class="dice-animation">Анимации<select data-roll-animation><option value="all">Все броски</option><option value="self">Только мои</option><option value="off">Выключены</option></select></label>`;
+  root.innerHTML=`<div class="panel-heading">БЫСТРЫЙ БРОСОК</div><form class="dice-manual"><label class="dice-expression-label" for="diceExpression">Формула броска<input id="diceExpression" data-dice-expression value="1d20" inputmode="text" autocomplete="off" spellcheck="false" aria-describedby="diceExpressionHint"><small id="diceExpressionHint">Например: 1d10 + 2d20 · максимум 100 кубиков</small></label><div class="dice-group-toolbar"><span class="dice-label" data-dice-group-label>Группа 1</span><span><button class="subtle" type="button" data-dice-remove>− Убрать</button><button class="subtle" type="button" data-dice-add>＋ Добавить</button></span></div><div class="dice-options" role="group" aria-label="Тип кубика">${DICE_SIDES.map(sides=>`<button type="button" class="dice-option" data-dice-sides="${sides}" aria-pressed="false">${diceIcon(sides)}<span>d${sides}</span></button>`).join('')}</div><div class="dice-count-row"><label for="diceCount">Кубиков в группе<small>От 1 до 100 суммарно</small></label><div class="dice-stepper"><button class="subtle" type="button" data-dice-minus aria-label="Уменьшить число кубиков">−</button><input id="diceCount" type="number" min="1" max="100" step="1" value="1" inputmode="numeric" data-dice-count aria-label="Число кубиков в выбранной группе"><button class="subtle" type="button" data-dice-plus aria-label="Увеличить число кубиков">+</button></div></div><button class="primary dice-submit" data-dice-submit type="submit">Бросить 1d20</button></form><div class="dice-last-result" data-dice-last hidden><small>Результат броска</small><strong data-dice-total></strong><span data-dice-values></span></div><label class="dice-animation">Анимации<select data-roll-animation><option value="all">Все броски</option><option value="self">Только мои</option><option value="off">Выключены</option></select></label>`;
   const note=inspector?.querySelector('.inspector-note');if(note)inspector.insertBefore(root,note);else inspector?.append(root);
   const journal=document.createElement('section');journal.id='diceJournal';journal.className='dice-journal-popover';journal.hidden=true;
   journal.innerHTML='<div class="dice-journal-header"><strong>Журнал бросков <span data-roll-count></span></strong><button type="button" class="subtle" data-journal-close aria-label="Закрыть журнал">×</button></div><div class="roll-entries" data-roll-entries aria-live="polite"></div>';
@@ -113,24 +116,43 @@ export function cycleDiceSides(current,direction=1){
   return DICE_SIDES[(start+(direction<0?-1:1)+DICE_SIDES.length)%DICE_SIDES.length];
 }
 
+export function normalizeDiceGroups(value){
+  const parts=String(value||'').trim().split(/\s*\+\s*/);
+  if(!parts[0]||parts.length>MAX_DICE_GROUPS)return null;
+  const groups=[];let total=0;
+  for(const part of parts){const match=/^(\d+)\s*d\s*(\d+)$/i.exec(part);if(!match)return null;const count=normalizeDiceCount(match[1]),sides=Number(match[2]);if(count===null||!DICE_SIDES.includes(sides)||(total+=count)>MAX_DICE_COUNT)return null;groups.push({count,sides});}
+  return groups;
+}
+
+export function diceGroups(event){
+  if(Array.isArray(event?.groups)&&event.groups.length)return event.groups;
+  return [{count:Number(event?.count),sides:Number(event?.sides),results:Array.isArray(event?.results)?event.results:[]}];
+}
+
+export function diceNotation(event){return diceGroups(event).map(group=>`${group.count}d${group.sides}`).join(' + ');}
+
 function numberText(value){return Number.isInteger(value)?String(value):String(Number(value));}
 function modifierText(value){return value>0?` + ${numberText(value)}`:value<0?` − ${numberText(-value)}`:'';}
 
 export class DiceRuntime {
   constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},animator=null,storage=localStorage}={}){
     this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.animator=animator;this.storage=storage;
-    this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.sides=20;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
-    this.count=root.querySelector('[data-dice-count]');this.sidesButtons=[...root.querySelectorAll('[data-dice-sides]')];this.submit=root.querySelector('[data-dice-submit]');this.entries=root.diceUI.journal.querySelector('[data-roll-entries]');this.journalCount=root.diceUI.journal.querySelector('[data-roll-count]');this.animation=root.querySelector('[data-roll-animation]');this.last=root.querySelector('[data-dice-last]');this.overlay=root.diceUI.overlay;
-    try{const saved=JSON.parse(this.storage.getItem('atlas-dice-choice')||'null');if(DICE_SIDES.includes(saved?.sides))this.sides=saved.sides;if(normalizeDiceCount(saved?.count)!==null)this.count.value=String(saved.count);}catch{}
+    this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.groups=[{count:1,sides:20}];this.activeGroup=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
+    this.count=root.querySelector('[data-dice-count]');this.expression=root.querySelector('[data-dice-expression]');this.groupLabel=root.querySelector('[data-dice-group-label]');this.sidesButtons=[...root.querySelectorAll('[data-dice-sides]')];this.submit=root.querySelector('[data-dice-submit]');this.entries=root.diceUI.journal.querySelector('[data-roll-entries]');this.journalCount=root.diceUI.journal.querySelector('[data-roll-count]');this.animation=root.querySelector('[data-roll-animation]');this.last=root.querySelector('[data-dice-last]');this.overlay=root.diceUI.overlay;
+    try{const saved=JSON.parse(this.storage.getItem('atlas-dice-choice')||'null'),groups=normalizeDiceGroups(saved?.expression||(saved?.count&&saved?.sides?`${saved.count}d${saved.sides}`:''));if(groups)this.groups=groups;}catch{}
     this.animation.value=this.#loadAnimationMode();this.animator?.setPolicy(this.animation.value);
     root.querySelector('[data-dice-minus]').addEventListener('click',()=>this.#adjustCount(-1));
     root.querySelector('[data-dice-plus]').addEventListener('click',()=>this.#adjustCount(1));
-    this.sidesButtons.forEach(button=>button.addEventListener('click',()=>{this.sides=Number(button.dataset.diceSides);this.#renderSides();}));
-    this.count.addEventListener('input',()=>this.#validateCount());
+    root.querySelector('[data-dice-add]').addEventListener('click',()=>this.#addGroup());
+    root.querySelector('[data-dice-remove]').addEventListener('click',()=>this.#removeGroup());
+    this.sidesButtons.forEach(button=>button.addEventListener('click',()=>{const count=normalizeDiceCount(this.count.value),other=this.groups.reduce((sum,item,index)=>sum+(index===this.activeGroup?0:item.count),0);if(count!==null&&count+other<=MAX_DICE_COUNT)this.groups[this.activeGroup].count=count;this.groups[this.activeGroup].sides=Number(button.dataset.diceSides);this.#syncExpression();}));
+    this.expression.addEventListener('input',()=>this.#readExpression());
+    this.expression.addEventListener('blur',()=>{if(this.#readExpression())this.#syncExpression();});
+    this.count.addEventListener('input',()=>this.#setActiveCount());
     this.count.addEventListener('blur',()=>this.#clampCount());
     this.animation.addEventListener('change',()=>{this.#saveAnimationMode();this.animator?.setPolicy(this.animation.value);if(this.animation.value!=='off')this.animator?.warmup();});
     root.querySelector('form').addEventListener('submit',event=>{event.preventDefault();this.rollManual();});
-    this.#renderSides();this.#validateCount();this.#updateCount();root.hidden=true;
+    this.#syncExpression();this.#updateCount();root.hidden=true;
   }
 
   setScene(sceneId,userId=''){
@@ -143,9 +165,9 @@ export class DiceRuntime {
 
   rollManual(){
     if(!this.sceneId||this.awaitingRoll)return false;
-    const count=this.#validateCount();
-    if(count===null){this.count.reportValidity();return false;}
-    const roll={count,sides:this.sides},characterId=this.getCharacterId();
+    const groups=this.#readExpression();
+    if(!groups){this.expression.reportValidity();return false;}
+    const roll=groups.length===1?{...groups[0]}:{groups:groups.map(group=>({...group}))},characterId=this.getCharacterId();
     if(characterId)roll.characterInstanceId=characterId;
     if(!this.queue?.('roll',{sceneId:this.sceneId,roll})){this.toast('Бросок не отправлен: нет соединения с сервером');return false;}
     this.awaitingManual=true;this.awaitingRoll=true;this.#setSending(true);return true;
@@ -168,8 +190,9 @@ export class DiceRuntime {
     }
     const added=this.#remember(message.event);
     if(added){this.#append(this.events.at(-1));if(!message.replayed){
-      if(message.event.userId===this.userId){this.#lastResult(message.event);this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);if(this.animation.value==='off')this.showTotal(message.event,false);}
-      if(this.#shouldAnimate(message.event)){if(!this.animator?.enqueue(message.event)){this.showTotal(message.event,false);this.onAnimate(message.event);}}
+      if(message.event.userId===this.userId){this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);}
+      const animated=this.#shouldAnimate(message.event)&&this.animator?.enqueue(message.event);
+      if(!animated){if(message.event.userId===this.userId)this.#lastResult(message.event);this.showTotal(message.event,false);this.onAnimate(message.event);}
     }}
     return true;
   }
@@ -179,6 +202,8 @@ export class DiceRuntime {
     this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);
     if(message.rollEvent&&this.#remember(message.rollEvent)){this.#append(message.rollEvent);this.#lastResult(message.rollEvent);if(this.animation.value==='off')this.showTotal(message.rollEvent,false);}
   }
+
+  finishAnimation(event){if(event?.userId===this.userId)this.#lastResult(event);this.showTotal(event,true);}
 
   #remember(event){
     if(!event||event.sceneId!==this.sceneId||typeof event.id!=='string'||!event.id||this.eventIds.has(event.id)||!Array.isArray(event.results))return false;
@@ -205,19 +230,23 @@ export class DiceRuntime {
     const row=document.createElement('article');row.className='roll-entry';row.dataset.eventId=event.id;
     const heading=document.createElement('strong');heading.textContent=[event.authorName,event.characterName].filter(Boolean).join(' · ')||'Бросок';
     const source=document.createElement('span');source.className='roll-source';source.textContent=[event.actionName,event.rollSpecName].filter(Boolean).join(' · ')||'Ручной бросок';
-    const notation=document.createElement('span');notation.className='roll-notation';notation.textContent=`${event.count}d${event.sides}${modifierText(Number(event.modifier)||0)}`;
+    const notation=document.createElement('span');notation.className='roll-notation';notation.textContent=`${diceNotation(event)}${modifierText(Number(event.modifier)||0)}`;
     const result=document.createElement('span');result.className='roll-result';result.textContent=`[${event.results.join(', ')}]${modifierText(Number(event.modifier)||0)} = ${numberText(event.total)}`;
     row.append(heading,source,notation,result);return row;
   }
 
-  #setSending(sending){this.submit.disabled=sending;this.submit.textContent=sending?'Ожидание результата…':`Бросить ${this.count.value||1}d${this.sides}`;}
-  #saveChoice(){try{this.storage.setItem('atlas-dice-choice',JSON.stringify({count:normalizeDiceCount(this.count.value)||1,sides:this.sides}));}catch{}}
-  #lastResult(event){if(event.userId!==this.userId)return;this.last.hidden=false;this.last.querySelector('[data-dice-total]').textContent=numberText(event.total);this.last.querySelector('[data-dice-values]').textContent=`${event.results.slice(0,15).join(' + ')}${event.results.length>15?` и ещё ${event.results.length-15}`:''}${modifierText(Number(event.modifier)||0)}`;}
-  showTotal(event,animated=true){if(!this.sceneId||event.sceneId!==this.sceneId)return;if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();const info=document.createElement('small');info.textContent=`${event.authorName} · ${event.count}d${event.sides}${modifierText(Number(event.modifier)||0)}`;const total=document.createElement('strong');total.textContent=numberText(event.total);this.overlay.append(info,total);this.overlay.classList.remove('dice-total-animate');if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;},animated?1900:1300);}
-  #adjustCount(delta){const current=normalizeDiceCount(this.count.value)??1;this.count.value=String(Math.min(MAX_DICE_COUNT,Math.max(1,current+delta)));this.#validateCount();}
-  #clampCount(){const raw=Number(this.count.value);this.count.value=String(Number.isFinite(raw)?Math.min(MAX_DICE_COUNT,Math.max(1,Math.trunc(raw))):1);this.#validateCount();}
-  #validateCount(){const count=normalizeDiceCount(this.count.value);this.count.setCustomValidity(count===null?`Введите целое число от 1 до ${MAX_DICE_COUNT}`:'');this.#setSending(this.awaitingManual);if(count!==null)this.#saveChoice();this.root.querySelector('[data-dice-minus]').disabled=count===1;this.root.querySelector('[data-dice-plus]').disabled=count===MAX_DICE_COUNT;return count;}
-  #renderSides(){for(const button of this.sidesButtons){const selected=Number(button.dataset.diceSides)===this.sides;button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));}this.#setSending(this.awaitingManual);this.#saveChoice();}
+  #setSending(sending){this.submit.disabled=sending;this.submit.textContent=sending?'Ожидание результата…':`Бросить ${this.groups.map(group=>`${group.count}d${group.sides}`).join(' + ')}`;}
+  #saveChoice(){try{this.storage.setItem('atlas-dice-choice',JSON.stringify({expression:this.groups.map(group=>`${group.count}d${group.sides}`).join(' + ')}));}catch{}}
+  #lastResult(event){if(event.userId!==this.userId)return;this.last.hidden=false;this.last.querySelector('[data-dice-total]').textContent=numberText(event.total);const groups=diceGroups(event),shown=groups.map(group=>`d${group.sides}: ${(group.results||[]).join(' + ')}`).join(' · ');this.last.querySelector('[data-dice-values]').textContent=`${shown}${modifierText(Number(event.modifier)||0)}`;}
+  showTotal(event,animated=true){if(!this.sceneId||event.sceneId!==this.sceneId)return;if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();const info=document.createElement('small');info.textContent=`${event.authorName} · ${diceNotation(event)}${modifierText(Number(event.modifier)||0)}`;const total=document.createElement('strong');total.textContent=numberText(event.total);this.overlay.append(info,total);this.overlay.classList.remove('dice-total-animate');if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;},animated?1900:1300);}
+  #addGroup(){if(this.groups.length>=MAX_DICE_GROUPS)return;this.groups.push({count:1,sides:20});this.activeGroup=this.groups.length-1;this.#syncExpression();this.expression.focus();}
+  #removeGroup(){if(this.groups.length===1)return;this.groups.splice(this.activeGroup,1);this.activeGroup=Math.max(0,this.activeGroup-1);this.#syncExpression();}
+  #adjustCount(delta){const group=this.groups[this.activeGroup],other=this.groups.reduce((sum,item,index)=>sum+(index===this.activeGroup?0:item.count),0);group.count=Math.min(MAX_DICE_COUNT-other,Math.max(1,group.count+delta));this.#syncExpression();}
+  #clampCount(){const count=normalizeDiceCount(this.count.value);if(count!==null)this.groups[this.activeGroup].count=count;this.#syncExpression();}
+  #setActiveCount(){const count=normalizeDiceCount(this.count.value),other=this.groups.reduce((sum,item,index)=>sum+(index===this.activeGroup?0:item.count),0);this.count.setCustomValidity(count===null||count+other>MAX_DICE_COUNT?`Суммарно можно бросить от 1 до ${MAX_DICE_COUNT} кубиков`:'');if(count!==null&&count+other<=MAX_DICE_COUNT){this.groups[this.activeGroup].count=count;this.#syncExpression();}}
+  #readExpression(){const groups=normalizeDiceGroups(this.expression.value);this.expression.setCustomValidity(groups?'':`Введите формулу вроде 1d10 + 2d20, не более ${MAX_DICE_COUNT} кубиков`);if(!groups){this.#setSending(this.awaitingManual);return null;}this.groups=groups;this.activeGroup=Math.min(this.activeGroup,groups.length-1);this.#renderControls();this.#saveChoice();return groups;}
+  #syncExpression(){this.expression.value=this.groups.map(group=>`${group.count}d${group.sides}`).join(' + ');this.expression.setCustomValidity('');this.#renderControls();this.#saveChoice();}
+  #renderControls(){const group=this.groups[this.activeGroup];this.count.value=String(group.count);this.groupLabel.textContent=`Группа ${this.activeGroup+1} из ${this.groups.length}`;for(const button of this.sidesButtons){const selected=Number(button.dataset.diceSides)===group.sides;button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));}const total=this.groups.reduce((sum,item)=>sum+item.count,0);this.root.querySelector('[data-dice-minus]').disabled=group.count===1;this.root.querySelector('[data-dice-plus]').disabled=total===MAX_DICE_COUNT;this.root.querySelector('[data-dice-remove]').disabled=this.groups.length===1;this.root.querySelector('[data-dice-add]').disabled=this.groups.length===MAX_DICE_GROUPS||total===MAX_DICE_COUNT;this.#setSending(this.awaitingManual);}
   #updateCount(){this.journalCount.textContent=this.events.length?`(${this.events.length})`:'';}
   #shouldAnimate(event){return this.animation.value==='all'||this.animation.value==='self'&&event.userId===this.userId;}
   #loadAnimationMode(){try{const value=this.storage.getItem('atlas-dice-animation');return ['all','self','off'].includes(value)?value:'all';}catch{return 'all';}}

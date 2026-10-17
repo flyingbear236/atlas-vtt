@@ -14,11 +14,12 @@ import (
 // untrusted transport might try to supply. Execute rejects every server-owned
 // field instead of silently ignoring it.
 type RollRequest struct {
-	Count               *int   `json:"count,omitempty"`
-	Sides               *int   `json:"sides,omitempty"`
-	CharacterInstanceID string `json:"characterInstanceId,omitempty"`
-	ActionID            string `json:"actionId,omitempty"`
-	RollSpecID          string `json:"rollSpecId,omitempty"`
+	Count               *int        `json:"count,omitempty"`
+	Sides               *int        `json:"sides,omitempty"`
+	Groups              []DiceGroup `json:"groups,omitempty"`
+	CharacterInstanceID string      `json:"characterInstanceId,omitempty"`
+	ActionID            string      `json:"actionId,omitempty"`
+	RollSpecID          string      `json:"rollSpecId,omitempty"`
 
 	ID            string     `json:"id,omitempty"`
 	UserID        string     `json:"userId,omitempty"`
@@ -32,23 +33,30 @@ type RollRequest struct {
 	Timestamp     *time.Time `json:"timestamp,omitempty"`
 }
 
+type DiceGroup struct {
+	Count   int   `json:"count"`
+	Sides   int   `json:"sides"`
+	Results []int `json:"results,omitempty"`
+}
+
 type RollEvent struct {
-	ID                  string    `json:"id"`
-	SceneID             string    `json:"sceneId"`
-	UserID              string    `json:"userId"`
-	AuthorName          string    `json:"authorName"`
-	CharacterInstanceID string    `json:"characterInstanceId,omitempty"`
-	CharacterName       string    `json:"characterName,omitempty"`
-	ActionID            string    `json:"actionId,omitempty"`
-	ActionName          string    `json:"actionName,omitempty"`
-	RollSpecID          string    `json:"rollSpecId,omitempty"`
-	RollSpecName        string    `json:"rollSpecName,omitempty"`
-	Count               int       `json:"count"`
-	Sides               int       `json:"sides"`
-	Results             []int     `json:"results"`
-	Modifier            float64   `json:"modifier"`
-	Total               float64   `json:"total"`
-	Timestamp           time.Time `json:"timestamp"`
+	ID                  string      `json:"id"`
+	SceneID             string      `json:"sceneId"`
+	UserID              string      `json:"userId"`
+	AuthorName          string      `json:"authorName"`
+	CharacterInstanceID string      `json:"characterInstanceId,omitempty"`
+	CharacterName       string      `json:"characterName,omitempty"`
+	ActionID            string      `json:"actionId,omitempty"`
+	ActionName          string      `json:"actionName,omitempty"`
+	RollSpecID          string      `json:"rollSpecId,omitempty"`
+	RollSpecName        string      `json:"rollSpecName,omitempty"`
+	Count               int         `json:"count"`
+	Sides               int         `json:"sides"`
+	Results             []int       `json:"results"`
+	Groups              []DiceGroup `json:"groups,omitempty"`
+	Modifier            float64     `json:"modifier"`
+	Total               float64     `json:"total"`
+	Timestamp           time.Time   `json:"timestamp"`
 }
 
 // DiceRNG returns a uniformly selected value in [0, upperBound). Keeping the
@@ -94,6 +102,7 @@ type resolvedRoll struct {
 	count         int
 	sides         int
 	modifier      float64
+	groups        []DiceGroup
 }
 
 func (service *RollService) Execute(session *Session, sceneID string, member *Member, request RollRequest) (RollEvent, error) {
@@ -122,45 +131,65 @@ func (service *RollService) Execute(session *Session, sceneID string, member *Me
 	if err != nil {
 		return RollEvent{}, err
 	}
-	if err := validateDiceParameters(resolved.count, resolved.sides); err != nil {
+	groups := resolved.groups
+	if len(groups) == 0 {
+		groups = []DiceGroup{{Count: resolved.count, Sides: resolved.sides}}
+	}
+	if err := validateDiceGroups(groups); err != nil {
 		return RollEvent{}, err
 	}
 	if err := validateRollNumber("modifier", resolved.modifier); err != nil {
 		return RollEvent{}, err
 	}
-	if err := validateRollNumber("minimum total", resolved.modifier+float64(resolved.count)); err != nil {
+	minimum, maximum := resolved.modifier, resolved.modifier
+	for _, group := range groups {
+		minimum += float64(group.Count)
+		maximum += float64(group.Count * group.Sides)
+	}
+	if err := validateRollNumber("minimum total", minimum); err != nil {
 		return RollEvent{}, err
 	}
-	if err := validateRollNumber("maximum total", resolved.modifier+float64(resolved.count*resolved.sides)); err != nil {
+	if err := validateRollNumber("maximum total", maximum); err != nil {
 		return RollEvent{}, err
 	}
 
-	results := make([]int, resolved.count)
+	results := make([]int, 0)
 	diceTotal := 0
-	for index := range results {
-		value, rollErr := service.rng.Intn(resolved.sides)
-		if rollErr != nil {
-			return RollEvent{}, fmt.Errorf("dice RNG: %w", rollErr)
+	rolledGroups := make([]DiceGroup, len(groups))
+	for groupIndex, group := range groups {
+		rolledGroups[groupIndex] = DiceGroup{Count: group.Count, Sides: group.Sides, Results: make([]int, group.Count)}
+		for index := range rolledGroups[groupIndex].Results {
+			value, rollErr := service.rng.Intn(group.Sides)
+			if rollErr != nil {
+				return RollEvent{}, fmt.Errorf("dice RNG: %w", rollErr)
+			}
+			if value < 0 || value >= group.Sides {
+				return RollEvent{}, fmt.Errorf("dice RNG returned %d outside [0,%d)", value, group.Sides)
+			}
+			rolledGroups[groupIndex].Results[index] = value + 1
+			results = append(results, value+1)
+			diceTotal += value + 1
 		}
-		if value < 0 || value >= resolved.sides {
-			return RollEvent{}, fmt.Errorf("dice RNG returned %d outside [0,%d)", value, resolved.sides)
-		}
-		results[index] = value + 1
-		diceTotal += value + 1
 	}
 	total := float64(diceTotal) + resolved.modifier
 	if err := validateRollNumber("total", total); err != nil {
 		return RollEvent{}, err
 	}
 
-	return RollEvent{
+	event := RollEvent{
 		ID: service.newEventID(), SceneID: sceneID, UserID: author.ID, AuthorName: author.Name,
 		CharacterInstanceID: resolved.characterID, CharacterName: resolved.characterName,
 		ActionID: resolved.actionID, ActionName: resolved.actionName,
 		RollSpecID: resolved.rollSpecID, RollSpecName: resolved.rollSpecName,
 		Count: resolved.count, Sides: resolved.sides, Results: results,
 		Modifier: resolved.modifier, Total: total, Timestamp: service.now().UTC(),
-	}, nil
+	}
+	if len(rolledGroups) == 1 {
+		event.Count, event.Sides = rolledGroups[0].Count, rolledGroups[0].Sides
+	} else {
+		event.Count, event.Sides, event.Groups = 0, 0, rolledGroups
+	}
+	return event, nil
 }
 
 func rejectServerOwnedRollFields(request RollRequest) error {
@@ -169,16 +198,31 @@ func rejectServerOwnedRollFields(request RollRequest) error {
 		request.Total != nil || request.Timestamp != nil {
 		return errors.New("roll request contains server-owned fields")
 	}
+	for _, group := range request.Groups {
+		if group.Results != nil {
+			return errors.New("roll request contains server-owned group results")
+		}
+	}
 	return nil
 }
 
 func resolveRoll(session *Session, scene *Scene, member *Member, request RollRequest) (resolvedRoll, error) {
 	actionMode := request.ActionID != "" || request.RollSpecID != ""
 	if !actionMode {
-		if request.Count == nil || request.Sides == nil {
+		if len(request.Groups) > 0 {
+			if request.Count != nil || request.Sides != nil {
+				return resolvedRoll{}, errors.New("manual roll must use either groups or count and sides")
+			}
+			if err := validateDiceGroups(request.Groups); err != nil {
+				return resolvedRoll{}, err
+			}
+		} else if request.Count == nil || request.Sides == nil {
 			return resolvedRoll{}, errors.New("manual roll requires count and sides")
 		}
-		resolved := resolvedRoll{count: *request.Count, sides: *request.Sides}
+		resolved := resolvedRoll{groups: append([]DiceGroup(nil), request.Groups...)}
+		if len(request.Groups) == 0 {
+			resolved.count, resolved.sides = *request.Count, *request.Sides
+		}
 		if request.CharacterInstanceID != "" {
 			registry, err := rollRegistry(session)
 			if err != nil {
@@ -197,7 +241,7 @@ func resolveRoll(session *Session, scene *Scene, member *Member, request RollReq
 	if request.CharacterInstanceID == "" || request.ActionID == "" || request.RollSpecID == "" {
 		return resolvedRoll{}, errors.New("action roll requires character, action, and roll spec ids")
 	}
-	if request.Count != nil || request.Sides != nil {
+	if request.Count != nil || request.Sides != nil || len(request.Groups) != 0 {
 		return resolvedRoll{}, errors.New("action roll count and sides are server-owned")
 	}
 	registry, err := rollRegistry(session)
@@ -320,6 +364,23 @@ func validateDiceParameters(count, sides int) error {
 	}
 	if !validDiceSides(sides) {
 		return fmt.Errorf("unsupported die with %d sides", sides)
+	}
+	return nil
+}
+
+func validateDiceGroups(groups []DiceGroup) error {
+	if len(groups) == 0 || len(groups) > 16 {
+		return errors.New("dice roll must contain between 1 and 16 groups")
+	}
+	total := 0
+	for _, group := range groups {
+		if err := validateDiceParameters(group.Count, group.Sides); err != nil {
+			return err
+		}
+		total += group.Count
+		if total > MaxDicePerRoll {
+			return fmt.Errorf("total dice count must not exceed %d", MaxDicePerRoll)
+		}
 	}
 	return nil
 }

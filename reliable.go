@@ -872,6 +872,7 @@ func (s *Server) publishTokenLocator(p *peer, sceneID, kind string, old Token, e
 	default:
 		message["type"] = "tokenLocatorUpsert"
 		message["locator"] = tokenLocator(token)
+		message["avatarAssetId"] = token.Asset
 	}
 	s.send(p, message)
 }
