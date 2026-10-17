@@ -98,6 +98,27 @@ func TestManualRollDeterministic10d10(t *testing.T) {
 	}
 }
 
+func TestManualCompoundRollPreservesGroupsAndTotal(t *testing.T) {
+	fixture := newDiceFixture(t)
+	fixture.rng.values = []int{9, 0, 19}
+	event, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Groups: []DiceGroup{{Count: 1, Sides: 10}, {Count: 2, Sides: 20}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGroups := []DiceGroup{{Count: 1, Sides: 10, Results: []int{10}}, {Count: 2, Sides: 20, Results: []int{1, 20}}}
+	if event.Count != 0 || event.Sides != 0 || !reflect.DeepEqual(event.Groups, wantGroups) || !reflect.DeepEqual(event.Results, []int{10, 1, 20}) || event.Total != 31 {
+		t.Fatalf("unexpected compound roll: %#v", event)
+	}
+	if err := validateRollEvent(event); err != nil {
+		t.Fatalf("compound event is not persistable: %v", err)
+	}
+	fixture.rng.next = 0
+	single, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Groups: []DiceGroup{{Count: 1, Sides: 10}}})
+	if err != nil || single.Count != 1 || single.Sides != 10 || len(single.Groups) != 0 {
+		t.Fatalf("single group did not retain legacy event shape: %#v, %v", single, err)
+	}
+}
+
 func TestManualRollSupportedSidesAndCountBounds(t *testing.T) {
 	for _, sides := range []int{4, 6, 8, 10, 12, 20} {
 		t.Run(string(rune('a'+sides)), func(t *testing.T) {
@@ -122,6 +143,9 @@ func TestManualRollSupportedSidesAndCountBounds(t *testing.T) {
 	fixture := newDiceFixture(t)
 	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Count: rollInt(1), Sides: rollInt(100)}); err == nil {
 		t.Fatal("unsupported sides accepted")
+	}
+	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Groups: []DiceGroup{{Count: 60, Sides: 10}, {Count: 41, Sides: 20}}}); err == nil {
+		t.Fatal("compound roll above the total dice limit accepted")
 	}
 	var fractional RollRequest
 	if err := json.Unmarshal([]byte(`{"count":1.5,"sides":6}`), &fractional); err == nil {
@@ -206,6 +230,11 @@ func TestRollRejectsSpoofedAuthorityAndUsesCanonicalAuthor(t *testing.T) {
 		t.Fatal("client results accepted")
 	}
 	request.Results = nil
+	request.Groups = []DiceGroup{{Count: 1, Sides: 20, Results: []int{20}}}
+	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil {
+		t.Fatal("client grouped results accepted")
+	}
+	request.Groups = nil
 	request.AuthorName = "Mallory"
 	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil {
 		t.Fatal("client author accepted")

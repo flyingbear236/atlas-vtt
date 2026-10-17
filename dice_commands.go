@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -62,18 +63,34 @@ func validateRollEvent(event RollEvent) error {
 	if event.ID == "" || event.SceneID == "" || event.UserID == "" || event.AuthorName == "" || event.Timestamp.IsZero() {
 		return errors.New("roll event is missing server metadata")
 	}
-	if err := validateDiceParameters(event.Count, event.Sides); err != nil {
+	groups := event.Groups
+	if len(groups) == 0 {
+		if err := validateDiceParameters(event.Count, event.Sides); err != nil {
+			return err
+		}
+		groups = []DiceGroup{{Count: event.Count, Sides: event.Sides, Results: event.Results}}
+	} else if event.Count != 0 || event.Sides != 0 {
+		return errors.New("grouped roll contains legacy dice fields")
+	}
+	if err := validateDiceGroups(groups); err != nil {
 		return err
 	}
-	if len(event.Results) != event.Count {
-		return errors.New("roll result count does not match dice count")
-	}
 	diceTotal := 0
-	for _, result := range event.Results {
-		if result < 1 || result > event.Sides {
-			return fmt.Errorf("roll result %d is outside [1,%d]", result, event.Sides)
+	flattened := make([]int, 0, len(event.Results))
+	for _, group := range groups {
+		if len(group.Results) != group.Count {
+			return errors.New("roll group result count does not match dice count")
 		}
-		diceTotal += result
+		for _, result := range group.Results {
+			if result < 1 || result > group.Sides {
+				return fmt.Errorf("roll result %d is outside [1,%d]", result, group.Sides)
+			}
+			flattened = append(flattened, result)
+			diceTotal += result
+		}
+	}
+	if !slices.Equal(flattened, event.Results) {
+		return errors.New("roll results do not match grouped results")
 	}
 	if err := validateRollNumber("modifier", event.Modifier); err != nil {
 		return err
@@ -95,6 +112,10 @@ func validateRollEvent(event RollEvent) error {
 
 func cloneRollEvent(event RollEvent) RollEvent {
 	event.Results = append([]int(nil), event.Results...)
+	event.Groups = append([]DiceGroup(nil), event.Groups...)
+	for index := range event.Groups {
+		event.Groups[index].Results = append([]int(nil), event.Groups[index].Results...)
+	}
 	return event
 }
 

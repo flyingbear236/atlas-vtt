@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -81,7 +82,12 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	archive, err := readPortableImportArchive(zipReader)
+	var archive portableImportArchive
+	if apply {
+		archive, err = readPortableImportArchive(zipReader)
+	} else {
+		archive, err = readPortableImportArchiveWithDiagnostics(zipReader, true)
+	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
@@ -113,10 +119,36 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 			return
 		}
 	}
+	issues, incomplete := diagnosePortableImport(base, archive, opts)
+	if len(issues) != 0 {
+		if apply {
+			fail(w, http.StatusBadRequest, "Импорт содержит ошибки: повторите preview после исправления архива")
+			return
+		}
+		reply(w, portableImportPreview{
+			AvailableFiles: archive.fileNames(), Errors: issues, ChecksIncomplete: incomplete,
+			UnknownFiles: slices.Sorted(maps.Keys(archive.Unknown)), SkippedFiles: archive.Skipped,
+			Warnings: portableImportWarnings(archive, nil),
+			Digest:   hexDigest, OptionsDigest: portableOptionsDigest(opts),
+			CampaignRevision: campaignRev, RegistryRevision: regRev,
+			CharacterRevision: charRev, LibraryRevision: libRev,
+		})
+		return
+	}
 	// Discover conflicts without preparing images. A preview never writes to
 	// Asset Store; synthetic IDs have only ephemeral metadata in the candidate.
 	snapshot, err := buildPortableImportCandidate(r.Context(), base, archive, opts, s.root, cloneAssetRegistry(base.Assets), nil, false)
 	if err != nil {
+		if !apply {
+			reply(w, portableImportPreview{
+				AvailableFiles: archive.fileNames(), Errors: []portableImportIssue{{Message: err.Error()}},
+				ChecksIncomplete: true, Warnings: portableImportWarnings(archive, nil),
+				Digest: hexDigest, OptionsDigest: portableOptionsDigest(opts),
+				CampaignRevision: campaignRev, RegistryRevision: regRev,
+				CharacterRevision: charRev, LibraryRevision: libRev,
+			})
+			return
+		}
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -126,6 +158,7 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	snapshot.Preview.CharacterRevision = charRev
 	snapshot.Preview.LibraryRevision = libRev
 	snapshot.Preview.OptionsDigest = portableOptionsDigest(opts)
+	snapshot.Preview.Warnings = portableImportWarnings(archive, snapshot.Preview.MissingMedia)
 	if !apply {
 		reply(w, snapshot.Preview)
 		return

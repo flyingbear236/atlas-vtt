@@ -610,6 +610,10 @@ func TestOwnedTokenLocatorsUpdateOutsideSpatialRegion(t *testing.T) {
 		if err := json.Unmarshal(event["locator"], &locator); err != nil || !slices.Equal(locator.OwnerIDs, owners) {
 			t.Fatalf("two-owner locator mismatch: %v %#v", err, locator)
 		}
+		var avatarAssetID string
+		if err := json.Unmarshal(event["avatarAssetId"], &avatarAssetID); err != nil || avatarAssetID != asset.ID {
+			t.Fatalf("token list avatar mismatch: %v %q", err, avatarAssetID)
+		}
 	}
 	read(t, gmWS, "ack")
 
