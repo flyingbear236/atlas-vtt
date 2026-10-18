@@ -1,6 +1,40 @@
+# Runtime data
 /data/
-/*.exe
-/test-results/
+
+# Dependencies and build caches
 /.deps/
-/*.zip
 /.gocache/
+/.tmp/
+/.tmp-go-cache/
+/.tmp-go-work/
+/.gotmp/
+
+# Build and test outputs
+/*.exe
+/*.zip
+*.test
+*.out
+*.prof
+*.pprof
+coverage.out
+coverage.*
+/test-results/
+/profile-memory/
+*.log
+
+# Editor and operating system files
+/.vscode/
+/.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json

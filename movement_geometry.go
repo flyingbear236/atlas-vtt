@@ -31,8 +31,8 @@ func (scene *Scene) preparedWalkableComponents(floor Floor) []preparedWalkableCo
 }
 
 // CanOccupyTokenPoint applies the authoritative floor-area restrictions to one
-// token-centre position. Transitions and GM diagnostics reuse this predicate so
-// they cannot drift away from normal Player movement semantics.
+// token-centre position. Transition endpoints deliberately do not use it: a GM
+// may place them independently from render and movement geometry.
 func CanOccupyTokenPoint(scene *Scene, floorID string, point ScenePoint) bool {
 	floor, ok := scene.Floors[floorID]
 	if !ok {
@@ -45,8 +45,7 @@ func CanOccupyTokenPoint(scene *Scene, floorID string, point ScenePoint) bool {
 }
 
 // CanMoveTokenSegment validates the token centre along the complete movement
-// segment. GM-only teleports remain a separate command path; transition
-// endpoints are validated with CanOccupyTokenPoint when they are authored.
+// segment. GM-only teleports and transition destinations remain separate paths.
 func CanMoveTokenSegment(scene *Scene, floorID string, from, to ScenePoint) bool {
 	floor, ok := scene.Floors[floorID]
 	if !ok {

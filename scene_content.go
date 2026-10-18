@@ -105,6 +105,7 @@ type Transition struct {
 	EndpointB     TransitionEndpoint `json:"endpointB"`
 	Direction     string             `json:"direction"`
 	ShowToPlayers bool               `json:"showToPlayers,omitempty"`
+	ShowName      bool               `json:"showName,omitempty"`
 }
 
 func validSceneBounds(bounds SceneBounds) bool {
@@ -628,9 +629,6 @@ func validTransition(scene *Scene, transition Transition) bool {
 	}
 	for _, endpoint := range []TransitionEndpoint{transition.EndpointA, transition.EndpointB} {
 		if scene.Floors[endpoint.FloorID].ID == "" || !validNumber(endpoint.Position.X) || !validNumber(endpoint.Position.Y) || !validNumber(endpoint.Radius) || endpoint.Radius < 8 || endpoint.Radius > maxSceneDimension {
-			return false
-		}
-		if !CanOccupyTokenPoint(scene, endpoint.FloorID, endpoint.Position) {
 			return false
 		}
 	}

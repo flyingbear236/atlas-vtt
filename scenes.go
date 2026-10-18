@@ -674,7 +674,11 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 			}
 			for _, endpoint := range []TransitionEndpoint{transition.EndpointA, transition.EndpointB} {
 				if _, ok := visibleFloors[endpoint.FloorID]; ok {
-					markers = append(markers, map[string]any{"floorId": endpoint.FloorID, "position": endpoint.Position})
+					marker := map[string]any{"floorId": endpoint.FloorID, "position": endpoint.Position}
+					if transition.ShowName {
+						marker["name"] = transition.Name
+					}
+					markers = append(markers, marker)
 				}
 			}
 		}

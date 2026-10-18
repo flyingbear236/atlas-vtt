@@ -447,9 +447,6 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 			if transition.Direction == "" {
 				transition.Direction = "bidirectional"
 			}
-			if strings.TrimSpace(transition.Name) == "" {
-				transition.Name = "Переход"
-			}
 			if !validTransition(scene, transition) {
 				issue = "Некорректный переход"
 				break
@@ -464,9 +461,6 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				break
 			}
 			transition := command.Transition
-			if strings.TrimSpace(transition.Name) == "" {
-				transition.Name = old.Name
-			}
 			if transition.Direction == "" {
 				transition.Direction = old.Direction
 			}

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -852,8 +853,15 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = "Изображение"
 		}
-		initializeFloorRenderBounds(scene, floorID, float64(a.Width), float64(a.Height))
-		scene.Elements[elementID] = SceneElement{ID: elementID, FloorID: floorID, LayerID: layerID, AssetID: a.ID, Name: name, Transform: Transform{Width: float64(a.Width), Height: float64(a.Height)}, Visible: true, Opacity: 1}
+		transform := Transform{Width: float64(a.Width), Height: float64(a.Height)}
+		if sx, sy := r.URL.Query().Get("x"), r.URL.Query().Get("y"); sx != "" && sy != "" {
+			x, xerr := strconv.ParseFloat(sx, 64)
+			y, yerr := strconv.ParseFloat(sy, 64)
+			if xerr == nil && yerr == nil && validNumber(x) && validNumber(y) {
+				transform.X, transform.Y = x-transform.Width/2, y-transform.Height/2
+			}
+		}
+		scene.Elements[elementID] = SceneElement{ID: elementID, FloorID: floorID, LayerID: layerID, AssetID: a.ID, Name: name, Transform: transform, Visible: true, Opacity: 1}
 		scene.Revision++
 		scene.rebuildRuntime()
 	}

@@ -272,15 +272,15 @@ export function transitionHit(state,currentFloorId,x,y,scale,selectedId=''){
       const endpoint=transition[key];if(endpoint.floorId!==currentFloorId)continue;
       const radiusHandle={x:endpoint.position.x+endpoint.radius,y:endpoint.position.y};
       if(transition.id===selectedId&&Math.hypot(x-radiusHandle.x,y-radiusHandle.y)<=handleRadius)return {transition,key,part:'radius'};
-      if(transition.id===selectedId&&Math.hypot(x-endpoint.position.x,y-endpoint.position.y)<=handleRadius)return {transition,key,part:'center'};
-      if(transitionContains(endpoint,x,y))return {transition,key,part:'zone'};
+      if(Math.hypot(x-endpoint.position.x,y-endpoint.position.y)<=handleRadius)return {transition,key,part:'center'};
     }
   }
   return null;
 }
 
-function drawTransitionEndpoint(ctx,endpoint,label,camera,selected,ghost=false){
+function drawTransitionEndpoint(ctx,endpoint,label,camera,selected,ghost=false,name=''){
   const line=2/camera.scale,handle=6/camera.scale;ctx.save();ctx.globalAlpha=ghost ? .55 : 1;ctx.strokeStyle=selected?'#edf8d5':'#9ab48a';ctx.fillStyle=selected?'#c2d89b20':'#86a67512';ctx.lineWidth=line;ctx.setLineDash(selected?[]:[7/camera.scale,6/camera.scale]);ctx.beginPath();ctx.arc(endpoint.position.x,endpoint.position.y,endpoint.radius,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=selected?'#edf8d5':'#9ab48a';ctx.beginPath();ctx.arc(endpoint.position.x,endpoint.position.y,handle,0,Math.PI*2);ctx.fill();ctx.font=`${12/camera.scale}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,endpoint.position.x,endpoint.position.y-handle*2.3);if(selected){ctx.beginPath();ctx.arc(endpoint.position.x+endpoint.radius,endpoint.position.y,handle,0,Math.PI*2);ctx.fill();}ctx.restore();
+  if(name){const fontSize=12/camera.scale,padX=6/camera.scale,padY=3/camera.scale,y=endpoint.position.y+18/camera.scale;ctx.save();ctx.font=`600 ${fontSize}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';const width=ctx.measureText(name).width+padX*2,height=fontSize+padY*2;ctx.fillStyle='#17221fe6';ctx.strokeStyle=selected?'#d7eab9':'#718c7b';ctx.lineWidth=1/camera.scale;ctx.beginPath();ctx.roundRect(endpoint.position.x-width/2,y-height/2,width,height,4/camera.scale);ctx.fill();ctx.stroke();ctx.fillStyle=selected?'#f1f8e8':'#d6e3d9';ctx.fillText(name,endpoint.position.x,y);ctx.restore();}
 }
 
 export function drawTransitionOverlay(ctx,state,currentFloorId,camera,{selectedId='',draft=null,cursor=null}={}){
@@ -288,21 +288,21 @@ export function drawTransitionOverlay(ctx,state,currentFloorId,camera,{selectedI
   for(const transition of transitions){
     const selected=transition.id===selectedId,a=transition.endpointA,b=transition.endpointB;
     if(selected&&(a.floorId===currentFloorId||b.floorId===currentFloorId)){ctx.save();ctx.strokeStyle='#b5c99a';ctx.fillStyle='#d8e8bd';ctx.lineWidth=1.5/camera.scale;ctx.setLineDash([7/camera.scale,6/camera.scale]);ctx.beginPath();ctx.moveTo(a.position.x,a.position.y);ctx.lineTo(b.position.x,b.position.y);ctx.stroke();ctx.setLineDash([]);ctx.font=`${15/camera.scale}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';const mark=transition.direction==='AToB'?'→':transition.direction==='BToA'?'←':'↔';ctx.fillText(mark,(a.position.x+b.position.x)/2,(a.position.y+b.position.y)/2);ctx.restore();}
-    if(a.floorId===currentFloorId)drawTransitionEndpoint(ctx,a,'A',camera,selected);else if(selected)drawTransitionEndpoint(ctx,a,'A',camera,false,true);
-    if(b.floorId===currentFloorId)drawTransitionEndpoint(ctx,b,'B',camera,selected);else if(selected)drawTransitionEndpoint(ctx,b,'B',camera,false,true);
+    const name=transition.showName?(transition.name??''):'';
+    if(a.floorId===currentFloorId)drawTransitionEndpoint(ctx,a,'A',camera,selected,false,name);else if(selected)drawTransitionEndpoint(ctx,a,'A',camera,false,true,name);
+    if(b.floorId===currentFloorId)drawTransitionEndpoint(ctx,b,'B',camera,selected,false,name);else if(selected)drawTransitionEndpoint(ctx,b,'B',camera,false,true,name);
   }
   if(draft){
-    const a=draft.endpointA,b=draft.endpointB,active=draft.phase==='editingA'?'endpointA':draft.phase==='editingB'?'endpointB':'';
-    if(a){if(a.floorId===currentFloorId)drawTransitionEndpoint(ctx,a,'A',camera,true);if((draft.phase==='placingB'||draft.phase==='editingB')&&cursor){ctx.save();ctx.strokeStyle='#d8e8bd';ctx.lineWidth=1.5/camera.scale;ctx.setLineDash([7/camera.scale,6/camera.scale]);ctx.beginPath();ctx.moveTo(a.position.x,a.position.y);ctx.lineTo((b||cursor).position?.x??cursor.x,(b||cursor).position?.y??cursor.y);ctx.stroke();ctx.restore();}}
+    const a=draft.endpointA,b=draft.endpointB;
+    if(a){if(a.floorId===currentFloorId)drawTransitionEndpoint(ctx,a,'A',camera,true);if(draft.phase==='placingB'&&cursor){ctx.save();ctx.strokeStyle='#d8e8bd';ctx.lineWidth=1.5/camera.scale;ctx.setLineDash([7/camera.scale,6/camera.scale]);ctx.beginPath();ctx.moveTo(a.position.x,a.position.y);ctx.lineTo((b||cursor).position?.x??cursor.x,(b||cursor).position?.y??cursor.y);ctx.stroke();ctx.restore();}}
     if(b&&b.floorId===currentFloorId)drawTransitionEndpoint(ctx,b,'B',camera,true);
-    if(active){const endpoint=draft[active];if(endpoint?.floorId===currentFloorId){const offset=endpoint.radius+18/camera.scale,size=7/camera.scale,y=endpoint.position.y-14/camera.scale,x=endpoint.position.x+offset;ctx.save();ctx.fillStyle='#cfe5a9';ctx.fillRect(x-size,y-size,2*size,2*size);ctx.fillStyle='#20301e';ctx.font=`${11/camera.scale}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('✓',x,y);ctx.fillStyle='#e59b91';const cancelX=x+21/camera.scale;ctx.fillRect(cancelX-size,y-size,2*size,2*size);ctx.fillStyle='#35201f';ctx.fillText('×',cancelX,y);ctx.restore();}}
   }
   ctx.restore();
 }
 
 // Player-visible endpoints are minimal projections: no destination, identifier or radius.
 export function drawPlayerTransitionMarkers(ctx,markers,floorId,camera){
-  if(!Array.isArray(markers))return;
+  if(!Array.isArray(markers)||camera.scale<.12)return;
   const size=13/camera.scale;
   ctx.save();
   for(const marker of markers){
@@ -312,6 +312,7 @@ export function drawPlayerTransitionMarkers(ctx,markers,floorId,camera){
     ctx.beginPath();ctx.roundRect(-size,-size,size*2,size*2,3/camera.scale);ctx.fill();ctx.stroke();
     ctx.beginPath();ctx.moveTo(-size*.53,size*.65);ctx.lineTo(-size*.53,-size*.65);ctx.lineTo(size*.48,-size*.65);ctx.lineTo(size*.48,size*.65);ctx.moveTo(-size*.53,size*.65);ctx.lineTo(size*.48,size*.65);ctx.stroke();
     ctx.beginPath();ctx.arc(size*.22,0,1.6/camera.scale,0,Math.PI*2);ctx.fillStyle='#d5e4ba';ctx.fill();ctx.restore();
+    if(marker.name){const fontSize=12/camera.scale,labelX=x+size+7/camera.scale;ctx.save();ctx.font=`600 ${fontSize}px system-ui`;ctx.textAlign='left';ctx.textBaseline='middle';ctx.lineWidth=3/camera.scale;ctx.strokeStyle='#17211f';ctx.strokeText(marker.name,labelX,y);ctx.fillStyle='#e5efd9';ctx.fillText(marker.name,labelX,y);ctx.restore();}
   }
   ctx.restore();
 }

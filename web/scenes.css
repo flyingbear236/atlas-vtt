@@ -541,3 +541,88 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .token-owner-option:hover{background:#293a33}
 .token-owner-option input{width:auto!important;margin:0!important}
 @media(max-width:900px){#viewMode{width:132px}#viewMode button{font-size:10px;padding:4px}.token-catalog-picker{width:min(390px,calc(100vw - 16px))}}
+
+/* Photoshop-inspired scene tree. Controls use the same stroked SVG convention as dice. */
+.sidebar{--scene-sidebar-padding-x:20px;--scene-sidebar-padding-bottom:23px}
+.sidebar-bottom{display:none!important}
+#sidebarMap{display:flex;flex-direction:column;flex:1;min-height:0}
+#sidebarMap .panel-heading{flex-shrink:0}
+#sidebarMap .scene-tree{flex:1;min-height:0;max-height:none;overflow-y:auto;overscroll-behavior:contain;margin:0 -8px 4px;padding:0 8px 4px;scrollbar-width:thin}
+#sidebarMap .scene-layer-actions{flex-shrink:0}
+.scene-tree .tree-floor{margin:0 0 6px;border:0;border-radius:7px;background:#1e2c2b}
+.scene-tree .tree-floor.active{box-shadow:inset 3px 0 var(--accent);background:#253832}
+.scene-tree .tree-row{display:flex;flex-wrap:nowrap;gap:4px;min-height:32px;padding:4px 5px;border-radius:6px}
+.scene-tree .tree-floor-row{min-height:44px;padding-left:5px;background:#293d36}
+.scene-tree .tree-item-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:550;margin:0;cursor:pointer}
+.scene-tree .tree-floor-row .tree-item-name{font-weight:700;color:#e5efdf}
+.scene-tree .tree-symbol{width:17px;display:inline-flex;flex-shrink:0;align-items:center;color:#a9c3b7}
+.scene-tree .tree-action{flex:0 0 24px;display:inline-flex;align-items:center;justify-content:center;padding:3px;width:24px;height:26px;min-width:24px;border:0;border-radius:5px;background:transparent;color:#99b7aa}
+.scene-tree .tree-action svg{display:block;pointer-events:none}
+.scene-tree .tree-action:hover{background:#3c5548;color:#e1efda}
+.scene-tree .tree-action.active{color:#d2e8b7;background:#3b5c42}
+.scene-tree .tree-action.expanded svg{transform:rotate(90deg)}
+.scene-tree .tree-floor-content{padding:4px 5px 9px 10px}
+.scene-tree .tree-layer{margin:0 0 2px 3px}
+.scene-tree .tree-layer-drop-slot{height:4px;margin:0 3px;border:0 solid transparent;border-radius:6px;pointer-events:none;overflow:hidden;transition:height .1s ease,margin .1s ease,border-color .1s ease,background .1s ease}
+.scene-tree.tree-layer-dragging .tree-layer-drop-slot{height:12px;pointer-events:auto}
+.scene-tree .tree-layer-drop-slot.tree-layer-drop-active{height:38px;margin:4px 3px;border-width:2px;border-color:#cce5ad;background:rgba(152,196,126,.14);box-shadow:0 0 0 2px rgba(204,229,173,.08),inset 0 0 14px rgba(152,196,126,.08);display:flex;align-items:center;justify-content:center;color:#e4f2d7;font-size:10px;font-weight:650}
+.scene-tree .tree-layer-drop-slot.tree-layer-drop-active:after{content:'Переместить слой сюда'}
+.scene-tree .tree-layer-row{color:#c4d4c8}
+.scene-tree .tree-layer-tokens .tree-item-name{color:#e5d1a5}
+.scene-tree .tree-element-row{margin-left:27px;color:#b3c9bd}
+.scene-tree .tree-person-row{margin-left:23px;color:#b9cebc}
+.scene-tree .tree-person-row .tree-symbol{color:#dbc38f}
+.scene-tree .tree-element-row.selected{background:#395245}
+.scene-tree .tree-transition-heading{margin-top:8px;border-top:1px solid #354e42}
+.scene-tree .tree-add-floor{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;background:#20302d;border:1px dashed #52665b;color:#b6d0ba;font-size:11px;padding:9px}
+.scene-tree .tree-rename{font-size:11px;flex:1;min-width:0;padding:4px 6px}
+.scene-tree .tree-floor-visibility{position:relative;border:0;margin:0;padding:0;flex:none}
+.scene-tree .tree-floor-visibility>summary{font-size:10px;color:#d1e3c8;border:1px solid #506558;border-radius:5px;list-style:none;padding:4px 7px;white-space:nowrap;cursor:pointer}
+.scene-tree .tree-floor-visibility>summary::-webkit-details-marker{display:none}
+.scene-tree .tree-floor-visibility[open]>summary{background:#354d40}
+.scene-tree .tree-floor-visibility>label{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:0;padding:7px 9px;font-size:11px}
+.scene-tree .tree-floor-visibility>label output{margin-left:auto;color:#d0e8b3}
+.scene-tree .tree-floor-visibility>label input{width:100%;padding:0;accent-color:#cce5ad;margin:1px 0}
+.scene-tree .tree-floor-visibility>label small{font-size:9px;line-height:1.3;color:#a0b7aa}
+.scene-tree .tree-floor-visibility[open]{z-index:5}
+.scene-tree .tree-floor-visibility[open]>label{position:absolute;right:0;top:31px;width:min(256px,75vw);background:#263f34;border:1px solid #6a846f;box-shadow:0 12px 27px #0009}
+.scene-tree .tree-floor-visibility[open]>label+label{top:calc(31px + 90px)}
+.scene-tree .tree-areas{border:1px solid #3e5749;margin:9px 2px 0;border-radius:7px;padding:0;color:#bacfbb;background:#20332c}
+.scene-tree .tree-areas>summary{padding:9px 10px;font-weight:600;font-size:11px}
+.scene-tree .tree-areas-section{border-top:1px solid #3d5448;padding:10px 11px}
+.scene-tree .tree-areas-section strong{display:block;font-size:11px;color:#e1eadc}
+.scene-tree .tree-areas-section p{font-size:10px;color:#90b0a1;margin:4px 0 8px}
+.scene-tree .tree-areas-tools{display:flex;gap:6px;margin:4px 0}
+.scene-tree .tree-areas-tools .tree-action{border:1px solid #455f4e;width:31px;height:29px;flex-basis:31px}
+.scene-tree .tree-check{display:flex;align-items:center;gap:8px;margin:7px 0;font-size:10px}
+.scene-tree .tree-check input{margin:0;accent-color:#cce5ad;width:auto}
+.scene-tree .tree-drop-target{outline:1px solid #cce5ad;background:#3a5443}
+.scene-tree .tree-drop-after{box-shadow:inset 0 -2px #d2ecaf}
+.scene-drag-ghost{position:fixed;top:0;left:0;z-index:10000;max-width:300px;min-width:105px;padding:9px 14px;border-radius:7px;border:1px solid #9ab88a;background:#314e40e8;box-shadow:0 8px 25px #0009;color:#f1f8e8;pointer-events:none;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;opacity:.85}
+.scene-context-menu{position:fixed;z-index:10001;width:232px;max-height:75vh;overflow-y:auto;padding:5px;background:#263d36;border:1px solid #658373;border-radius:8px;box-shadow:0 14px 35px #000a}
+.scene-context-menu button{border:0;background:transparent;color:#e2eddf;width:100%;display:block;text-align:left;border-radius:5px;padding:8px 10px;font-size:11px}
+.scene-context-menu button:hover{background:#3c5648}
+.scene-context-menu hr{border:0;border-top:1px solid #4e6959;margin:5px 2px}
+@media(max-width:560px){.scene-tree .tree-floor-visibility>summary{font-size:0;padding:6px}.scene-tree .tree-floor-visibility>summary:after{content:'◉';font-size:12px}}
+.scene-tree .tree-row > span{margin-right:0}
+.scene-tree .tree-row > .tree-item-name{margin-right:auto}
+.scene-context-menu label{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:5px;font-size:10px;color:#bacfc0;margin:2px 7px 8px}
+.scene-context-menu label output{color:#e2f1d8}
+.scene-context-menu label input[type=range]{width:100%;margin:0;padding:0;accent-color:#cce5ad}
+.scene-tree .tree-item-name,.scene-tree .tree-symbol{user-select:none}
+.scene-tree .tree-element-row,.scene-tree .tree-person-row,.scene-tree .tree-layer-row{cursor:grab}
+.scene-tree .tree-element-row:active,.scene-tree .tree-person-row:active,.scene-tree .tree-layer-row:active{cursor:grabbing}
+#transitionConfirm,#transitionCancel,#transitionSave{display:none!important}
+.scene-label{align-items:stretch;flex-direction:column;gap:7px;min-width:150px}
+.scene-label-heading{display:flex;align-items:center;gap:9px;white-space:nowrap}
+.floor-buttons{display:grid;gap:5px;pointer-events:auto}
+.floor-buttons button{width:100%;padding:6px 10px;border-color:#53675a;background:#26352f;color:#cbd9cc;text-align:left;font-size:10px;font-weight:600}
+.floor-buttons button:hover{background:#3d5245;border-color:#849b7d}
+.floor-buttons button.active{background:#52684f;border-color:#8da47f;color:#f0f6e8;box-shadow:inset 3px 0 #d6e9b8}
+#sidebarMap .scene-layer-actions{display:grid;gap:10px;margin:0 calc(-1 * var(--scene-sidebar-padding-x)) calc(-1 * var(--scene-sidebar-padding-bottom));padding:10px 8px 8px;border:1px solid #334a40;border-right:0;border-bottom:0;border-left:0;border-radius:10px 10px 0 0;background:#1d2b29}
+#sidebarMap .scene-layer-actions .file-button{background:#314b3d;border-color:#647e65;font-weight:650}
+.scene-create-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.scene-create-actions #addLayer,.scene-create-actions #addTransition{width:100%;margin:0;padding:10px 8px;font-size:11px}
+#transitionShowName.active{background:#40563f;border-color:#829976;color:#e7f2d8}
+@media(max-width:1100px){.sidebar{--scene-sidebar-padding-x:14px;--scene-sidebar-padding-bottom:18px}}
+@media(max-width:760px){.sidebar{--scene-sidebar-padding-x:12px;--scene-sidebar-padding-bottom:12px}}

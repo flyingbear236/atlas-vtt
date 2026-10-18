@@ -80,7 +80,7 @@ func TestRemoveLegacyWalkableLayerBeforeValidation(t *testing.T) {
 	}
 }
 
-func TestTransitionUsesCurrentPlayableGeometry(t *testing.T) {
+func TestTransitionIgnoresPlayableGeometry(t *testing.T) {
 	scene := newScene("scene", "Transitions")
 	sourceID := firstFloorID(scene)
 	destinationID := "upper"
@@ -98,19 +98,22 @@ func TestTransitionUsesCurrentPlayableGeometry(t *testing.T) {
 	if !validTransition(scene, transition) {
 		t.Fatal("valid transition was rejected by playable geometry")
 	}
+	transition.Name = ""
+	if !validTransition(scene, transition) {
+		t.Fatal("transition with an empty name was rejected")
+	}
 	scene.Transitions[transition.ID] = transition
 
-	// Later geometry edits may invalidate an existing transition. It must stop
-	// teleporting until the GM moves the endpoint back into playable geometry.
+	// Geometry edits must not invalidate or disable an existing transition.
 	destination.RenderBounds = polygonPointer(rectangleInput(0, 0, 40, 40))
 	destination.GeometryRevision++
 	scene.Floors[destinationID] = destination
-	if validTransition(scene, transition) {
-		t.Fatal("transition outside current render bounds remained valid")
+	if !validTransition(scene, transition) {
+		t.Fatal("transition was coupled to current render bounds")
 	}
 	token := Token{FloorID: sourceID, X: 40, Y: 10}
-	if _, ok := transitionForMove(scene, token, ScenePoint{X: 10, Y: 10}); ok {
-		t.Fatal("movement triggered a transition whose endpoint became invalid")
+	if endpoint, ok := transitionForMove(scene, token, ScenePoint{X: 10, Y: 10}); !ok || endpoint != transition.EndpointB {
+		t.Fatalf("movement did not trigger geometry-independent transition: %+v, %v", endpoint, ok)
 	}
 }
 
@@ -234,6 +237,7 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	scene.Elements["outside"] = SceneElement{ID: "outside", FloorID: lowerID, LayerID: firstLayerID(scene, lowerID), AssetID: "outside-asset", Transform: Transform{X: scene.Bounds.Width + 100, Y: 10, Width: 64, Height: 64}, Visible: true, Opacity: 1}
 	scene.Tokens["hero"] = Token{ID: "hero", Name: "Hero", FloorID: lowerID, LayerID: layerIDByKind(scene, lowerID, layerKindTokens), X: 50, Y: 50, Size: 80, OwnerIDs: []string{playerMember.ID}}
 	scene.Tokens["zz-upper"] = Token{ID: "zz-upper", Name: "Upper", FloorID: upperID, LayerID: layerIDByKind(scene, upperID, layerKindTokens), X: 60, Y: 60, Size: 80, OwnerIDs: []string{playerMember.ID}}
+	scene.Transitions["stairs"] = Transition{ID: "stairs", Name: "Лестница", EndpointA: TransitionEndpoint{FloorID: lowerID, Position: ScenePoint{X: 70, Y: 70}, Radius: 48}, EndpointB: TransitionEndpoint{FloorID: upperID, Position: ScenePoint{X: 80, Y: 80}, Radius: 48}, Direction: "bidirectional", ShowToPlayers: true, ShowName: true}
 	migrateLegacyTokenCharacters(session)
 	rebuildCharacterReferences(session)
 	scene.Revision++
@@ -242,6 +246,10 @@ func TestTwoFloorInvariantWalkableAndFloorAwareDelivery(t *testing.T) {
 	snapshot := server.snapshotSceneAtFloor(session, playerMember, scene.ID, &region, lowerID).(map[string]any)
 	elements := snapshot["elements"].(map[string]SceneElement)
 	layers := snapshot["layers"].(map[string]Layer)
+	markers := snapshot["transitionMarkers"].([]map[string]any)
+	if len(markers) != 1 || markers[0]["name"] != "Лестница" || markers[0]["floorId"] != lowerID {
+		t.Fatalf("player transition marker lost its public name or floor: %#v", markers)
+	}
 	if elements["lower"].ID == "" || elements["upper"].ID != "" || elements["outside"].ID != "" {
 		t.Fatalf("zero-alpha or out-of-bounds floor content leaked: %#v", elements)
 	}
