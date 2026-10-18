@@ -63,14 +63,19 @@ func TestGMPlayerPreviewIsPerPeerFilteredAndMovementBound(t *testing.T) {
 	var previewEnabled bool
 	var previewRevision uint64
 	var locators map[string]TokenLocator
+	var listAvatars map[string]string
 	json.Unmarshal(previewSnapshot["playerPreview"], &previewEnabled)
 	json.Unmarshal(previewSnapshot["previewRevision"], &previewRevision)
 	json.Unmarshal(previewSnapshot["ownedTokens"], &locators)
+	json.Unmarshal(previewSnapshot["tokenListAvatars"], &listAvatars)
 	if !previewEnabled || previewRevision < 2 || len(locators) != 3 || !locators["hidden"].Hidden {
 		t.Fatalf("preview context/locators mismatch: enabled=%v revision=%d locators=%#v", previewEnabled, previewRevision, locators)
 	}
 	if bytes.Contains(previewSnapshot["ownedTokens"], []byte("asset")) || bytes.Contains(previewSnapshot["ownedTokens"], []byte("characterInstanceId")) {
 		t.Fatalf("preview locators disclosed heavy data: %s", previewSnapshot["ownedTokens"])
+	}
+	if len(listAvatars) != len(locators) {
+		t.Fatalf("player preview omitted public token avatars: locators=%d avatars=%#v", len(locators), listAvatars)
 	}
 	if string(previewSnapshot["tokens"]) != "{}" || string(previewSnapshot["assets"]) != "{}" {
 		t.Fatalf("preview eagerly loaded scene content: tokens=%s assets=%s", previewSnapshot["tokens"], previewSnapshot["assets"])

@@ -877,6 +877,26 @@ func (s *Server) publishTokenLocator(p *peer, sceneID, kind string, old Token, e
 	s.send(p, message)
 }
 
+// GM token metadata is delivered independently of the visible map region.
+func (s *Server) publishGMTokenCatalog(p *peer, sceneID, kind string, old Token, existed bool, token Token, revision uint64) {
+	if p == nil || !memberIsGM(p.member) || p.playerPreview {
+		return
+	}
+	msg := map[string]any{"sceneId": sceneID, "revision": revision, "id": token.ID}
+	switch {
+	case kind == "delete":
+		msg["type"] = "tokenCatalogDelete"
+	case kind == "move" && existed:
+		msg["type"] = "tokenCatalogMove"
+		msg["x"] = token.X
+		msg["y"] = token.Y
+	default:
+		msg["type"] = "tokenCatalogUpsert"
+		msg["locator"] = gmTokenLocator(token)
+	}
+	s.send(p, msg)
+}
+
 func tokenHasLocatorForPeer(token Token, peer *peer) bool {
 	if peer == nil || peer.member == nil {
 		return false
@@ -912,6 +932,11 @@ func (s *Server) publish(ss *Session, sceneID, kind string, old Token, existed b
 		}
 		oldLoaded := existed && tokenLoadedForPeer(p, scene, old)
 		newLoaded := kind != "delete" && tokenLoadedForPeer(p, scene, t)
+		// Loaded tokens already carry the same fields in their regular event.
+		// The separate catalog stream is only needed to keep off-region entries fresh.
+		if !newLoaded {
+			s.publishGMTokenCatalog(p, sceneID, kind, presentedOld, existed, presented, scene.Revision)
+		}
 		if !oldLoaded && !newLoaded {
 			continue
 		}

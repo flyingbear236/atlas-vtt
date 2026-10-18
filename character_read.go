@@ -12,15 +12,17 @@ const (
 )
 
 type characterSummary struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	PresetID string `json:"presetId,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	PresetID      string `json:"presetId,omitempty"`
+	AvatarAssetID string `json:"avatarAssetId,omitempty"`
 }
 
 type presetSummary struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind,omitempty"`
+	AvatarAssetID string `json:"avatarAssetId,omitempty"`
 }
 
 type actionSummary struct {
@@ -71,6 +73,15 @@ func (s *Server) readCharacterCatalog(w http.ResponseWriter, request *http.Reque
 	kind := request.URL.Query().Get("kind")
 	response := characterCatalogResponse{Kind: kind, CharacterRevision: session.CharacterRevision, RegistryRevision: session.RegistryRevision}
 	limit, cursor := characterCatalogLimit(request), request.URL.Query().Get("cursor")
+	var registry EffectiveRegistry
+	if kind == "roster" || kind == "presets" {
+		var err error
+		registry, err = MergeDefinitionRegistries(sessionRegistries(session))
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "Registry повреждён")
+			return
+		}
+	}
 	switch kind {
 	case "roster":
 		ids := make([]string, 0, len(session.CharacterInstances))
@@ -83,15 +94,10 @@ func (s *Server) readCharacterCatalog(w http.ResponseWriter, request *http.Reque
 		response.Characters = make([]characterSummary, 0, len(page))
 		for _, characterID := range page {
 			instance := session.CharacterInstances[characterID]
-			response.Characters = append(response.Characters, characterSummary{ID: instance.ID, Name: instance.Name, PresetID: instance.PresetID})
+			response.Characters = append(response.Characters, characterSummary{ID: instance.ID, Name: instance.Name, PresetID: instance.PresetID, AvatarAssetID: effectiveCharacterAvatar(session, instance, registry)})
 		}
 		response.NextCursor = next
 	case "presets":
-		registry, err := MergeDefinitionRegistries(sessionRegistries(session))
-		if err != nil {
-			fail(w, http.StatusInternalServerError, "Registry повреждён")
-			return
-		}
 		ids := make([]string, 0, len(registry.Presets))
 		for presetID := range registry.Presets {
 			ids = append(ids, presetID)
@@ -100,7 +106,7 @@ func (s *Server) readCharacterCatalog(w http.ResponseWriter, request *http.Reque
 		response.Presets = make([]presetSummary, 0, len(page))
 		for _, presetID := range page {
 			preset := registry.Presets[presetID]
-			response.Presets = append(response.Presets, presetSummary{ID: preset.ID, Name: preset.Name, Kind: preset.Kind})
+			response.Presets = append(response.Presets, presetSummary{ID: preset.ID, Name: preset.Name, Kind: preset.Kind, AvatarAssetID: resolvePresetArtwork(&preset, session.Ruleset, session.Assets).AssetID})
 		}
 		response.NextCursor = next
 	case "actions":

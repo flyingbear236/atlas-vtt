@@ -37,6 +37,9 @@ func jsonFloatForQuery(value int) string {
 func TestCharacterCatalogIsGMOnlyPagedSummary(t *testing.T) {
 	fixture := newCharacterCommandFixture(t)
 	fixture.server.mu.Lock()
+	wolf := fixture.session.Ruleset.Registry.Presets["wolf"]
+	wolf.AvatarAssetID = "avatar"
+	fixture.session.Ruleset.Registry.Presets["wolf"] = wolf
 	for index := 0; index < 120; index++ {
 		characterID := fmt.Sprintf("persistent-%03d", index)
 		avatar := "avatar"
@@ -56,11 +59,11 @@ func TestCharacterCatalogIsGMOnlyPagedSummary(t *testing.T) {
 		t.Fatalf("second roster page: count=%d cursor=%q", len(second.Characters), second.NextCursor)
 	}
 	encoded, _ := json.Marshal(first)
-	if bytes.Contains(encoded, []byte("statOverrides")) || bytes.Contains(encoded, []byte("avatarAssetId")) {
-		t.Fatalf("roster leaked sheet or asset data: %s", encoded)
+	if bytes.Contains(encoded, []byte("statOverrides")) || !bytes.Contains(encoded, []byte(`"avatarAssetId":"avatar"`)) {
+		t.Fatalf("roster leaked sheet data or omitted avatar summary: %s", encoded)
 	}
 	_, presets := readCharacterCatalogPage(t, fixture, fixture.gm, "presets", "", 10)
-	if len(presets.Presets) != 1 || presets.Presets[0].ID != "wolf" || len(presets.Characters) != 0 {
+	if len(presets.Presets) != 1 || presets.Presets[0].ID != "wolf" || presets.Presets[0].AvatarAssetID != "avatar" || len(presets.Characters) != 0 {
 		t.Fatalf("unexpected preset summaries: %+v", presets)
 	}
 	_, actions := readCharacterCatalogPage(t, fixture, fixture.gm, "actions", "", 10)

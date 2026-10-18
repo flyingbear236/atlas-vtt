@@ -482,6 +482,27 @@ type TokenLocator struct {
 	Hidden   bool     `json:"hidden"`
 }
 
+// GM locators keep a lightweight character link for sheets outside the viewport.
+// Player locators deliberately exclude character IDs and artwork metadata.
+type GMTokenLocator struct {
+	TokenLocator
+	CharacterInstanceID string  `json:"characterInstanceId,omitempty"`
+	Asset               string  `json:"asset,omitempty"`
+	Opacity             float64 `json:"opacity"`
+}
+
+func gmTokenLocator(token Token) GMTokenLocator {
+	return GMTokenLocator{TokenLocator: tokenLocator(token), CharacterInstanceID: token.CharacterInstanceID, Asset: token.Asset, Opacity: token.Opacity}
+}
+
+func gmTokenCatalog(session *Session, registry EffectiveRegistry, scene *Scene) map[string]GMTokenLocator {
+	catalog := make(map[string]GMTokenLocator, len(scene.Tokens))
+	for id, token := range scene.Tokens {
+		catalog[id] = gmTokenLocator(presentToken(session, registry, token))
+	}
+	return catalog
+}
+
 func tokenLocator(token Token) TokenLocator {
 	return TokenLocator{
 		ID:       token.ID,
@@ -537,6 +558,19 @@ func ownedTokenListAvatars(session *Session, registry EffectiveRegistry, scene *
 		if !tokenHasLocator(token, member) {
 			continue
 		}
+		if assetID := presentToken(session, registry, token).Asset; assetID != "" {
+			avatars[tokenID] = assetID
+		}
+	}
+	return avatars
+}
+
+func tokenListAvatarsForPeer(session *Session, registry EffectiveRegistry, scene *Scene, member *Member, peer *peer) map[string]string {
+	if member == nil || !memberIsGM(member) || peer == nil || !peer.playerPreview {
+		return ownedTokenListAvatars(session, registry, scene, member)
+	}
+	avatars := make(map[string]string, len(scene.Tokens))
+	for tokenID, token := range scene.Tokens {
 		if assetID := presentToken(session, registry, token).Asset; assetID != "" {
 			avatars[tokenID] = assetID
 		}
@@ -664,7 +698,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		"tokens":            tokens,
 		"characterDisplays": characterDisplaysForTokens(ss, registry, tokens),
 		"ownedTokens":       ownedTokenLocators(ss, registry, scene, member),
-		"tokenListAvatars":  ownedTokenListAvatars(ss, registry, scene, member),
+		"tokenListAvatars":  tokenListAvatarsForPeer(ss, registry, scene, member, peer),
 		"transitions":       transitions,
 		"transitionMarkers": markers,
 		"assets":            assets,
@@ -679,6 +713,9 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 	}
 	if peer != nil {
 		snapshot["ownedTokens"] = tokenLocatorsForPeer(ss, registry, scene, peer)
+	}
+	if !playerProjection && region == nil {
+		snapshot["tokenCatalog"] = gmTokenCatalog(ss, registry, scene)
 	}
 	if !playerProjection && region == nil {
 		snapshot["elementCatalog"] = sceneElementCatalog(scene)
@@ -725,8 +762,13 @@ func (s *Server) snapshotSceneForPeer(ss *Session, p *peer) any {
 		if p.playerPreview {
 			value["previewAssetKey"] = p.previewAssetKey
 		}
-		if token, ok := activeTokenForPeer(p, scene, p.activeTokenID); ok && p.region == nil {
-			value["entry"] = &ScenePoint{X: token.X, Y: token.Y}
+		if token, ok := activeTokenForPeer(p, scene, p.activeTokenID); ok {
+			// Only the authorized active character ID is exposed. Other player
+			// locators remain lightweight and do not disclose character links.
+			value["activeCharacterId"] = token.CharacterInstanceID
+			if p.region == nil {
+				value["entry"] = &ScenePoint{X: token.X, Y: token.Y}
+			}
 		}
 	}
 	return snapshot
