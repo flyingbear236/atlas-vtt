@@ -122,7 +122,24 @@ type RulesetSnapshot struct {
 	Files    map[string]RulesetFileManifest `json:"files,omitempty"`
 	Media    map[string]string              `json:"media,omitempty"`
 	// Source-owned v0.4 declarations live apart from the live CharacterInstances.
-	Characters map[string]*RulesetFields `json:"characters,omitempty"`
+	Characters  map[string]*RulesetFields `json:"characters,omitempty"`
+	expressions map[string]*Expression
+}
+
+func (s *RulesetSnapshot) UnmarshalJSON(data []byte) error {
+	type storedSnapshot RulesetSnapshot
+	var stored storedSnapshot
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return err
+	}
+	next := RulesetSnapshot(stored)
+	if !next.ExecutionReady() {
+		if err := next.prepareRulesetExpressions(); err != nil {
+			return err
+		}
+	}
+	*s = next
+	return nil
 }
 
 type CharacterTokenReference struct {
@@ -148,6 +165,7 @@ func emptyCampaignRegistry() CampaignRegistry {
 
 func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 	result := RulesetSnapshot{Metadata: snapshot.Metadata, Registry: emptyRulesetRegistry(), Characters: maps.Clone(snapshot.Characters)}
+	result.expressions = snapshot.expressions // immutable after compilation
 	result.Registry.Effects = maps.Clone(snapshot.Registry.Effects)
 	result.Registry.Objects = maps.Clone(snapshot.Registry.Objects)
 	for id, definition := range snapshot.Registry.Stats {
@@ -280,6 +298,20 @@ func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
 }
 
 func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
+	if !snapshot.ExecutionReady() && snapshot.expressions == nil {
+		return snapshot.prepareRulesetExpressions()
+	}
+	return validateRulesetStructure(snapshot)
+}
+
+func (s *RulesetSnapshot) prepareRulesetExpressions() error {
+	if err := validateRulesetStructure(*s); err != nil {
+		return err
+	}
+	return s.compileExpressions()
+}
+
+func validateRulesetStructure(snapshot RulesetSnapshot) error {
 	if len(snapshot.Media) > maxRulesetMediaEntries {
 		return errors.New("ruleset media entries exceed limit")
 	}

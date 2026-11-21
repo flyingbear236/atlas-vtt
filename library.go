@@ -708,8 +708,14 @@ func applyLibraryOperation(ss *Session, req libraryRequest) error {
 		if fileType == "" {
 			return fmt.Errorf("unknown file %q", req.Path)
 		}
+		recompile := ss.Ruleset.Files[req.Path].V04
 		if err := deleteLibraryFile(ss, req.Path); err != nil {
 			return err
+		}
+		if recompile {
+			if err := ss.Ruleset.prepareRulesetExpressions(); err != nil {
+				return err
+			}
 		}
 	default:
 		return fmt.Errorf("unknown library operation %q", req.Operation)

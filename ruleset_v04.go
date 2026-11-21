@@ -13,7 +13,7 @@ import (
 	"github.com/pelletier/go-toml/v2/unstable"
 )
 
-const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 is loaded for editing and export. Gameplay requires the v0.4 formula engine."
+const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 expressions are compiled. Gameplay requires effect and action execution."
 
 var rulesetV04Kinds = [...]string{"stat", "action", "effect", "object", "character"}
 
@@ -949,7 +949,7 @@ func compileRulesetV04(files map[string]string, names []string, documents map[st
 	for _, name := range names {
 		snapshot.Files[name] = rulesetV04Manifest(files[name], documents[name])
 	}
-	if err := ValidateRulesetSnapshot(snapshot); err != nil {
+	if err := snapshot.prepareRulesetExpressions(); err != nil {
 		return RulesetSnapshot{}, fmt.Errorf("ruleset package: %w", err)
 	}
 	return snapshot, nil
