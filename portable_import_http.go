@@ -159,6 +159,12 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	snapshot.Preview.LibraryRevision = libRev
 	snapshot.Preview.OptionsDigest = portableOptionsDigest(opts)
 	snapshot.Preview.Warnings = portableImportWarnings(archive, snapshot.Preview.MissingMedia)
+	if diagnostic := snapshot.Ruleset.executionDiagnostic(); diagnostic != "" {
+		snapshot.Preview.Warnings = append(snapshot.Preview.Warnings, portableImportIssue{Message: diagnostic})
+	}
+	for _, warning := range snapshot.Ruleset.effectPriorityWarnings() {
+		snapshot.Preview.Warnings = appendImportIssue(snapshot.Preview.Warnings, "", warning)
+	}
 	if !apply {
 		reply(w, snapshot.Preview)
 		return
@@ -259,7 +265,11 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	s.publishRegistryChanged(ss)
 	s.refreshCharacterWatches(ss, nil, true)
 	s.mu.Unlock()
-	reply(w, map[string]any{"registryRevision": ss.RegistryRevision, "characterRevision": ss.CharacterRevision, "importedCharacters": len(next.Preview.AddedCharacters), "replacedFiles": len(next.Preview.ReplacedFiles)})
+	reply(w, map[string]any{
+		"registryRevision": ss.RegistryRevision, "characterRevision": ss.CharacterRevision,
+		"importedCharacters": len(next.Preview.AddedCharacters), "replacedFiles": len(next.Preview.ReplacedFiles),
+		"executionDiagnostic": next.Ruleset.executionDiagnostic(),
+	})
 }
 
 func preparePortableImportMedia(ctx context.Context, root string, f *zip.File) (Asset, error) {

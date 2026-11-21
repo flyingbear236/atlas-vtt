@@ -78,6 +78,9 @@ type LibraryFile struct {
 	StatIDs         []string             `json:"statIds,omitempty"`
 	ActionIDs       []string             `json:"actionIds,omitempty"`
 	PresetIDs       []string             `json:"presetIds,omitempty"`
+	EffectIDs       []string             `json:"effectIds,omitempty"`
+	ObjectIDs       []string             `json:"objectIds,omitempty"`
+	CharacterIDs    []string             `json:"characterIds,omitempty"`
 	SourcePreserved bool                 `json:"sourcePreserved,omitempty"`
 	Name            string               `json:"name,omitempty"`
 	PresetID        string               `json:"presetId,omitempty"`
@@ -103,7 +106,11 @@ type LibraryTree struct {
 func libraryFiles(ss *Session) []LibraryFile {
 	files := make([]LibraryFile, 0, len(ss.Ruleset.Files)+len(ss.CharacterSources)+len(ss.Ruleset.Media)+len(ss.UnknownTOML))
 	for p, m := range ss.Ruleset.Files {
-		files = append(files, LibraryFile{Path: p, Type: "definitions", StatIDs: append([]string(nil), m.Stats...), ActionIDs: append([]string(nil), m.Actions...), PresetIDs: append([]string(nil), m.Presets...), SourcePreserved: m.Source != ""})
+		files = append(files, LibraryFile{
+			Path: p, Type: "definitions", StatIDs: slices.Clone(m.Stats), ActionIDs: slices.Clone(m.Actions),
+			PresetIDs: slices.Clone(m.Presets), EffectIDs: slices.Clone(m.Effects), ObjectIDs: slices.Clone(m.Objects),
+			CharacterIDs: slices.Clone(m.Characters), SourcePreserved: m.Source != "",
+		})
 	}
 	for id, instance := range ss.CharacterInstances {
 		if instance.Persistent {
@@ -502,6 +509,15 @@ func deleteLibraryFile(ss *Session, p string) error {
 		for _, id := range manifest.Presets {
 			delete(ss.Ruleset.Registry.Presets, id)
 		}
+		for _, id := range manifest.Effects {
+			delete(ss.Ruleset.Registry.Effects, id)
+		}
+		for _, id := range manifest.Objects {
+			delete(ss.Ruleset.Registry.Objects, id)
+		}
+		for _, id := range manifest.Characters {
+			delete(ss.Ruleset.Characters, id)
+		}
 		return nil
 	}
 	for id, src := range ss.CharacterSources {
@@ -787,8 +803,12 @@ func (s *Server) importUnknownTOML(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if hasRulesetV04Roots(parsed) {
+		fail(w, http.StatusBadRequest, "Known TOML schema requires the definitions or character import endpoint")
+		return
+	}
 	if fmt.Sprint(parsed["schema_version"]) == "1" {
-		for _, key := range []string{"stats", "actions", "presets", "ruleset", "character"} {
+		for _, key := range []string{"stats", "actions", "presets", "ruleset"} {
 			if _, known := parsed[key]; known {
 				fail(w, http.StatusBadRequest, "Known TOML schema requires the definitions or character import endpoint")
 				return

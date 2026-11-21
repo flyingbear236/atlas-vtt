@@ -75,6 +75,16 @@ func diagnosePortableImport(base *Session, archive portableImportArchive, opts p
 	}
 	docs := make([]documentAtPath, 0, len(names))
 	for _, name := range names {
+		_, v04, err := rulesetV04Source([]byte(files[name]))
+		if err != nil {
+			issues = appendImportIssue(issues, name, err.Error())
+			incomplete = true
+			continue
+		}
+		if v04 {
+			// The common compiler below validates v0.4 declarations together.
+			continue
+		}
 		doc, err := decodeRulesetSourceFile(name, files[name])
 		if err != nil {
 			// A malformed incoming source is already included in archive.Diagnostics.

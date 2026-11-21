@@ -26,9 +26,12 @@ type DefinitionImportChanges struct {
 }
 
 type CampaignImportDiff struct {
-	Stats   DefinitionImportChanges `json:"stats"`
-	Actions DefinitionImportChanges `json:"actions"`
-	Presets DefinitionImportChanges `json:"presets"`
+	Stats      DefinitionImportChanges `json:"stats"`
+	Actions    DefinitionImportChanges `json:"actions"`
+	Presets    DefinitionImportChanges `json:"presets"`
+	Effects    DefinitionImportChanges `json:"effects"`
+	Objects    DefinitionImportChanges `json:"objects"`
+	Characters DefinitionImportChanges `json:"characters"`
 }
 
 type CampaignImportPreview struct {
@@ -110,9 +113,12 @@ type DefinitionReplacementChanges struct {
 }
 
 type RulesetReplacementDiff struct {
-	Stats   DefinitionReplacementChanges `json:"stats"`
-	Actions DefinitionReplacementChanges `json:"actions"`
-	Presets DefinitionReplacementChanges `json:"presets"`
+	Stats      DefinitionReplacementChanges `json:"stats"`
+	Actions    DefinitionReplacementChanges `json:"actions"`
+	Presets    DefinitionReplacementChanges `json:"presets"`
+	Effects    DefinitionReplacementChanges `json:"effects"`
+	Objects    DefinitionReplacementChanges `json:"objects"`
+	Characters DefinitionReplacementChanges `json:"characters"`
 }
 
 type RulesetDefinitionConflictError struct {
@@ -238,7 +244,29 @@ func CompileRulesetFiles(files map[string]string) (RulesetSnapshot, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	documents := make(map[string]rulesetV04Document, len(files))
+	for _, name := range names {
+		if err := validateRulesetFileName(name); err != nil {
+			return RulesetSnapshot{}, err
+		}
+		doc, v04, err := rulesetV04Source([]byte(files[name]))
+		if err != nil {
+			return RulesetSnapshot{}, fmt.Errorf("ruleset file %q: %w", name, err)
+		}
+		if v04 {
+			documents[name] = doc
+		}
+	}
+	if len(documents) == 0 {
+		return compileLegacyRulesetFiles(files, names)
+	}
+	if len(documents) != len(files) {
+		return RulesetSnapshot{}, fmt.Errorf("v0.4 ruleset cannot include legacy definition sources")
+	}
+	return compileRulesetV04(files, names, documents)
+}
 
+func compileLegacyRulesetFiles(files map[string]string, names []string) (RulesetSnapshot, error) {
 	merged := definitionsTOMLDocument{
 		SchemaVersion: DefinitionsSchemaVersion,
 		Stats:         map[string]statTOMLDefinition{},
@@ -309,7 +337,8 @@ func rulesetSnapshotHasContent(snapshot RulesetSnapshot) bool {
 	return snapshot.Metadata != (RulesetMetadata{}) ||
 		len(snapshot.Registry.Stats) != 0 ||
 		len(snapshot.Registry.Actions) != 0 ||
-		len(snapshot.Registry.Presets) != 0
+		len(snapshot.Registry.Presets) != 0 || len(snapshot.Registry.Effects) != 0 ||
+		len(snapshot.Registry.Objects) != 0 || len(snapshot.Characters) != 0
 }
 
 func rulesetFileRegistry(snapshot RulesetSnapshot, manifest RulesetFileManifest) CampaignRegistry {
@@ -433,6 +462,31 @@ func DiffRulesetRegistries(oldRegistry, newRegistry RulesetRegistry) RulesetRepl
 		sort.Strings(changes.Changed)
 		sort.Strings(changes.Removed)
 	}
+	diff.Effects = diffRulesetFields(oldRegistry.Effects, newRegistry.Effects)
+	diff.Objects = diffRulesetFields(oldRegistry.Objects, newRegistry.Objects)
+	return diff
+}
+
+func diffRulesetFields(old, next map[string]*RulesetFields) DefinitionReplacementChanges {
+	diff := DefinitionReplacementChanges{}
+	for _, id := range sortedDefinitionIDs(next) {
+		if value, exists := old[id]; !exists {
+			diff.Added = append(diff.Added, id)
+		} else if !equalRulesetFields(value, next[id]) {
+			diff.Changed = append(diff.Changed, id)
+		}
+	}
+	for _, id := range sortedDefinitionIDs(old) {
+		if _, exists := next[id]; !exists {
+			diff.Removed = append(diff.Removed, id)
+		}
+	}
+	return diff
+}
+
+func diffRulesetSnapshots(old, next RulesetSnapshot) RulesetReplacementDiff {
+	diff := DiffRulesetRegistries(old.Registry, next.Registry)
+	diff.Characters = diffRulesetFields(old.Characters, next.Characters)
 	return diff
 }
 
@@ -479,11 +533,24 @@ func ExportCampaignDefinitionsTOML(registries DefinitionRegistries) ([]byte, err
 	return encodeDefinitionsTOML(registries.Campaign)
 }
 
-// ExportRulesetSnapshotTOML exports the compiled ruleset as one canonical TOML
-// document. Legacy [ruleset] metadata is preserved when it exists.
+// ExportRulesetSnapshotTOML exports one TOML document. A single v0.4 source
+// can be returned verbatim; ZIP export retains every source in a package.
 func ExportRulesetSnapshotTOML(snapshot RulesetSnapshot) ([]byte, error) {
 	if err := ValidateRulesetSnapshot(snapshot); err != nil {
 		return nil, fmt.Errorf("definitions TOML: %w", err)
+	}
+	if !snapshot.ExecutionReady() {
+		if len(snapshot.Files) == 1 {
+			for name := range snapshot.Files {
+				source, err := RenderRulesetFileTOML(snapshot, name)
+				return []byte(source), err
+			}
+		}
+		data := encodeRulesetV04(snapshot.v04Document(nil))
+		if len(data) > MaxDefinitionDocumentBytes {
+			return nil, fmt.Errorf("encoded definitions TOML exceeds %d bytes", MaxDefinitionDocumentBytes)
+		}
+		return data, nil
 	}
 	registry := CampaignRegistry{
 		Stats:   maps.Clone(snapshot.Registry.Stats),
@@ -730,14 +797,14 @@ func tomlStatValue(raw any, expected StatType) (StatValue, error) {
 }
 
 func sortImportDiff(diff *CampaignImportDiff) {
-	for _, changes := range []*DefinitionImportChanges{&diff.Stats, &diff.Actions, &diff.Presets} {
+	for _, changes := range []*DefinitionImportChanges{&diff.Stats, &diff.Actions, &diff.Presets, &diff.Effects, &diff.Objects, &diff.Characters} {
 		sort.Strings(changes.Added)
 		sort.Strings(changes.Updated)
 	}
 }
 
 func equalStatDefinition(left, right StatDefinition) bool {
-	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type || left.Kind != right.Kind || left.Group != right.Group {
+	if left.ID != right.ID || left.Name != right.Name || left.Type != right.Type || left.Kind != right.Kind || left.Group != right.Group || !equalRulesetFields(left.V04, right.V04) {
 		return false
 	}
 	if left.Default == nil || right.Default == nil {
@@ -748,7 +815,7 @@ func equalStatDefinition(left, right StatDefinition) bool {
 
 func equalActionDefinition(left, right ActionDefinition) bool {
 	return left.ID == right.ID && left.Name == right.Name && left.Description == right.Description && left.Group == right.Group &&
-		slices.Equal(left.Tags, right.Tags) && slices.Equal(left.Rolls, right.Rolls)
+		slices.Equal(left.Tags, right.Tags) && slices.Equal(left.Rolls, right.Rolls) && equalRulesetFields(left.V04, right.V04)
 }
 
 func equalPresetDefinition(left, right CharacterPresetDefinition) bool {

@@ -175,7 +175,8 @@ func readPortableImportArchiveWithDiagnostics(reader *zip.Reader, collectDiagnos
 					}
 				}
 			}
-			_, character := root["character"]
+			character := isSavedCharacterTOML(root)
+			v04 := !character && hasRulesetV04Roots(root)
 			known := false
 			for _, field := range []string{"stats", "actions", "presets", "ruleset"} {
 				if _, ok := root[field]; ok {
@@ -194,12 +195,17 @@ func readPortableImportArchiveWithDiagnostics(reader *zip.Reader, collectDiagnos
 					return a, errors.New("too many character TOMLs")
 				}
 				a.Characters[name] = data
-			} else if known {
+			} else if known || v04 {
 				totalRules += f.UncompressedSize64
 				if totalRules > MaxRulesetPackageBytes || len(a.Ruleset) >= MaxRulesetFiles {
 					return a, errors.New("ruleset package exceeds limits")
 				}
-				if _, err = decodeRulesetSourceFile(name, string(data)); err != nil {
+				if v04 {
+					_, err = decodeRulesetV04Source(data, root)
+				} else {
+					_, err = decodeRulesetSourceFile(name, string(data))
+				}
+				if err != nil {
 					if collectDiagnostics {
 						a.Diagnostics = append(a.Diagnostics, portableImportIssue{File: name, Message: err.Error()})
 						continue
@@ -578,7 +584,7 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 		info.MissingMedia = append(info.MissingMedia, name)
 	}
 	slices.Sort(info.MissingMedia)
-	info.RulesetDiff = DiffRulesetRegistries(base.Ruleset.Registry, ruleset.Registry)
+	info.RulesetDiff = diffRulesetSnapshots(base.Ruleset, ruleset)
 	candidate.Ruleset = ruleset
 	candidate.Campaign = campaign
 	candidate.Characters = next.CharacterInstances

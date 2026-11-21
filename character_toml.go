@@ -40,6 +40,16 @@ type characterTOMLBody struct {
 	ResourceCurrent map[string]any `toml:"resource_current,omitempty"`
 }
 
+// A saved ATLAS instance has a flat, versioned [character] record.
+// Ruleset v0.4 declarations have identifiers below that namespace.
+func isSavedCharacterTOML(root map[string]any) bool {
+	character, isTable := root["character"].(map[string]any)
+	_, versioned := root["schema_version"]
+	id, hasID := character["id"]
+	_, idIsTable := id.(map[string]any)
+	return isTable && versioned && hasID && !idIsTable
+}
+
 // CharacterTOMLFileName is stable and safe even for Unicode or path-like IDs.
 // A hash avoids case-insensitive filename collisions on Windows.
 func CharacterTOMLFileName(characterID string) string {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"strings"
 	"unicode"
@@ -180,12 +181,13 @@ type StatKind string
 const StatKindResource StatKind = "resource"
 
 type StatDefinition struct {
-	ID      string     `json:"id"`
-	Name    string     `json:"name"`
-	Type    StatType   `json:"type"`
-	Kind    StatKind   `json:"kind,omitempty"`
-	Group   string     `json:"group,omitempty"`
-	Default *StatValue `json:"default,omitempty"`
+	ID      string         `json:"id"`
+	Name    string         `json:"name"`
+	Type    StatType       `json:"type"`
+	Kind    StatKind       `json:"kind,omitempty"`
+	Group   string         `json:"group,omitempty"`
+	Default *StatValue     `json:"default,omitempty"`
+	V04     *RulesetFields `json:"v04,omitempty"`
 }
 
 func (definition StatDefinition) IsResource() bool { return definition.Kind == StatKindResource }
@@ -200,12 +202,13 @@ type RollSpec struct {
 }
 
 type ActionDefinition struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Description string     `json:"description,omitempty"`
-	Group       string     `json:"group,omitempty"`
-	Tags        []string   `json:"tags,omitempty"`
-	Rolls       []RollSpec `json:"rolls,omitempty"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Group       string         `json:"group,omitempty"`
+	Tags        []string       `json:"tags,omitempty"`
+	Rolls       []RollSpec     `json:"rolls,omitempty"`
+	V04         *RulesetFields `json:"v04,omitempty"`
 }
 
 type CharacterPresetDefinition struct {
@@ -246,6 +249,8 @@ type RulesetRegistry struct {
 	Stats   map[string]StatDefinition            `json:"stats,omitempty"`
 	Actions map[string]ActionDefinition          `json:"actions,omitempty"`
 	Presets map[string]CharacterPresetDefinition `json:"presets,omitempty"`
+	Effects map[string]*RulesetFields            `json:"effects,omitempty"`
+	Objects map[string]*RulesetFields            `json:"objects,omitempty"`
 }
 
 type CampaignRegistry struct {
@@ -263,6 +268,8 @@ type EffectiveRegistry struct {
 	Stats   map[string]StatDefinition            `json:"stats"`
 	Actions map[string]ActionDefinition          `json:"actions"`
 	Presets map[string]CharacterPresetDefinition `json:"presets"`
+	Effects map[string]*RulesetFields            `json:"effects,omitempty"`
+	Objects map[string]*RulesetFields            `json:"objects,omitempty"`
 }
 
 type EffectiveResource struct {
@@ -299,6 +306,8 @@ func MergeDefinitionRegistries(registries DefinitionRegistries) (EffectiveRegist
 		Stats:   make(map[string]StatDefinition, len(registries.Ruleset.Stats)+len(registries.Campaign.Stats)),
 		Actions: make(map[string]ActionDefinition, len(registries.Ruleset.Actions)+len(registries.Campaign.Actions)),
 		Presets: make(map[string]CharacterPresetDefinition, len(registries.Ruleset.Presets)+len(registries.Campaign.Presets)),
+		Effects: maps.Clone(registries.Ruleset.Effects),
+		Objects: maps.Clone(registries.Ruleset.Objects),
 	}
 	for id, definition := range registries.Ruleset.Stats {
 		merged.Stats[id] = cloneStatDefinition(definition)
@@ -720,6 +729,10 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 }
 
 func ValidateStatDefinition(definition StatDefinition) error {
+	if definition.V04 != nil {
+		// The snapshot validates v0.4 declarations with their source and references.
+		return nil
+	}
 	if err := validateID(definition.ID); err != nil {
 		return fmt.Errorf("stat id: %w", err)
 	}
@@ -779,6 +792,9 @@ func ValidateStatValueForDefinition(definition StatDefinition, value StatValue) 
 }
 
 func validateActionDefinition(definition ActionDefinition, stats map[string]StatDefinition) error {
+	if definition.V04 != nil {
+		return nil
+	}
 	if err := validateID(definition.ID); err != nil {
 		return fmt.Errorf("action id: %w", err)
 	}

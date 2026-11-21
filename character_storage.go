@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -109,6 +110,10 @@ type RulesetFileManifest struct {
 	Stats       []string `json:"stats,omitempty"`
 	Actions     []string `json:"actions,omitempty"`
 	Presets     []string `json:"presets,omitempty"`
+	V04         bool     `json:"v04,omitempty"`
+	Effects     []string `json:"effects,omitempty"`
+	Objects     []string `json:"objects,omitempty"`
+	Characters  []string `json:"characters,omitempty"`
 }
 
 type RulesetSnapshot struct {
@@ -116,6 +121,8 @@ type RulesetSnapshot struct {
 	Registry RulesetRegistry                `json:"registry"`
 	Files    map[string]RulesetFileManifest `json:"files,omitempty"`
 	Media    map[string]string              `json:"media,omitempty"`
+	// Source-owned v0.4 declarations live apart from the live CharacterInstances.
+	Characters map[string]*RulesetFields `json:"characters,omitempty"`
 }
 
 type CharacterTokenReference struct {
@@ -140,7 +147,9 @@ func emptyCampaignRegistry() CampaignRegistry {
 }
 
 func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
-	result := RulesetSnapshot{Metadata: snapshot.Metadata, Registry: emptyRulesetRegistry()}
+	result := RulesetSnapshot{Metadata: snapshot.Metadata, Registry: emptyRulesetRegistry(), Characters: maps.Clone(snapshot.Characters)}
+	result.Registry.Effects = maps.Clone(snapshot.Registry.Effects)
+	result.Registry.Objects = maps.Clone(snapshot.Registry.Objects)
 	for id, definition := range snapshot.Registry.Stats {
 		result.Registry.Stats[id] = cloneStatDefinition(definition)
 	}
@@ -156,6 +165,9 @@ func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 			manifest.Stats = append([]string(nil), manifest.Stats...)
 			manifest.Actions = append([]string(nil), manifest.Actions...)
 			manifest.Presets = append([]string(nil), manifest.Presets...)
+			manifest.Effects = append([]string(nil), manifest.Effects...)
+			manifest.Objects = append([]string(nil), manifest.Objects...)
+			manifest.Characters = append([]string(nil), manifest.Characters...)
 			result.Files[name] = manifest
 		}
 	}
@@ -170,12 +182,27 @@ func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 
 func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
 	if snapshot.Files == nil {
+		if len(snapshot.Registry.Effects)+len(snapshot.Registry.Objects)+len(snapshot.Characters) != 0 {
+			return errors.New("v0.4 definitions require TOML source owners")
+		}
+		for _, stat := range snapshot.Registry.Stats {
+			if stat.V04 != nil {
+				return errors.New("v0.4 stats require TOML source owners")
+			}
+		}
+		for _, action := range snapshot.Registry.Actions {
+			if action.V04 != nil {
+				return errors.New("v0.4 actions require TOML source owners")
+			}
+		}
 		return nil
 	}
 	if len(snapshot.Files) > MaxRulesetFiles {
 		return fmt.Errorf("ruleset file manifest exceeds limit %d", MaxRulesetFiles)
 	}
 	statOwners, actionOwners, presetOwners := map[string]string{}, map[string]string{}, map[string]string{}
+	effectOwners, objectOwners, characterOwners := map[string]string{}, map[string]string{}, map[string]string{}
+	v04 := !snapshot.ExecutionReady()
 	checkIDs := func(name, kind string, ids []string, registryHas func(string) bool, owners map[string]string) error {
 		local := map[string]struct{}{}
 		for _, id := range ids {
@@ -206,17 +233,47 @@ func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
 		if manifest.Source != "" && rulesetFileDigest(manifest.Source) != manifest.Digest {
 			return fmt.Errorf("ruleset file %q source does not match digest", name)
 		}
-		if err := checkIDs(name, "stat", manifest.Stats, func(id string) bool { _, ok := snapshot.Registry.Stats[id]; return ok }, statOwners); err != nil {
+		if manifest.V04 != v04 {
+			return fmt.Errorf("ruleset file %q mixes legacy and v0.4 sources", name)
+		}
+		if v04 && (manifest.Source == "" || manifest.HasMetadata || len(manifest.Presets) != 0) ||
+			!v04 && len(manifest.Effects)+len(manifest.Objects)+len(manifest.Characters) != 0 {
+			return fmt.Errorf("ruleset file %q has an invalid manifest for its format", name)
+		}
+		hasStat := func(id string) bool {
+			stat, ok := snapshot.Registry.Stats[id]
+			return ok && (stat.V04 != nil) == v04
+		}
+		hasAction := func(id string) bool {
+			action, ok := snapshot.Registry.Actions[id]
+			return ok && (action.V04 != nil) == v04
+		}
+		if err := checkIDs(name, "stat", manifest.Stats, hasStat, statOwners); err != nil {
 			return err
 		}
-		if err := checkIDs(name, "action", manifest.Actions, func(id string) bool { _, ok := snapshot.Registry.Actions[id]; return ok }, actionOwners); err != nil {
+		if err := checkIDs(name, "action", manifest.Actions, hasAction, actionOwners); err != nil {
 			return err
 		}
 		if err := checkIDs(name, "preset", manifest.Presets, func(id string) bool { _, ok := snapshot.Registry.Presets[id]; return ok }, presetOwners); err != nil {
 			return err
 		}
+		for _, group := range []struct {
+			kind   string
+			ids    []string
+			fields map[string]*RulesetFields
+			owners map[string]string
+		}{
+			{"effect", manifest.Effects, snapshot.Registry.Effects, effectOwners},
+			{"object", manifest.Objects, snapshot.Registry.Objects, objectOwners},
+			{"character", manifest.Characters, snapshot.Characters, characterOwners},
+		} {
+			if err := checkIDs(name, group.kind, group.ids, func(id string) bool { return group.fields[id] != nil }, group.owners); err != nil {
+				return err
+			}
+		}
 	}
-	if len(statOwners) != len(snapshot.Registry.Stats) || len(actionOwners) != len(snapshot.Registry.Actions) || len(presetOwners) != len(snapshot.Registry.Presets) {
+	if len(statOwners) != len(snapshot.Registry.Stats) || len(actionOwners) != len(snapshot.Registry.Actions) || len(presetOwners) != len(snapshot.Registry.Presets) ||
+		len(effectOwners) != len(snapshot.Registry.Effects) || len(objectOwners) != len(snapshot.Registry.Objects) || len(characterOwners) != len(snapshot.Characters) {
 		return errors.New("ruleset file manifest does not own every definition")
 	}
 	return nil
@@ -254,6 +311,9 @@ func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
 	_, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: snapshot.Registry})
 	if err != nil {
 		return fmt.Errorf("invalid ruleset registry: %w", err)
+	}
+	if !snapshot.ExecutionReady() {
+		return validateRulesetV04(snapshot)
 	}
 	return nil
 }

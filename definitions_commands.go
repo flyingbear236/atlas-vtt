@@ -30,10 +30,11 @@ const (
 )
 
 type DefinitionApplyResult struct {
-	Kind             string             `json:"kind"`
-	RegistryRevision uint64             `json:"registryRevision"`
-	Diff             CampaignImportDiff `json:"diff,omitempty"`
-	RulesetMetadata  *RulesetMetadata   `json:"rulesetMetadata,omitempty"`
+	Kind                string             `json:"kind"`
+	RegistryRevision    uint64             `json:"registryRevision"`
+	Diff                CampaignImportDiff `json:"diff,omitempty"`
+	RulesetMetadata     *RulesetMetadata   `json:"rulesetMetadata,omitempty"`
+	ExecutionDiagnostic string             `json:"executionDiagnostic,omitempty"`
 }
 
 type DefinitionOperationReceipt struct {
@@ -44,20 +45,24 @@ type DefinitionOperationReceipt struct {
 }
 
 type definitionRegistryResponse struct {
-	RegistryRevision uint64            `json:"registryRevision"`
-	Ruleset          RulesetSnapshot   `json:"ruleset"`
-	ArtworkWarnings  []ArtworkWarning  `json:"artworkWarnings,omitempty"`
-	Campaign         CampaignRegistry  `json:"campaign"`
-	Effective        EffectiveRegistry `json:"effective"`
+	RegistryRevision    uint64            `json:"registryRevision"`
+	Ruleset             RulesetSnapshot   `json:"ruleset"`
+	ArtworkWarnings     []ArtworkWarning  `json:"artworkWarnings,omitempty"`
+	Campaign            CampaignRegistry  `json:"campaign"`
+	Effective           EffectiveRegistry `json:"effective"`
+	ExecutionDiagnostic string            `json:"executionDiagnostic,omitempty"`
+	RulesetWarnings     []string          `json:"rulesetWarnings,omitempty"`
 }
 
 type definitionPreviewResponse struct {
-	Digest           string                  `json:"digest"`
-	RegistryRevision uint64                  `json:"registryRevision"`
-	Diff             *CampaignImportDiff     `json:"diff,omitempty"`
-	RulesetDiff      *RulesetReplacementDiff `json:"rulesetDiff,omitempty"`
-	Ruleset          *RulesetSnapshot        `json:"ruleset,omitempty"`
-	ArtworkWarnings  []ArtworkWarning        `json:"artworkWarnings,omitempty"`
+	Digest              string                  `json:"digest"`
+	RegistryRevision    uint64                  `json:"registryRevision"`
+	Diff                *CampaignImportDiff     `json:"diff,omitempty"`
+	RulesetDiff         *RulesetReplacementDiff `json:"rulesetDiff,omitempty"`
+	Ruleset             *RulesetSnapshot        `json:"ruleset,omitempty"`
+	ArtworkWarnings     []ArtworkWarning        `json:"artworkWarnings,omitempty"`
+	ExecutionDiagnostic string                  `json:"executionDiagnostic,omitempty"`
+	RulesetWarnings     []string                `json:"rulesetWarnings,omitempty"`
 }
 
 func definitionCommandType(commandType string) bool {
@@ -305,6 +310,9 @@ func applyDefinitionCommand(session *Session, command Command) (RulesetSnapshot,
 	original, err := RulesetSnapshotWithSources(session.Ruleset)
 	if err != nil {
 		return RulesetSnapshot{}, false, err
+	}
+	if !original.ExecutionReady() {
+		return RulesetSnapshot{}, false, errors.New("v0.4 definitions must be edited in their source TOML")
 	}
 	candidate := cloneRulesetSnapshot(original)
 	current, err := MergeDefinitionRegistries(sessionRegistries(session))
@@ -743,11 +751,13 @@ func (s *Server) readDefinitions(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	reply(w, definitionRegistryResponse{
-		RegistryRevision: session.RegistryRevision,
-		Ruleset:          ruleset,
-		ArtworkWarnings:  rulesetArtworkWarnings(session.Ruleset, session.Assets),
-		Campaign:         emptyCampaignRegistry(),
-		Effective:        effective,
+		RegistryRevision:    session.RegistryRevision,
+		Ruleset:             ruleset,
+		ArtworkWarnings:     rulesetArtworkWarnings(session.Ruleset, session.Assets),
+		Campaign:            emptyCampaignRegistry(),
+		Effective:           effective,
+		ExecutionDiagnostic: ruleset.executionDiagnostic(),
+		RulesetWarnings:     ruleset.effectPriorityWarnings(),
 	})
 }
 
@@ -831,13 +841,15 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	copy := cloneRulesetSnapshot(snapshot)
-	diff := DiffRulesetRegistries(session.Ruleset.Registry, snapshot.Registry)
+	diff := diffRulesetSnapshots(session.Ruleset, snapshot)
 	reply(w, definitionPreviewResponse{
-		Digest:           requestDigest,
-		RegistryRevision: session.RegistryRevision,
-		RulesetDiff:      &diff,
-		Ruleset:          &copy,
-		ArtworkWarnings:  rulesetArtworkWarnings(snapshot, session.Assets),
+		Digest:              requestDigest,
+		RegistryRevision:    session.RegistryRevision,
+		RulesetDiff:         &diff,
+		Ruleset:             &copy,
+		ArtworkWarnings:     rulesetArtworkWarnings(snapshot, session.Assets),
+		ExecutionDiagnostic: snapshot.executionDiagnostic(),
+		RulesetWarnings:     snapshot.effectPriorityWarnings(),
 	})
 }
 
@@ -856,63 +868,29 @@ func (s *Server) previewCampaignImport(w http.ResponseWriter, request *http.Requ
 		fail(w, http.StatusForbidden, "Нужны права ведущего")
 		return
 	}
-	preview, err := previewCampaignImportForSession(session, data)
+	candidate, diff, err := prepareDefinitionsImport(session, data)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	reply(w, definitionPreviewResponse{Digest: definitionsDigest(data), RegistryRevision: session.RegistryRevision, Diff: &preview.Diff})
-}
-
-func previewCampaignImportForSession(session *Session, data []byte) (CampaignImportPreview, error) {
-	if _, err := MergeDefinitionRegistries(sessionRegistries(session)); err != nil {
-		return CampaignImportPreview{}, err
-	}
-	_, imported, err := prepareDefinitionsImport(session, data)
-	if err != nil {
-		return CampaignImportPreview{}, err
-	}
-	return CampaignImportPreview{Registry: imported, Diff: addedDefinitionsDiff(imported)}, nil
+	reply(w, definitionPreviewResponse{
+		Digest: definitionsDigest(data), RegistryRevision: session.RegistryRevision, Diff: &diff,
+		ExecutionDiagnostic: candidate.executionDiagnostic(), RulesetWarnings: candidate.effectPriorityWarnings(),
+	})
 }
 
 // Imports are additional TOML sources. A duplicate ID conflicts instead of
 // silently replacing a definition, regardless of its current file owner.
-func prepareDefinitionsImport(session *Session, data []byte) (RulesetSnapshot, CampaignRegistry, error) {
-	current, err := MergeDefinitionRegistries(sessionRegistries(session))
-	if err != nil {
-		return RulesetSnapshot{}, CampaignRegistry{}, err
-	}
-	imported, metadata, err := decodeDefinitionsTOML(data, current)
-	if err != nil {
-		return RulesetSnapshot{}, CampaignRegistry{}, err
-	}
-	if metadata != nil {
-		return RulesetSnapshot{}, CampaignRegistry{}, errors.New("imported definitions must not contain ruleset metadata")
-	}
-	for id := range imported.Stats {
-		if _, exists := current.Stats[id]; exists {
-			return RulesetSnapshot{}, CampaignRegistry{}, fmt.Errorf("duplicate stat %q", id)
-		}
-	}
-	for id := range imported.Actions {
-		if _, exists := current.Actions[id]; exists {
-			return RulesetSnapshot{}, CampaignRegistry{}, fmt.Errorf("duplicate action %q", id)
-		}
-	}
-	for id := range imported.Presets {
-		if _, exists := current.Presets[id]; exists {
-			return RulesetSnapshot{}, CampaignRegistry{}, fmt.Errorf("duplicate preset %q", id)
-		}
-	}
+func prepareDefinitionsImport(session *Session, data []byte) (RulesetSnapshot, CampaignImportDiff, error) {
 	candidate, err := RulesetSnapshotWithSources(session.Ruleset)
 	if err != nil {
-		return RulesetSnapshot{}, CampaignRegistry{}, err
+		return RulesetSnapshot{}, CampaignImportDiff{}, err
 	}
 	files := make(map[string]string, len(candidate.Files)+1)
 	for name := range candidate.Files {
 		files[name], err = RenderRulesetFileTOML(candidate, name)
 		if err != nil {
-			return RulesetSnapshot{}, CampaignRegistry{}, err
+			return RulesetSnapshot{}, CampaignImportDiff{}, err
 		}
 	}
 	name := "imported-definitions.toml"
@@ -925,28 +903,24 @@ func prepareDefinitionsImport(session *Session, data []byte) (RulesetSnapshot, C
 	files[name] = string(data)
 	combined, err := CompileRulesetFiles(files)
 	if err != nil {
-		return RulesetSnapshot{}, CampaignRegistry{}, err
+		return RulesetSnapshot{}, CampaignImportDiff{}, err
+	}
+	added := combined.Files[name]
+	if added.HasMetadata {
+		return RulesetSnapshot{}, CampaignImportDiff{}, errors.New("imported definitions must not contain ruleset metadata")
 	}
 	combined.Media = candidate.Media
-	if err := validateUnifiedDefinitionCandidate(session, combined); err != nil {
-		return RulesetSnapshot{}, CampaignRegistry{}, err
+	if err := validateDefinitionState(session, combined, emptyCampaignRegistry()); err != nil {
+		return RulesetSnapshot{}, CampaignImportDiff{}, err
 	}
-	return combined, imported, nil
-}
-
-func addedDefinitionsDiff(reg CampaignRegistry) CampaignImportDiff {
-	diff := CampaignImportDiff{}
-	for id := range reg.Stats {
-		diff.Stats.Added = append(diff.Stats.Added, id)
-	}
-	for id := range reg.Actions {
-		diff.Actions.Added = append(diff.Actions.Added, id)
-	}
-	for id := range reg.Presets {
-		diff.Presets.Added = append(diff.Presets.Added, id)
-	}
-	sortImportDiff(&diff)
-	return diff
+	return combined, CampaignImportDiff{
+		Stats:      DefinitionImportChanges{Added: added.Stats},
+		Actions:    DefinitionImportChanges{Added: added.Actions},
+		Presets:    DefinitionImportChanges{Added: added.Presets},
+		Effects:    DefinitionImportChanges{Added: added.Effects},
+		Objects:    DefinitionImportChanges{Added: added.Objects},
+		Characters: DefinitionImportChanges{Added: added.Characters},
+	}, nil
 }
 
 func cloneDefinitionOperationReceipts(receipts map[string]DefinitionOperationReceipt) map[string]DefinitionOperationReceipt {
@@ -964,11 +938,11 @@ func cloneDefinitionOperationReceipts(receipts map[string]DefinitionOperationRec
 }
 
 func cloneCampaignImportDiff(diff CampaignImportDiff) CampaignImportDiff {
-	return CampaignImportDiff{
-		Stats:   DefinitionImportChanges{Added: append([]string(nil), diff.Stats.Added...), Updated: append([]string(nil), diff.Stats.Updated...)},
-		Actions: DefinitionImportChanges{Added: append([]string(nil), diff.Actions.Added...), Updated: append([]string(nil), diff.Actions.Updated...)},
-		Presets: DefinitionImportChanges{Added: append([]string(nil), diff.Presets.Added...), Updated: append([]string(nil), diff.Presets.Updated...)},
+	for _, changes := range []*DefinitionImportChanges{&diff.Stats, &diff.Actions, &diff.Presets, &diff.Effects, &diff.Objects, &diff.Characters} {
+		changes.Added = slices.Clone(changes.Added)
+		changes.Updated = slices.Clone(changes.Updated)
 	}
+	return diff
 }
 
 func pruneDefinitionOperationReceipts(receipts map[string]DefinitionOperationReceipt, keep string) {
@@ -1115,7 +1089,7 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 			return
 		}
 		session.Ruleset = candidate
-		result.Diff = addedDefinitionsDiff(imported)
+		result.Diff = imported
 	default:
 		fail(w, http.StatusBadRequest, "Неизвестная операция definitions")
 		return
@@ -1123,6 +1097,7 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	session.RegistryRevision++
 	session.CharacterRevision++
 	result.RegistryRevision = session.RegistryRevision
+	result.ExecutionDiagnostic = session.Ruleset.executionDiagnostic()
 	session.DefinitionOperations[operationKey] = DefinitionOperationReceipt{Kind: kind, Digest: actualDigest, Result: result, Updated: time.Now().Unix()}
 	pruneDefinitionOperationReceipts(session.DefinitionOperations, operationKey)
 	s.dirty = true

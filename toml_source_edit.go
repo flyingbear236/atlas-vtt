@@ -359,7 +359,8 @@ func equalRulesetRegistries(left, right RulesetRegistry) bool {
 			return false
 		}
 	}
-	return true
+	return maps.EqualFunc(left.Effects, right.Effects, equalRulesetFields) &&
+		maps.EqualFunc(left.Objects, right.Objects, equalRulesetFields)
 }
 
 func sameTOMLDocument(left, right definitionsTOMLDocument) bool {
@@ -407,6 +408,16 @@ func RenderRulesetFileTOML(snapshot RulesetSnapshot, name string) (string, error
 		snapshot = upgraded
 	}
 	source := manifest.Source
+	if manifest.V04 {
+		baseline, v04, err := rulesetV04Source([]byte(source))
+		if err != nil {
+			return "", err
+		}
+		if !v04 || !equalRulesetV04Documents(baseline, snapshot.v04Document(&manifest)) {
+			return "", fmt.Errorf("v0.4 definitions in %q must be edited in their source TOML", name)
+		}
+		return source, nil
+	}
 	// Fast path: the original is already the current state.
 	desiredRegistry := rulesetFileRegistry(snapshot, manifest)
 	var meta *RulesetMetadata

@@ -15,6 +15,9 @@ func campaignRegistryEmpty(reg CampaignRegistry) bool {
 // A generated file is an ordinary source owner: it participates in the same
 // manifest, validation and source-preserving export as uploaded TOML files.
 func ensureGeneratedDefinitionFile(snapshot *RulesetSnapshot) (string, error) {
+	if !snapshot.ExecutionReady() {
+		return "", errors.New("v0.4 definitions must be edited in their source TOML")
+	}
 	if snapshot.Files == nil {
 		snapshot.Files = map[string]RulesetFileManifest{}
 	}
@@ -58,6 +61,12 @@ func definitionFileOwner(snapshot RulesetSnapshot, kind, id string) (string, err
 			ids = manifest.Actions
 		case definitionKindPreset:
 			ids = manifest.Presets
+		case "effect":
+			ids = manifest.Effects
+		case "object":
+			ids = manifest.Objects
+		case "character":
+			ids = manifest.Characters
 		default:
 			return "", errors.New("unknown definition kind")
 		}
