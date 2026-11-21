@@ -32,10 +32,10 @@ func TestCharacterMechanicalMaterializationLifecycle(t *testing.T) {
 	preset.Name = "New preset name"
 	preset.Stats["hp"] = IntegerStatValue(12)
 	preset.ActionIDs = append(preset.ActionIDs, "claw")
-	if linked.Name != "Personal name" || EffectiveCharacterState(linked, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).Stats["hp"].Integer() != 12 {
+	if linked.Name != "Personal name" || mustEffectiveCharacter(t, linked, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).Stats["hp"].Integer() != 12 {
 		t.Fatal("name or linked mechanics incorrectly followed the preset")
 	}
-	if len(EffectiveCharacterState(linked, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).ActionIDs) != 3 {
+	if len(mustEffectiveCharacter(t, linked, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).ActionIDs) != 3 {
 		t.Fatal("linked character did not receive preset action")
 	}
 
@@ -50,7 +50,7 @@ func TestCharacterMechanicalMaterializationLifecycle(t *testing.T) {
 	}
 	preset.Stats["dex"] = IntegerStatValue(99)
 	preset.ActionIDs = []string{"bite"}
-	effective := EffectiveCharacterState(edited, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
+	effective := mustEffectiveCharacter(t, edited, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
 	if effective.Stats["dex"].Integer() != 14 || len(effective.ActionIDs) != 3 ||
 		effective.AvatarAssetID != "own-avatar" || effective.Name != "Personal name" {
 		t.Fatalf("materialized character changed with preset: %#v", effective)

@@ -166,6 +166,7 @@ func emptyCampaignRegistry() CampaignRegistry {
 func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 	result := RulesetSnapshot{Metadata: snapshot.Metadata, Registry: emptyRulesetRegistry(), Characters: maps.Clone(snapshot.Characters)}
 	result.expressions = snapshot.expressions // immutable after compilation
+	result.Registry.statPlan = snapshot.Registry.statPlan
 	result.Registry.Effects = maps.Clone(snapshot.Registry.Effects)
 	result.Registry.Objects = maps.Clone(snapshot.Registry.Objects)
 	for id, definition := range snapshot.Registry.Stats {

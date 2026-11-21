@@ -117,8 +117,20 @@ func characterDisplayForConfig(session *Session, registry EffectiveRegistry, cha
 	if instance.Materialized == nil && instance.PresetID != "" {
 		preset = registry.Presets[instance.PresetID]
 	}
+	var computed map[string]EffectiveResource
 	for _, item := range session.ResourceOverlays {
 		if !item.Enabled {
+			continue
+		}
+		if registry.Stats[item.StatID].V04 != nil {
+			if computed == nil {
+				state, err := resourceState(instance, &preset, registry)
+				if err != nil {
+					return CharacterDisplay{}, false
+				}
+				computed = state.Resources
+			}
+			display.Resources[item.StatID] = computed[item.StatID]
 			continue
 		}
 		var initial StatValue

@@ -816,7 +816,11 @@ func (s RulesetSnapshot) validateV04CharacterStats(parts []string, table map[str
 			return fmt.Errorf("stat %q has unknown saved field %q", id, key)
 		}
 		typ := rulesetStatType(raw)
-		if typ == "" || (def.Type != "" && def.Type != typ) {
+		expected := def.Type
+		if expected == "" && s.Registry.statPlan != nil {
+			expected = s.Registry.statPlan.types[id]
+		}
+		if typ == "" || (expected != "" && expected != typ) {
 			return fmt.Errorf("stat %q %s has incompatible type", id, key)
 		}
 		if _, err := tomlStatValue(raw, typ); err != nil {
@@ -888,6 +892,19 @@ func hasRulesetDescendant(sortedIDs []string, id string) bool {
 }
 
 func validateV04Namespace(kind, id string, fields *RulesetFields, ids []string) error {
+	if kind == "stat" {
+		reserved := []string{"base"}
+		if resource, _ := fields.values["resource"].(bool); resource {
+			reserved = append(reserved, "current")
+		}
+		for _, field := range reserved {
+			address := id + "." + field
+			_, child := slices.BinarySearch(ids, address)
+			if _, exists := fields.values[field]; exists || child || hasRulesetDescendant(ids, address) {
+				return fmt.Errorf("stat.%s conflicts with a stat value address", address)
+			}
+		}
+	}
 	if !hasRulesetDescendant(ids, id) {
 		return nil
 	}

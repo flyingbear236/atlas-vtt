@@ -316,7 +316,7 @@ func resolveRollCharacter(session *Session, scene *Scene, member *Member, regist
 			preset = &value
 		}
 	}
-	return EffectiveCharacterState(instance, preset, registry), nil
+	return EffectiveCharacterState(instance, preset, registry)
 }
 
 func characterHasControllableToken(session *Session, scene *Scene, member *Member, characterID string) bool {

@@ -56,7 +56,11 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 		return errors.New("character changed; reload before saving")
 	}
 
-	if len(draft.Definitions) > MaxStatsPerRegistry || len(draft.NewActions) > MaxActionsPerRegistry || len(draft.Stats)+len(draft.ResourceInitial) > MaxStatsPerCharacter || len(draft.ResourceCurrent) > MaxStatsPerCharacter || len(draft.ActionIDs) > MaxActionsPerCharacter {
+	editLimit := MaxStatsPerCharacter
+	if registry.statPlan != nil {
+		editLimit = MaxStatsPerRegistry // the form may echo every ruleset default
+	}
+	if len(draft.Definitions) > MaxStatsPerRegistry || len(draft.NewActions) > MaxActionsPerRegistry || len(draft.Stats)+len(draft.ResourceInitial) > editLimit || len(draft.ResourceCurrent) > editLimit || len(draft.ActionIDs) > MaxActionsPerCharacter {
 		return errors.New("character edit exceeds limits")
 	}
 	campaign := emptyCampaignRegistry()
@@ -120,7 +124,7 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 		if !ok || !definition.IsResource() {
 			return fmt.Errorf("unknown tracked characteristic %q", id)
 		}
-		if _, hasInitial := draft.ResourceInitial[id]; !hasInitial {
+		if _, hasInitial := draft.ResourceInitial[id]; !hasInitial && definition.V04 == nil {
 			return fmt.Errorf("missing initial value for %q", id)
 		}
 		if err := ValidateStatValueForDefinition(definition, value); err != nil {
@@ -148,19 +152,48 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 		}
 		preset = &p
 	}
-	originalState := EffectiveCharacterState(existing, preset, registry)
+	originalState := characterSourceState(existing, preset, registry)
+	stats, initial := cloneStatValues(draft.Stats), cloneStatValues(draft.ResourceInitial)
+	var displayedResources map[string]EffectiveResource
+	if registry.statPlan != nil {
+		displayed, err := EffectiveCharacterState(existing, preset, registry)
+		if err != nil {
+			return err
+		}
+		displayedResources = displayed.Resources
+		for id, def := range registry.Stats {
+			if def.V04 == nil {
+				continue
+			}
+			submitted := stats
+			shown := displayed.Stats[id]
+			_, hasSource := originalState.Stats[id]
+			if def.IsResource() {
+				submitted = initial
+				shown = displayed.Resources[id].Initial
+				_, hasSource = originalState.Resources[id]
+			}
+			if v, ok := submitted[id]; ok {
+				if v == shown && !hasSource {
+					delete(submitted, id)
+				} else if err := validateStatBase(def, v); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	originalInitial := make(map[string]StatValue, len(originalState.Resources))
 	for id, resource := range originalState.Resources {
 		originalInitial[id] = resource.Initial
 	}
 	changedMechanics := len(draft.Definitions) > 0 || len(draft.NewActions) > 0 ||
-		!maps.Equal(originalState.Stats, draft.Stats) ||
-		!maps.Equal(originalInitial, draft.ResourceInitial) ||
+		!maps.Equal(originalState.Stats, stats) ||
+		!maps.Equal(originalInitial, initial) ||
 		!slices.Equal(originalState.ActionIDs, draft.ActionIDs)
 	if changedMechanics {
 		instance.Materialized = &CharacterMechanicalState{
-			Stats:           cloneStatValues(draft.Stats),
-			ResourceInitial: cloneStatValues(draft.ResourceInitial),
+			Stats:           stats,
+			ResourceInitial: initial,
 			ActionIDs:       append([]string(nil), draft.ActionIDs...),
 		}
 		instance.StatOverrides = nil
@@ -168,8 +201,16 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 		instance.RemovedActionIDs = nil
 	}
 	instance.ResourceCurrent = make(map[string]StatValue, len(draft.ResourceCurrent))
+	for id, current := range existing.ResourceCurrent {
+		if registry.Stats[id].V04 != nil {
+			instance.ResourceCurrent[id] = current
+		}
+	}
 	for id, current := range draft.ResourceCurrent {
-		if current != draft.ResourceInitial[id] {
+		if previous, ok := displayedResources[id]; ok && registry.Stats[id].V04 != nil && current == previous.Current {
+			continue
+		}
+		if registry.Stats[id].V04 != nil || current != draft.ResourceInitial[id] {
 			instance.ResourceCurrent[id] = current
 		}
 	}

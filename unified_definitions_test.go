@@ -84,12 +84,12 @@ hp = 10
 	hero := registry.Presets["hero"]
 	character := NewCharacterInstance("character-1", &hero)
 	character.ResourceCurrent = map[string]StatValue{"hp": IntegerStatValue(7)}
-	before := EffectiveCharacterState(character, &hero, registry)
+	before := mustEffectiveCharacter(t, character, &hero, registry)
 	if before.Resources["hp"].Initial != IntegerStatValue(10) || before.Resources["hp"].Current != IntegerStatValue(7) {
 		t.Fatal("linked resource initial/current changed")
 	}
 	materialized := MaterializeCharacter(character, &hero, registry)
-	after := EffectiveCharacterState(materialized, &hero, registry)
+	after := mustEffectiveCharacter(t, materialized, &hero, registry)
 	if after.Resources["hp"] != before.Resources["hp"] {
 		t.Fatal("materialization altered resource")
 	}

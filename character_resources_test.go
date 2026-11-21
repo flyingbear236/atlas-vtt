@@ -68,7 +68,7 @@ func TestEffectiveResourceCurrentInitialAndScalarTypes(t *testing.T) {
 	registry.Presets[preset.ID] = preset
 	instance := NewCharacterInstance("linked", &preset)
 
-	effective := EffectiveCharacterState(instance, &preset, registry)
+	effective := mustEffectiveCharacter(t, instance, &preset, registry)
 	if effective.Resources["hp"].Current.Integer() != 55 || effective.Resources["hp"].Initial.Integer() != 55 {
 		t.Fatalf("missing current did not fall back to initial: %#v", effective.Resources["hp"])
 	}
@@ -99,7 +99,7 @@ func TestEffectiveResourceCurrentInitialAndScalarTypes(t *testing.T) {
 	preset.Stats["hp"] = IntegerStatValue(100)
 	preset.Stats["unchanged"] = IntegerStatValue(9)
 	registry.Presets[preset.ID] = preset
-	effective = EffectiveCharacterState(instance, &preset, registry)
+	effective = mustEffectiveCharacter(t, instance, &preset, registry)
 	if effective.Resources["hp"].Current.Integer() != 44 || effective.Resources["hp"].Initial.Integer() != 100 {
 		t.Fatalf("explicit current did not survive preset initial change: %#v", effective.Resources["hp"])
 	}
@@ -116,7 +116,7 @@ func TestEffectiveResourceCurrentInitialAndScalarTypes(t *testing.T) {
 	}
 	preset.Stats["hp"] = IntegerStatValue(200)
 	registry.Presets[preset.ID] = preset
-	effective = EffectiveCharacterState(materialized, &preset, registry)
+	effective = mustEffectiveCharacter(t, materialized, &preset, registry)
 	if effective.Resources["hp"].Current.Integer() != 44 || effective.Resources["hp"].Initial.Integer() != 100 {
 		t.Fatalf("materialized resource initial followed preset: %#v", effective.Resources["hp"])
 	}
@@ -178,7 +178,7 @@ func TestResourceCommandsMaterializationAndPermissions(t *testing.T) {
 	}
 	instance = fixture.session.CharacterInstances[characterID]
 	preset := registry.Presets[instance.PresetID]
-	effective := EffectiveCharacterState(instance, &preset, registry)
+	effective := mustEffectiveCharacter(t, instance, &preset, registry)
 	fixture.server.mu.Unlock()
 	if instance.Materialized == nil || instance.Materialized.ResourceInitial["hp"].Integer() != 100 || instance.Materialized.Stats["dexterity"].Integer() != 15 || !reflect.DeepEqual(instance.Materialized.ActionIDs, []string{"bite"}) {
 		t.Fatalf("initial update did not materialize complete effective mechanics: %#v", instance.Materialized)

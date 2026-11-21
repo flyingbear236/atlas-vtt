@@ -112,7 +112,7 @@ func TestDefaultsAreOnlyAppliedWhenStatIsExplicitlyAdded(t *testing.T) {
 	definition := StatDefinition{ID: "hp", Name: "HP", Type: StatTypeInteger, Default: &defaultHP}
 	preset := CharacterPresetDefinition{ID: "blank", Name: "Blank"}
 	instance := NewCharacterInstance("one", &preset)
-	effective := EffectiveCharacterState(instance, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
+	effective := mustEffectiveCharacter(t, instance, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
 	if _, exists := effective.Stats["hp"]; exists {
 		t.Fatal("default materialized into effective stats")
 	}
@@ -138,14 +138,14 @@ func TestEffectiveStatsOverridesResetAndPresetChanges(t *testing.T) {
 	preset.Stats["hp"] = IntegerStatValue(20)
 	preset.Stats["armor"] = IntegerStatValue(12)
 	preset.ActionIDs = []string{"dash"}
-	effective := EffectiveCharacterState(instance, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
+	effective := mustEffectiveCharacter(t, instance, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}})
 	if effective.Stats["hp"].Integer() != 4 || len(effective.Stats) != 4 ||
 		effective.Stats["zero"].Integer() != 0 || effective.Stats["ready"].Boolean() ||
 		effective.Stats["note"].String() != "" || !reflect.DeepEqual(effective.ActionIDs, []string{"bite", "dash"}) {
 		t.Fatalf("materialization failed to freeze all fields: %#v", effective)
 	}
 	reset := ResetStatOverride(instance, "hp")
-	if _, ok := EffectiveCharacterState(reset, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).Stats["hp"]; ok {
+	if _, ok := mustEffectiveCharacter(t, reset, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).Stats["hp"]; ok {
 		t.Fatal("reset accidentally restored inheritance")
 	}
 	if instance.Materialized.Stats["hp"].Integer() != 4 {
@@ -159,7 +159,7 @@ func TestEffectiveActionsStableDeduplicatedAndRemoved(t *testing.T) {
 	instance = WithActionAdded(instance, "roar")
 	instance = WithActionRemoved(instance, "dash")
 	instance = WithActionRemoved(instance, "roar")
-	if got := EffectiveCharacterState(instance, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).ActionIDs; !reflect.DeepEqual(got, []string{"bite", "hide"}) {
+	if got := mustEffectiveCharacter(t, instance, &preset, EffectiveRegistry{Stats: map[string]StatDefinition{}}).ActionIDs; !reflect.DeepEqual(got, []string{"bite", "hide"}) {
 		t.Fatalf("actions = %#v", got)
 	}
 	if !reflect.DeepEqual(preset.ActionIDs, []string{"bite", "dash", "bite", "hide"}) {

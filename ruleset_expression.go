@@ -353,6 +353,8 @@ func exprInteger(i int64) exprValue { return exprValue{typ: exprNumber, num: big
 func exprBoolean(b bool) exprValue  { return exprValue{typ: exprBool, flag: b} }
 func exprScalar(raw any) (exprValue, error) {
 	switch v := raw.(type) {
+	case *big.Rat:
+		return checkedRat(v)
 	case StatValue:
 		return exprScalar(v.Interface())
 	case int64:
@@ -370,6 +372,8 @@ func exprScalar(raw any) (exprValue, error) {
 // One frame belongs to one invocation with stable actor/source/target bindings.
 // Results and failures are memoized, including a failed or successful roll.
 type ExpressionFrame struct {
+	// In a character stat pass, actor.stat and stat address the same projection.
+	characterStats     map[string]any
 	Bindings           map[string]any
 	RNG                DiceRNG
 	Locals             map[string]*Expression
@@ -513,6 +517,9 @@ func (f *ExpressionFrame) read(n *exprNode) (exprValue, error) {
 		return f.Evaluate(local)
 	}
 	raw, ok := f.Bindings[n.address]
+	if !ok && f.characterStats != nil {
+		raw, ok = f.characterStats[strings.TrimPrefix(n.address, "actor.")]
+	}
 	if !ok {
 		raw = f.Bindings
 		for _, key := range n.path {

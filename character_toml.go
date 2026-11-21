@@ -193,6 +193,11 @@ func DecodeCharacterTOML(data []byte, media map[string]string, registry Effectiv
 	if err := ValidateCharacterInstance(instance, registry); err != nil {
 		return CharacterInstance{}, err
 	}
+	if registry.statPlan != nil {
+		if _, err := characterStatsForRegistry(instance, registry); err != nil {
+			return CharacterInstance{}, err
+		}
+	}
 	_ = media // logical path is retained even when a matching asset is unavailable
 	return instance, nil
 }
@@ -207,7 +212,11 @@ func decodeCharacterTOMLStats(raw map[string]any, registry EffectiveRegistry, re
 		if def.IsResource() != resource {
 			return nil, fmt.Errorf("stat %q has wrong resource kind", id)
 		}
-		value, err := tomlStatValue(v, def.Type)
+		expected := def.Type
+		if expected == "" && def.V04 != nil {
+			expected = rulesetStatType(v)
+		}
+		value, err := tomlStatValue(v, expected)
 		if err != nil {
 			return nil, fmt.Errorf("stat %q: %w", id, err)
 		}

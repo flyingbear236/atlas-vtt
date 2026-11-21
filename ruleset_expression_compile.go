@@ -15,6 +15,7 @@ type expressionSite struct {
 	writePath          string
 }
 type expressionCompiler struct {
+	stats         statPlan
 	sites         map[string]expressionSite
 	scalars       map[string]exprType
 	aliases       map[string]string
@@ -39,13 +40,24 @@ func (c *expressionCompiler) addFields(kind, owner string, path []string, raw an
 		for child, item := range v {
 			c.addFields(kind, owner, append(path, child), item)
 		}
+		if kind == "stat" && len(v) == 0 {
+			c.stats.constants[address] = struct{}{}
+		}
+		return
 	case []any:
 		for i, item := range v {
 			c.addFields(kind, owner, append(path, strconv.Itoa(i)), item)
 		}
+		if kind == "stat" && len(v) == 0 {
+			c.stats.constants[address] = [0]any{}
+		}
+		return
 	case bool, string, int64:
 		c.scalars[address] = literalType(v)
 		c.recordField(kind, key, literalType(v))
+	}
+	if kind == "stat" && key != "default" {
+		c.stats.constants[address] = statFieldLiteral(raw)
 	}
 }
 
@@ -62,10 +74,12 @@ func (c *expressionCompiler) recordField(kind, key string, typ exprType) {
 
 func (s *RulesetSnapshot) compileExpressions() error {
 	s.expressions = nil
+	s.Registry.statPlan = nil
 	if s.ExecutionReady() {
 		return nil
 	}
 	c := expressionCompiler{
+		stats: statPlan{statProgram: statProgram{constants: map[string]any{}}, types: map[string]StatType{}},
 		sites: map[string]expressionSite{}, scalars: map[string]exprType{}, aliases: map[string]string{},
 		instanceTypes: map[string]map[string]exprType{"object": {}, "character": {}},
 		programs:      map[string]*Expression{}, visiting: map[string]bool{},
@@ -88,6 +102,9 @@ func (s *RulesetSnapshot) compileExpressions() error {
 				c.aliases[owner] = owner + ".default"
 				c.aliases[owner+".base"] = owner + ".default"
 				stat := s.Registry.Stats[id]
+				if stat.Default != nil {
+					c.stats.steps = append(c.stats.steps, statStep{id: id, owner: owner, field: "default"})
+				}
 				if stat.IsResource() {
 					c.aliases[owner+".current"] = owner + ".default"
 				}
@@ -140,18 +157,33 @@ func (s *RulesetSnapshot) compileExpressions() error {
 			}
 		}
 	}
+	slices.SortFunc(c.stats.steps, func(a, b statStep) int { return strings.Compare(a.id, b.id) })
 	for _, key := range sortedDefinitionIDs(c.sites) {
 		if _, err := c.compile(key); err != nil {
 			return err
 		}
 	}
 	s.expressions = c.programs
+	if len(c.stats.steps) != 0 {
+		plan := c.stats
+		plan.compileResources(s.Registry.Stats, c.aliases)
+		s.Registry.statPlan = &plan
+		for _, id := range sortedDefinitionIDs(s.Characters) {
+			if table, ok := s.Characters[id].values["stat"].(map[string]any); ok {
+				if err := s.validateV04CharacterStats(nil, table); err != nil {
+					return fmt.Errorf("character.%s: %w", id, err)
+				}
+			}
+		}
+	}
 	return nil
 }
 
 func (c *expressionCompiler) addressType(address string) (exprType, error) {
 	if alias, ok := c.aliases[address]; ok {
 		address = alias
+	} else if owner, ok := strings.CutSuffix(address, ".default"); ok && c.aliases[owner] == address {
+		return "", fmt.Errorf("use %s.base to read the instance base", owner)
 	}
 	if t, ok := c.scalars[address]; ok {
 		return t, nil
@@ -262,6 +294,21 @@ func (c *expressionCompiler) compile(key string) (*Expression, error) {
 		program.matchTarget = true
 	}
 	c.programs[key] = program
+	if site.kind == "stat" {
+		// DFS has already compiled each referenced formula, including the owner of value.
+		id := strings.TrimPrefix(site.owner, "stat.")
+		c.stats.steps = append(c.stats.steps, statStep{id: id, owner: site.owner, field: site.field, formula: program})
+		if site.field == "default" {
+			switch program.Type {
+			case exprNumber:
+				c.stats.types[id] = StatTypeInteger
+			case exprText:
+				c.stats.types[id] = StatTypeString
+			case exprBool:
+				c.stats.types[id] = StatTypeBoolean
+			}
+		}
+	}
 	return program, nil
 }
 func (c *expressionCompiler) resolve(site expressionSite, p []string, targetType exprType) (exprType, error) {

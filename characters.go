@@ -246,11 +246,12 @@ type CharacterInstance struct {
 }
 
 type RulesetRegistry struct {
-	Stats   map[string]StatDefinition            `json:"stats,omitempty"`
-	Actions map[string]ActionDefinition          `json:"actions,omitempty"`
-	Presets map[string]CharacterPresetDefinition `json:"presets,omitempty"`
-	Effects map[string]*RulesetFields            `json:"effects,omitempty"`
-	Objects map[string]*RulesetFields            `json:"objects,omitempty"`
+	statPlan *statPlan
+	Stats    map[string]StatDefinition            `json:"stats,omitempty"`
+	Actions  map[string]ActionDefinition          `json:"actions,omitempty"`
+	Presets  map[string]CharacterPresetDefinition `json:"presets,omitempty"`
+	Effects  map[string]*RulesetFields            `json:"effects,omitempty"`
+	Objects  map[string]*RulesetFields            `json:"objects,omitempty"`
 }
 
 type CampaignRegistry struct {
@@ -265,11 +266,12 @@ type DefinitionRegistries struct {
 }
 
 type EffectiveRegistry struct {
-	Stats   map[string]StatDefinition            `json:"stats"`
-	Actions map[string]ActionDefinition          `json:"actions"`
-	Presets map[string]CharacterPresetDefinition `json:"presets"`
-	Effects map[string]*RulesetFields            `json:"effects,omitempty"`
-	Objects map[string]*RulesetFields            `json:"objects,omitempty"`
+	statPlan *statPlan
+	Stats    map[string]StatDefinition            `json:"stats"`
+	Actions  map[string]ActionDefinition          `json:"actions"`
+	Presets  map[string]CharacterPresetDefinition `json:"presets"`
+	Effects  map[string]*RulesetFields            `json:"effects,omitempty"`
+	Objects  map[string]*RulesetFields            `json:"objects,omitempty"`
 }
 
 type EffectiveResource struct {
@@ -278,6 +280,7 @@ type EffectiveResource struct {
 }
 
 type EffectiveCharacter struct {
+	StatValues    map[string]any               `json:"statValues,omitempty"` // effective v0.4 expression addresses
 	ID            string                       `json:"id"`
 	PresetID      string                       `json:"presetId,omitempty"`
 	Name          string                       `json:"name"`
@@ -303,13 +306,17 @@ func NewCharacterInstance(instanceID string, preset *CharacterPresetDefinition) 
 
 func MergeDefinitionRegistries(registries DefinitionRegistries) (EffectiveRegistry, error) {
 	merged := EffectiveRegistry{
-		Stats:   make(map[string]StatDefinition, len(registries.Ruleset.Stats)+len(registries.Campaign.Stats)),
-		Actions: make(map[string]ActionDefinition, len(registries.Ruleset.Actions)+len(registries.Campaign.Actions)),
-		Presets: make(map[string]CharacterPresetDefinition, len(registries.Ruleset.Presets)+len(registries.Campaign.Presets)),
-		Effects: maps.Clone(registries.Ruleset.Effects),
-		Objects: maps.Clone(registries.Ruleset.Objects),
+		statPlan: registries.Ruleset.statPlan,
+		Stats:    make(map[string]StatDefinition, len(registries.Ruleset.Stats)+len(registries.Campaign.Stats)),
+		Actions:  make(map[string]ActionDefinition, len(registries.Ruleset.Actions)+len(registries.Campaign.Actions)),
+		Presets:  make(map[string]CharacterPresetDefinition, len(registries.Ruleset.Presets)+len(registries.Campaign.Presets)),
+		Effects:  maps.Clone(registries.Ruleset.Effects),
+		Objects:  maps.Clone(registries.Ruleset.Objects),
 	}
 	for id, definition := range registries.Ruleset.Stats {
+		if definition.Type == "" && merged.statPlan != nil {
+			definition.Type = merged.statPlan.types[id]
+		}
 		merged.Stats[id] = cloneStatDefinition(definition)
 	}
 	for id, definition := range registries.Ruleset.Actions {
@@ -462,7 +469,7 @@ func migrateLegacyCharacterMechanics(session *Session) (bool, error) {
 	return changed, nil
 }
 
-func EffectiveCharacterState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) EffectiveCharacter {
+func characterSourceState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) EffectiveCharacter {
 	effective := EffectiveCharacter{
 		ID: instance.ID, PresetID: instance.PresetID, Name: instance.Name,
 		Stats: map[string]StatValue{}, Resources: map[string]EffectiveResource{}, Persistent: instance.Persistent,
@@ -660,7 +667,11 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 	if len(instance.StatOverrides) != 0 || len(instance.AddedActionIDs) != 0 || len(instance.RemovedActionIDs) != 0 {
 		return errors.New("legacy mechanical overrides require migration")
 	}
-	if len(instance.ResourceCurrent) > MaxStatsPerCharacter {
+	currentLimit := MaxStatsPerCharacter
+	if registry.statPlan != nil {
+		currentLimit = MaxStatsPerRegistry
+	}
+	if len(instance.ResourceCurrent) > currentLimit {
 		return errors.New("character resource current values exceed domain limits")
 	}
 	for id, value := range instance.ResourceCurrent {
@@ -673,6 +684,9 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 		}
 		if err := ValidateStatValueForDefinition(definition, value); err != nil {
 			return err
+		}
+		if definition.V04 != nil {
+			continue // The ruleset supplies the initial value.
 		}
 		if instance.Materialized != nil {
 			if _, exists := instance.Materialized.ResourceInitial[id]; !exists {
@@ -699,7 +713,7 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 		if definition.IsResource() {
 			return fmt.Errorf("resource stat %q must be stored as resource initial", id)
 		}
-		if err := ValidateStatValueForDefinition(definition, value); err != nil {
+		if err := validateStatBase(definition, value); err != nil {
 			return err
 		}
 	}
@@ -711,7 +725,7 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 		if !definition.IsResource() {
 			return fmt.Errorf("stat %q is not a resource", id)
 		}
-		if err := ValidateStatValueForDefinition(definition, value); err != nil {
+		if err := validateStatBase(definition, value); err != nil {
 			return err
 		}
 	}
@@ -786,9 +800,19 @@ func ValidateStatValueForDefinition(definition StatDefinition, value StatValue) 
 		return fmt.Errorf("stat %q: %w", definition.ID, err)
 	}
 	if value.Type() != definition.Type {
+		if definition.Type == "" && definition.V04 != nil && definition.Default == nil && value.Type() != StatTypeNumber {
+			return nil // A dynamically typed formula is checked against its evaluated base.
+		}
 		return fmt.Errorf("stat %q requires %q, got %q", definition.ID, definition.Type, value.Type())
 	}
 	return nil
+}
+
+func validateStatBase(definition StatDefinition, value StatValue) error {
+	if definition.V04 != nil && definition.Default == nil {
+		return fmt.Errorf("computed stat %q cannot override base", definition.ID)
+	}
+	return ValidateStatValueForDefinition(definition, value)
 }
 
 func validateActionDefinition(definition ActionDefinition, stats map[string]StatDefinition) error {
@@ -872,7 +896,7 @@ func validatePresetDefinition(definition CharacterPresetDefinition, registry Eff
 		if !ok {
 			return fmt.Errorf("preset %q references unknown stat %q", definition.ID, id)
 		}
-		if err := ValidateStatValueForDefinition(stat, value); err != nil {
+		if err := validateStatBase(stat, value); err != nil {
 			return fmt.Errorf("preset %q: %w", definition.ID, err)
 		}
 	}

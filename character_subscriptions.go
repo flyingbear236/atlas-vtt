@@ -35,7 +35,10 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 		copy := clonePresetDefinition(definition)
 		preset = &copy
 	}
-	effective := EffectiveCharacterState(instance, preset, registry)
+	effective, err := EffectiveCharacterState(instance, preset, registry)
+	if err != nil {
+		return characterSnapshot{}, err
+	}
 	effective.Artwork = resolveCharacterArtwork(session, instance, preset, session.Ruleset)
 	effective.AvatarAssetID = effective.Artwork.AssetID
 	effective.HasAvatar = effective.Artwork.AssetID != ""

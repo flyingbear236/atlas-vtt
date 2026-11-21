@@ -418,6 +418,12 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 					issue = validationErr.Error()
 					break
 				}
+				if registry.statPlan != nil {
+					if _, err := characterStatsForRegistry(instance, registry); err != nil {
+						issue = err.Error()
+						break
+					}
+				}
 				ss.CharacterInstances[createdCharacterID] = instance
 				t.CharacterInstanceID = createdCharacterID
 				characterStateChanged = true
@@ -451,6 +457,11 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 					break
 				}
 				if instance.Name != updatedCharacterBefore.Name {
+					instance, _, registryErr = preserveResourceCurrents(updatedCharacterBefore, registry, instance, registry, "")
+					if registryErr != nil {
+						issue = registryErr.Error()
+						break
+					}
 					ss.CharacterInstances[instance.ID] = instance
 					characterStateChanged = true
 				}
@@ -610,7 +621,11 @@ func (s *Server) command(ss *Session, p *peer, c Command) {
 	if issue == "" && changed {
 		s.publish(ss, sceneID, kind, old, exists, t)
 		if updatedCharacterID != "" {
-			s.publishCharacterTokens(ss, map[string]bool{updatedCharacterID: false})
+			characters := map[string]bool{updatedCharacterID: false}
+			s.publishCharacterTokens(ss, characters)
+			if ss.Ruleset.Registry.statPlan != nil {
+				s.publishCharacterDisplayChanged(ss, characters)
+			}
 		}
 		if characterWatchChanged || characterStateChanged {
 			s.refreshCharacterWatches(ss, nil, true)

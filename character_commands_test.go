@@ -219,8 +219,8 @@ func TestCharacterCommandsScenariosAThroughF(t *testing.T) {
 	first := fixture.session.CharacterInstances[wolves[0]]
 	second := fixture.session.CharacterInstances[wolves[1]]
 	red := fixture.session.CharacterInstances[redID]
-	firstEffective := effectiveCharacterForTest(first, registry)
-	secondEffective := effectiveCharacterForTest(second, registry)
+	firstEffective := effectiveCharacterForTest(t, first, registry)
+	secondEffective := effectiveCharacterForTest(t, second, registry)
 	if first.Materialized == nil || first.Materialized.Stats["hp"].Integer() != 4 || second.Materialized != nil || firstEffective.Stats["dexterity"].Integer() != 99 || secondEffective.Stats["dexterity"].Integer() != 16 {
 		fixture.server.mu.Unlock()
 		t.Fatal("wolf instances do not preserve independent overrides and preset inheritance")
@@ -446,10 +446,10 @@ func TestCharacterGCIndexRelinkSceneDeleteAndSaveRollback(t *testing.T) {
 func statValuePointer(value StatValue) *StatValue { return &value }
 func stringPointer(value string) *string          { return &value }
 
-func effectiveCharacterForTest(instance CharacterInstance, registry EffectiveRegistry) EffectiveCharacter {
+func effectiveCharacterForTest(t *testing.T, instance CharacterInstance, registry EffectiveRegistry) EffectiveCharacter {
 	if instance.PresetID == "" {
-		return EffectiveCharacterState(instance, nil, registry)
+		return mustEffectiveCharacter(t, instance, nil, registry)
 	}
 	preset := registry.Presets[instance.PresetID]
-	return EffectiveCharacterState(instance, &preset, registry)
+	return mustEffectiveCharacter(t, instance, &preset, registry)
 }

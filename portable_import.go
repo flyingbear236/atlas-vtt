@@ -529,6 +529,10 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	// prepareDefinitionCharacters enforces references for ALL existing characters,
 	// including ones not supplied by the ZIP. Never silently materialize an old
 	// linked character just because its preset vanished.
+	previousRegistry, e := MergeDefinitionRegistries(sessionRegistries(base))
+	if e != nil {
+		return candidate, e
+	}
 	for id, inst := range base.CharacterInstances {
 		if _, imported := candidate.Sources[id]; imported {
 			continue
@@ -536,6 +540,15 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 		if inst.PresetID != "" && inst.Materialized == nil {
 			if _, ok := registry.Presets[inst.PresetID]; !ok {
 				return candidate, fmt.Errorf("existing linked character %q would lose preset %q", id, inst.PresetID)
+			}
+		}
+		if previousRegistry.statPlan != registry.statPlan {
+			projected, changed, err := preserveResourceCurrents(inst, previousRegistry, inst, registry, "")
+			if err != nil {
+				return candidate, fmt.Errorf("character %q: %w", id, err)
+			}
+			if changed {
+				next.CharacterInstances[id] = projected
 			}
 		}
 	}

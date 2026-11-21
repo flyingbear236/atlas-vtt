@@ -62,7 +62,7 @@ func TestPortableCharacterTOMLInheritanceAndPlaceholder(t *testing.T) {
 	}
 	preset := registry.Presets["goblin"]
 	preset.Stats["strength"] = IntegerStatValue(10)
-	effective := EffectiveCharacterState(got, &preset, registry)
+	effective := mustEffectiveCharacter(t, got, &preset, registry)
 	if effective.Stats["strength"].Integer() != 10 || effective.Resources["hp"].Current.Integer() != 4 {
 		t.Fatal("inherited mechanics not preserved")
 	}

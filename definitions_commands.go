@@ -79,7 +79,7 @@ func sessionRegistries(session *Session) DefinitionRegistries {
 }
 
 // prepareDefinitionCharacters validates a prospective registry without changing
-// committed session state. Only characters whose preset disappears are copied.
+// committed session state.
 func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, campaign CampaignRegistry) (map[string]CharacterInstance, error) {
 	if err := ValidateRulesetSnapshot(ruleset); err != nil {
 		return nil, err
@@ -123,6 +123,16 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 				if instance.Materialized == nil {
 					instance = MaterializeCharacter(instance, &oldPreset, current)
 				}
+				updates[id] = instance
+			}
+		}
+		if current.statPlan != next.statPlan {
+			projected, changed, err := preserveResourceCurrents(original, current, instance, next, "")
+			if err != nil {
+				return nil, fmt.Errorf("character instance %q: %w", id, err)
+			}
+			if changed {
+				instance = projected
 				updates[id] = instance
 			}
 		}
