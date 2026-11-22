@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,12 +19,13 @@ import (
 // One outstanding reliable command per browser stream. Business receipts are
 // persisted before ACK; coalesced transform receipts persist on the next flush.
 type Receipt struct {
-	Seq         uint64     `json:"seq"`
-	Error       string     `json:"error,omitempty"`
-	Digest      string     `json:"digest"`
-	Updated     int64      `json:"updated,omitempty"`
-	CharacterID string     `json:"characterId,omitempty"`
-	RollEvent   *RollEvent `json:"rollEvent,omitempty"`
+	Seq         uint64              `json:"seq"`
+	Error       string              `json:"error,omitempty"`
+	Digest      string              `json:"digest"`
+	Updated     int64               `json:"updated,omitempty"`
+	CharacterID string              `json:"characterId,omitempty"`
+	RollEvent   *RollEvent          `json:"rollEvent,omitempty"`
+	Action      *actionJournalEntry `json:"action,omitempty"`
 }
 
 const maxReceiptsPerSession = 2048
@@ -82,7 +84,14 @@ func pruneReceipts(ss *Session, keep string) bool {
 	sort.Slice(items, func(i, j int) bool { return items[i].updated < items[j].updated })
 	remove := len(ss.Receipts) - maxReceiptsPerSession
 	for i := 0; i < remove && i < len(items); i++ {
-		delete(ss.Receipts, items[i].key)
+		key := items[i].key
+		delete(ss.Receipts, key)
+		if _, usedForActions := ss.ActionStreams[key]; usedForActions {
+			// The evicted sequence can no longer distinguish a retry from a
+			// fresh tab. Require a newer generation to open another stream.
+			delete(ss.ActionStreams, key)
+			ss.ActionGeneration++
+		}
 	}
 	return remove > 0
 }
@@ -182,22 +191,35 @@ type Command struct {
 	AvatarAssetID            *string                    `json:"avatarAssetId,omitempty"`
 	ResourceOverlays         []ResourceOverlayConfig    `json:"resourceOverlays,omitempty"`
 	Roll                     *RollRequest               `json:"roll,omitempty"`
+	Action                   *ActionExecutionRequest    `json:"action,omitempty"`
+	ActionGeneration         uint64                     `json:"actionGeneration,omitempty"`
+	invalidActionDigest      string
 	wireBytes                int
 }
 
 func (command *Command) UnmarshalJSON(data []byte) error {
 	type commandWire Command
 	var decoded commandWire
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	err := json.Unmarshal(data, &decoded)
+	if err != nil && decoded.Type != "actionExecute" {
 		return err
 	}
 	*command = Command(decoded)
+	if command.Type == "actionExecute" {
+		var envelope actionCommandWire
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err != nil || rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&envelope) != nil {
+			sum := sha256.Sum256(data)
+			command.invalidActionDigest = hex.EncodeToString(sum[:])
+		}
+	}
 	command.wireBytes = len(data)
 	return nil
 }
 
 func (s *Server) command(ss *Session, p *peer, c Command) {
-	if c.Type == "roll" {
+	if c.Type == "roll" || c.Type == "actionExecute" {
 		s.diceCommand(ss, p, c)
 		return
 	}

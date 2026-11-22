@@ -78,7 +78,7 @@ func (s *RulesetSnapshot) compileExpressions() error {
 	s.actionPlans = nil
 	s.Registry.mechanics = nil
 	s.Registry.statPlan = nil
-	if s.ExecutionReady() {
+	if !s.usesV04() {
 		return nil
 	}
 	c := expressionCompiler{

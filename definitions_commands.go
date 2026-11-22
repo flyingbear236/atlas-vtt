@@ -327,7 +327,7 @@ func applyDefinitionCommand(session *Session, command Command) (RulesetSnapshot,
 	if err != nil {
 		return RulesetSnapshot{}, false, err
 	}
-	if !original.ExecutionReady() {
+	if original.usesV04() {
 		return RulesetSnapshot{}, false, errors.New("v0.4 definitions must be edited in their source TOML")
 	}
 	candidate := cloneRulesetSnapshot(original)

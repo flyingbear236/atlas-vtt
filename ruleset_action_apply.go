@@ -15,7 +15,7 @@ type ActionChangePlan struct {
 	CharacterRevision uint64         `json:"characterRevision"`
 	Changes           []ActionChange `json:"changes"`
 
-	// Keep the validated copies for the server's future commit path. The
+	// Keep the validated copies for the atomic server commit. The
 	// public change list describes the declared writes in execution order.
 	replacements map[string]CharacterInstance
 }

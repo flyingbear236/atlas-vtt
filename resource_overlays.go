@@ -266,7 +266,7 @@ func (s *Server) publishResourceOverlayConfig(session *Session) {
 	}
 }
 
-func (s *Server) publishCharacterDisplayChanged(session *Session, changed map[string]bool) {
+func (s *Server) publishCharacterDisplayChanged(session *Session, changed map[string]bool, executionID ...string) {
 	if len(session.ResourceOverlays) == 0 || len(changed) == 0 {
 		return
 	}
@@ -300,7 +300,11 @@ func (s *Server) publishCharacterDisplayChanged(session *Session, changed map[st
 				continue
 			}
 			if display, exists := characterDisplayForConfig(session, registry, characterID); exists {
-				s.send(peer, map[string]any{"type": "characterDisplayChanged", "sceneId": peer.sceneID, "characterId": characterID, "display": display})
+				message := map[string]any{"type": "characterDisplayChanged", "sceneId": peer.sceneID, "characterId": characterID, "display": display}
+				if len(executionID) > 0 {
+					message["executionId"] = executionID[0]
+				}
+				s.send(peer, message)
 			}
 		}
 	}

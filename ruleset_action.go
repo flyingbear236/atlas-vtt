@@ -17,17 +17,20 @@ type ActionInstanceRef struct {
 }
 
 type ActionExecutionResult struct {
-	ActionID  string                 `json:"actionId"`
-	Actor     ActionInstanceRef      `json:"actor"`
-	Source    *ActionInstanceRef     `json:"source,omitempty"`
-	Target    *ActionInstanceRef     `json:"target,omitempty"`
-	Roll      *ActionExecutionRoll   `json:"roll,omitempty"`
-	Variables map[string]any         `json:"variables,omitempty"`
-	Success   *bool                  `json:"success,omitempty"`
-	Messages  []string               `json:"messages,omitempty"`
-	Plan      *ActionChangePlan      `json:"plan,omitempty"`
-	Skipped   []ActionExecutionIssue `json:"skipped,omitempty"`
-	Errors    []ActionExecutionIssue `json:"errors,omitempty"`
+	// Provenance of the messages actually emitted, in the same order. The
+	// server uses their compiled references to project interpolated values.
+	messageTemplates []*actionMessage
+	ActionID         string                 `json:"actionId"`
+	Actor            ActionInstanceRef      `json:"actor"`
+	Source           *ActionInstanceRef     `json:"source,omitempty"`
+	Target           *ActionInstanceRef     `json:"target,omitempty"`
+	Roll             *ActionExecutionRoll   `json:"roll,omitempty"`
+	Variables        map[string]any         `json:"variables,omitempty"`
+	Success          *bool                  `json:"success,omitempty"`
+	Messages         []string               `json:"messages,omitempty"`
+	Plan             *ActionChangePlan      `json:"plan,omitempty"`
+	Skipped          []ActionExecutionIssue `json:"skipped,omitempty"`
+	Errors           []ActionExecutionIssue `json:"errors,omitempty"`
 }
 
 type ActionExecutionRoll struct {
@@ -162,6 +165,7 @@ func (r *actionExecution) consequences(prefix string, block actionConsequences) 
 			return prefix + "message", err
 		}
 		r.result.Messages = append(r.result.Messages, text)
+		r.result.messageTemplates = append(r.result.messageTemplates, message)
 	}
 	return "", nil
 }

@@ -120,6 +120,10 @@ type Session struct {
 	RollRevision         uint64                                `json:"rollRevision,omitempty"`
 	DefinitionOperations map[string]DefinitionOperationReceipt `json:"definitionOperations,omitempty"`
 	RollHistory          []RollEvent                           `json:"rollHistory,omitempty"`
+	ActionHistory        []actionJournalEntry                  `json:"actionHistory,omitempty"`
+	ActionRevision       uint64                                `json:"actionRevision,omitempty"`
+	ActionGeneration     uint64                                `json:"actionGeneration,omitempty"`
+	ActionStreams        map[string]uint64                     `json:"actionStreams,omitempty"`
 	Scenes               map[string]*Scene                     `json:"scenes"`
 	Ruleset              RulesetSnapshot                       `json:"rulesetSnapshot"`
 	CampaignDefinitions  CampaignRegistry                      `json:"-"`

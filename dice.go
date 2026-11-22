@@ -245,8 +245,8 @@ func resolveRoll(session *Session, scene *Scene, member *Member, request RollReq
 		return resolved, nil
 	}
 
-	if diagnostic := session.Ruleset.executionDiagnostic(); diagnostic != "" {
-		return resolvedRoll{}, errors.New(diagnostic)
+	if session.Ruleset.Registry.Actions[request.ActionID].V04 != nil {
+		return resolvedRoll{}, errors.New(v04RollCommandIssue)
 	}
 	if request.CharacterInstanceID == "" || request.ActionID == "" || request.RollSpecID == "" {
 		return resolvedRoll{}, errors.New("action roll requires character, action, and roll spec ids")

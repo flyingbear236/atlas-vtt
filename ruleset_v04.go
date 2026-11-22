@@ -13,7 +13,7 @@ import (
 	"github.com/pelletier/go-toml/v2/unstable"
 )
 
-const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 actions can produce validated plans. Gameplay requires atomic action commits."
+const v04RollCommandIssue = "use actionExecute for Ruleset v0.4 actions"
 
 var rulesetV04Kinds = [...]string{"stat", "action", "effect", "object", "character"}
 
@@ -339,11 +339,18 @@ func (s RulesetSnapshot) v04Document(manifest *RulesetFileManifest) rulesetV04Do
 	return doc
 }
 
-func (s RulesetSnapshot) executionDiagnostic() string {
+func (s RulesetSnapshot) usesV04() bool {
 	for _, file := range s.Files {
 		if file.V04 {
-			return rulesetV04ExecutionDiagnostic
+			return true
 		}
+	}
+	return false
+}
+
+func (s RulesetSnapshot) executionDiagnostic() string {
+	if s.usesV04() && s.actionPlans == nil {
+		return "Ruleset v0.4 actions have not been compiled"
 	}
 	return ""
 }

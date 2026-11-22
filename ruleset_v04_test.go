@@ -95,8 +95,8 @@ func TestRulesetV04EntitiesAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.ExecutionReady() || snapshot.executionDiagnostic() == "" {
-		t.Fatal("v0.4 must report unsupported execution")
+	if !snapshot.ExecutionReady() || snapshot.executionDiagnostic() != "" {
+		t.Fatal("compiled v0.4 actions must be executable")
 	}
 	strength := snapshot.Registry.Stats["basic.strength"]
 	if strength.Type != StatTypeInteger || strength.Default.Integer() != 16 || strength.V04.values["kind"] != "custom" {
@@ -261,7 +261,7 @@ func TestRulesetV04HTTPInstall(t *testing.T) {
 	if err := json.Unmarshal(body, &preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.ExecutionDiagnostic == "" || len(preview.RulesetWarnings) != 1 ||
+	if preview.ExecutionDiagnostic != "" || len(preview.RulesetWarnings) != 1 ||
 		!slices.Equal(preview.RulesetDiff.Characters.Added, []string{"party.hero"}) {
 		t.Fatalf("incorrect preview diagnostics or diff: %+v", preview)
 	}
@@ -274,7 +274,7 @@ func TestRulesetV04HTTPInstall(t *testing.T) {
 	}
 	status, registry := readDefinitionsHTTP(t, host.URL, gm)
 	if status != http.StatusOK || registry.Ruleset.Files["hero.toml"].Source != v04Character ||
-		registry.Ruleset.Characters["party.hero"] == nil || registry.ExecutionDiagnostic == "" {
+		registry.Ruleset.Characters["party.hero"] == nil || registry.ExecutionDiagnostic != "" {
 		t.Fatalf("ruleset not installed: %d %+v", status, registry)
 	}
 	files["items.toml"] = strings.ReplaceAll(files["items.toml"], "[object.weapons.runic_sword]", "[object.weapons.renamed]")
@@ -334,7 +334,7 @@ func TestRulesetV04ZIPLibraryAndExecutionBoundary(t *testing.T) {
 		}
 	}
 
-	if _, err := resolveRoll(restored, nil, nil, RollRequest{ActionID: "weapon.attack.hit"}); err == nil || err.Error() != rulesetV04ExecutionDiagnostic {
+	if _, err := resolveRoll(restored, nil, nil, RollRequest{ActionID: "weapon.attack.hit"}); err == nil || err.Error() != v04RollCommandIssue {
 		t.Fatalf("expected execution diagnostic, got %v", err)
 	}
 	changed := cloneLibrarySession(restored)

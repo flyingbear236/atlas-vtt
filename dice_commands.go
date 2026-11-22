@@ -56,7 +56,7 @@ func validateSessionDiceState(session *Session) error {
 			return fmt.Errorf("receipt %q roll event: %w", stream, err)
 		}
 	}
-	return nil
+	return validateActionJournal(session)
 }
 
 func validateRollEvent(event RollEvent) error {
@@ -134,10 +134,17 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 	}
 	stream := peer.member.ID + ":" + command.Client
 	previousReceipt := session.Receipts[stream]
-	encoded, _ := json.Marshal(command)
+	var payload any = command
+	if command.Type == "actionExecute" {
+		payload = actionCommandWire{Type: command.Type, Client: command.Client, Seq: command.Seq, SceneID: command.SceneID, Action: command.Action, ActionGeneration: command.ActionGeneration}
+	}
+	encoded, _ := json.Marshal(payload)
 	sum := sha256.Sum256(encoded)
 	digest := hex.EncodeToString(sum[:])
-	ack := func(receipt Receipt) {
+	if command.invalidActionDigest != "" {
+		digest = command.invalidActionDigest
+	}
+	ack := func(receipt Receipt, replayed bool) {
 		response := map[string]any{
 			"type": "ack", "client": command.Client, "seq": command.Seq, "error": receipt.Error,
 			"sceneId": command.SceneID, "rollRevision": session.RollRevision,
@@ -147,18 +154,55 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 			response["rollEvent"] = cloneRollEvent(*receipt.RollEvent)
 			response["replayed"] = true
 		}
+		if command.Type == "actionExecute" {
+			response["actionGeneration"] = session.ActionGeneration
+			if receipt.Error != "" && !memberIsGM(peer.member) {
+				response["error"] = "action rejected"
+			}
+		}
+		if receipt.Action != nil {
+			response["replayed"] = replayed
+			response["actionRevision"] = session.ActionRevision
+			response["characterRevision"] = session.CharacterRevision
+			a := audienceForAction(session, peer)
+			e := receipt.Action
+			if public, ok := a.project(e); ok {
+				response["action"] = public
+				if a.seesCharacter(e.CharacterID, true) && (e.Target == nil || a.seesCharacter(e.Target.CharacterID, true)) {
+					response["details"] = e.Details
+				}
+			}
+		}
 		s.send(peer, response)
 	}
 	if command.Seq == 0 || command.Client == "" || len(command.Client) > 80 {
 		s.send(peer, map[string]string{"type": "fatal", "message": "Некорректный поток команд"})
 		return
 	}
-	if command.Seq == previousReceipt.Seq {
+	minGeneration, knownStream := session.ActionStreams[stream]
+	if !knownStream {
+		minGeneration = session.ActionGeneration
+	}
+	expired := command.Type == "actionExecute" && (command.ActionGeneration < minGeneration || command.ActionGeneration > session.ActionGeneration)
+	if command.Seq == previousReceipt.Seq && !expired {
 		if previousReceipt.Digest != digest {
 			s.send(peer, map[string]string{"type": "fatal", "message": "Номер команды уже занят другой командой. Откройте стол в новой вкладке"})
 			return
 		}
-		ack(previousReceipt)
+		ack(previousReceipt, true)
+		return
+	}
+	if command.Type == "actionExecute" && (expired || command.Seq < previousReceipt.Seq) {
+		for i := len(session.ActionHistory) - 1; i >= 0; i-- {
+			e := &session.ActionHistory[i]
+			if e.Stream == stream && e.Seq == command.Seq && e.Digest == digest {
+				ack(Receipt{Action: e}, true)
+				return
+			}
+		}
+	}
+	if expired {
+		s.send(peer, map[string]any{"type": "fatal", "message": "Поколение потока команд устарело. Откройте новую вкладку", "actionGeneration": session.ActionGeneration})
 		return
 	}
 	if command.Seq < previousReceipt.Seq || command.Seq != previousReceipt.Seq+1 {
@@ -166,14 +210,33 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 		return
 	}
 
+	// An asynchronous rotation still owns its sequence until its receipt is
+	// committed. It must not be able to overwrite an action's newer receipt.
+	if command.Type == "actionExecute" {
+		for _, pending := range s.rotationJobs {
+			if pending.sessionID == session.ID && pending.memberID == peer.member.ID && pending.client == command.Client {
+				s.send(peer, map[string]any{"type": "fatal", "message": "Поток занят незавершённой командой"})
+				return
+			}
+		}
+	}
 	oldDirty := s.dirty
 	oldRevision := session.RollRevision
 	oldHistory := session.RollHistory
 	var event *RollEvent
+	var action *actionCommit
 	issue := ""
 	sceneID := peer.sceneID
 	if sceneID == "" || command.SceneID != "" && command.SceneID != sceneID {
 		issue = "Бросок требует подписки на указанную сцену"
+	} else if command.Type == "actionExecute" {
+		var err error
+		action, err = s.prepareAction(session, peer, command, stream, digest)
+		if err != nil {
+			issue = err.Error()
+		} else {
+			action.apply(session)
+		}
 	} else if command.Roll == nil {
 		issue = "Параметры броска не заданы"
 	} else {
@@ -193,9 +256,25 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 		copy := cloneRollEvent(*event)
 		receipt.RollEvent = &copy
 	}
+	if action != nil {
+		receipt.Action = &action.entry
+	}
+	newActionStream := command.Type == "actionExecute" && !knownStream
+	if newActionStream {
+		if session.ActionStreams == nil {
+			session.ActionStreams = make(map[string]uint64)
+		}
+		session.ActionStreams[stream] = session.ActionGeneration
+	}
 	session.Receipts[stream] = receipt
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
+		if action != nil {
+			action.rollback(session)
+		}
+		if newActionStream {
+			delete(session.ActionStreams, stream)
+		}
 		session.RollRevision = oldRevision
 		session.RollHistory = oldHistory
 		if previousReceipt.Seq == 0 {
@@ -204,7 +283,7 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 			session.Receipts[stream] = previousReceipt
 		}
 		s.dirty = oldDirty
-		s.send(peer, map[string]any{"type": "saveError", "client": command.Client, "seq": command.Seq, "message": "Не удалось сохранить бросок. Команда не подтверждена; будет повторена"})
+		s.send(peer, map[string]any{"type": "saveError", "client": command.Client, "seq": command.Seq, "message": "Не удалось сохранить команду. Можно повторить отправку"})
 		return
 	}
 	if pruneReceipts(session, stream) {
@@ -213,7 +292,10 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 	if event != nil {
 		s.publishRoll(session, *event)
 	}
-	ack(session.Receipts[stream])
+	if action != nil {
+		s.publishAction(session, action)
+	}
+	ack(session.Receipts[stream], false)
 }
 
 func (s *Server) publishRoll(session *Session, event RollEvent) {
@@ -250,5 +332,6 @@ func (s *Server) sendRollHistory(session *Session, peer *peer) {
 	s.send(peer, map[string]any{
 		"type": "rollHistory", "sceneId": scene.ID, "rollRevision": session.RollRevision,
 		"replayed": true, "events": rollHistoryForScene(session, scene.ID),
+		"actionRevision": session.ActionRevision, "actionGeneration": session.ActionGeneration, "actions": actionHistoryForPeer(session, peer),
 	})
 }

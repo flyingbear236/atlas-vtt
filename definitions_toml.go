@@ -539,7 +539,7 @@ func ExportRulesetSnapshotTOML(snapshot RulesetSnapshot) ([]byte, error) {
 	if err := ValidateRulesetSnapshot(snapshot); err != nil {
 		return nil, fmt.Errorf("definitions TOML: %w", err)
 	}
-	if !snapshot.ExecutionReady() {
+	if snapshot.usesV04() {
 		if len(snapshot.Files) == 1 {
 			for name := range snapshot.Files {
 				source, err := RenderRulesetFileTOML(snapshot, name)

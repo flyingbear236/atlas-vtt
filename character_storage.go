@@ -134,7 +134,7 @@ func (s *RulesetSnapshot) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	next := RulesetSnapshot(stored)
-	if !next.ExecutionReady() {
+	if next.usesV04() {
 		if err := next.prepareRulesetExpressions(); err != nil {
 			return err
 		}
@@ -224,7 +224,7 @@ func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
 	}
 	statOwners, actionOwners, presetOwners := map[string]string{}, map[string]string{}, map[string]string{}
 	effectOwners, objectOwners, characterOwners := map[string]string{}, map[string]string{}, map[string]string{}
-	v04 := !snapshot.ExecutionReady()
+	v04 := snapshot.usesV04()
 	checkIDs := func(name, kind string, ids []string, registryHas func(string) bool, owners map[string]string) error {
 		local := map[string]struct{}{}
 		for _, id := range ids {
@@ -302,7 +302,7 @@ func validateRulesetFileManifests(snapshot RulesetSnapshot) error {
 }
 
 func ValidateRulesetSnapshot(snapshot RulesetSnapshot) error {
-	if !snapshot.ExecutionReady() && snapshot.expressions == nil {
+	if snapshot.usesV04() && snapshot.expressions == nil {
 		return snapshot.prepareRulesetExpressions()
 	}
 	return validateRulesetStructure(snapshot)
@@ -348,7 +348,7 @@ func validateRulesetStructure(snapshot RulesetSnapshot) error {
 	if err != nil {
 		return fmt.Errorf("invalid ruleset registry: %w", err)
 	}
-	if !snapshot.ExecutionReady() {
+	if snapshot.usesV04() {
 		return validateRulesetV04(snapshot)
 	}
 	return nil

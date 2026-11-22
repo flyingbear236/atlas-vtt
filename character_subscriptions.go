@@ -8,6 +8,7 @@ type characterPermissions struct {
 }
 
 type characterSnapshot struct {
+	ExecutionID      string                      `json:"executionId,omitempty"`
 	Type             string                      `json:"type"`
 	CharacterWatch   uint64                      `json:"characterWatch"`
 	CharacterID      string                      `json:"characterId"`
@@ -114,7 +115,7 @@ func (s *Server) unwatchCharacter(peer *peer, characterID string, watch uint64) 
 // refreshCharacterWatches runs only after a successful durable mutation. Each
 // peer owns one watch slot, so access revocation and fan-out are bounded by the
 // number of connected peers and never depend on viewport delivery.
-func (s *Server) refreshCharacterWatches(session *Session, changed map[string]bool, all bool) {
+func (s *Server) refreshCharacterWatches(session *Session, changed map[string]bool, all bool, executionID ...string) {
 	for peer := range s.peers {
 		if peer.session != session.ID || peer.characterID == "" {
 			continue
@@ -133,6 +134,9 @@ func (s *Server) refreshCharacterWatches(session *Session, changed map[string]bo
 		if err != nil {
 			s.closeCharacterWatch(peer, session.CharacterRevision, "unavailable")
 			continue
+		}
+		if len(executionID) > 0 {
+			snapshot.ExecutionID = executionID[0]
 		}
 		s.send(peer, snapshot)
 	}
