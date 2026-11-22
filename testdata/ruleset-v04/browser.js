@@ -78,6 +78,15 @@ async credentials => {
   await click('#diceJournalToggle');
   const rows = all('#diceJournal .roll-entry');
   if (rows.length!==4 || new Set(rows.map(row=>row.dataset.eventId)).size!==4) throw Error('journal event IDs');
+  const manual = query('#diceExpression');
+  manual.value='2d6 + 1d4 + 3';
+  manual.dispatchEvent(new frame.contentWindow.Event('input',{bubbles:true}));
+  await click('[data-dice-submit]');
+  await wait(() => query('#diceJournal .roll-entry .roll-result')?.textContent.includes('= 12'), 'manual dice result');
+  const command = commands.findLast(entry => entry.type==='roll');
+  if (command.roll.manualModifier!==3 || command.roll.groups.length!==2 || 'actionId' in command.roll || 'rollSpecId' in command.roll) {
+    throw Error('manual dice command used action fields');
+  }
   await click('#definitionsOpen');
   await click('button[aria-label="Открыть rules/examples.toml"]');
   const definition = await wait(() => all('.lb-definition-link').find(button => button.textContent.includes('weapon.attack.damage')), 'action in library');

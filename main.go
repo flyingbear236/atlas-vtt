@@ -270,13 +270,6 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 		if migrateLegacyTokenCharacters(ss) {
 			migrated = true
 		}
-		mechanicsMigrated, migrationErr := migrateLegacyCharacterMechanics(ss)
-		if migrationErr != nil {
-			return nil, fmt.Errorf("invalid saved character mechanics in session %s: %w", sessionID, migrationErr)
-		}
-		if mechanicsMigrated {
-			migrated = true
-		}
 		for sceneID, scene := range ss.Scenes {
 			if scene == nil || scene.ID != sceneID || scene.Name == "" {
 				return nil, fmt.Errorf("invalid scene in session %s", sessionID)
@@ -457,7 +450,6 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/definitions/ruleset/media/path", s.suggestRulesetMediaPath)
 	mux.HandleFunc("POST /api/definitions/ruleset/media/upload", s.uploadRulesetMedia)
 	mux.HandleFunc("POST /api/definitions/ruleset/media/attach", s.attachRulesetMedia)
-	mux.HandleFunc("GET /api/definitions/campaign/export", s.exportCampaignDefinitions)
 	mux.HandleFunc("GET /api/characters", s.readCharacterCatalog)
 	mux.HandleFunc("GET /api/library", s.readLibrary)
 	mux.HandleFunc("GET /api/library/file/download", s.downloadLibraryFile)
@@ -466,8 +458,6 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/library/toml", s.importUnknownTOML)
 	mux.HandleFunc("POST /api/definitions/ruleset/preview", s.previewRulesetInstall)
 	mux.HandleFunc("POST /api/definitions/ruleset/apply", s.applyRulesetInstall)
-	mux.HandleFunc("POST /api/definitions/campaign/preview", s.previewCampaignImport)
-	mux.HandleFunc("POST /api/definitions/campaign/apply", s.applyCampaignImport)
 	mux.HandleFunc("GET /api/asset/", s.asset)
 	mux.HandleFunc("GET /ws", s.ws)
 	sub, _ := fs.Sub(web, "web")

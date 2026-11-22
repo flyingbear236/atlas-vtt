@@ -100,31 +100,6 @@ func addPersistedCharacterFixture(t *testing.T, server *Server, session *Session
 		t.Fatal(err)
 	}
 
-	// Persist an actual pre-materialization document. Runtime saves reject legacy
-	// mechanics; only the loading boundary is allowed to migrate them.
-	path := filepath.Join(server.root, "sessions.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var document map[string]any
-	if err := json.Unmarshal(data, &document); err != nil {
-		t.Fatal(err)
-	}
-	persistedSession := document[session.ID].(map[string]any)
-	persistedCharacter := persistedSession["characterInstances"].(map[string]any)[instance.ID].(map[string]any)
-	delete(persistedCharacter, "materialized")
-	persistedCharacter["statOverrides"] = map[string]any{
-		"hp":    map[string]any{"type": "integer", "value": 4},
-		"speed": map[string]any{"type": "number", "value": 12},
-	}
-	legacy, err := json.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, legacy, 0600); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestRulesetTOMLMetadataIsOptionalAndRulesetIsInternallyClosed(t *testing.T) {
@@ -192,10 +167,7 @@ func TestCharacterStorageRoundTripAndRulesetDefaultSnapshot(t *testing.T) {
 	if instance.Materialized == nil || instance.Materialized.Stats["hp"].Type() != StatTypeInteger || instance.Materialized.Stats["hp"].Integer() != 4 ||
 		instance.Materialized.Stats["speed"].Type() != StatTypeNumber || instance.Materialized.Stats["speed"].Number() != 12 ||
 		len(instance.Materialized.ActionIDs) != 1 || instance.Materialized.ActionIDs[0] != "bite" {
-		t.Fatalf("legacy instance overrides were not fully materialized: %#v", instance)
-	}
-	if len(instance.StatOverrides) != 0 || len(instance.AddedActionIDs) != 0 || len(instance.RemovedActionIDs) != 0 {
-		t.Fatal("legacy fields survived migration")
+		t.Fatalf("materialized character values did not round trip: %#v", instance)
 	}
 	if len(got.characterReferences["wolf-1"]) != 2 {
 		t.Fatalf("cross-scene reference index was not restored: %#v", got.characterReferences)
@@ -266,8 +238,8 @@ func TestCorruptCharacterStorageIsRejectedWithoutOverwrite(t *testing.T) {
 		"wrong stat type": func(session map[string]any) {
 			instances := session["characterInstances"].(map[string]any)
 			wolf := instances["wolf-1"].(map[string]any)
-			overrides := wolf["statOverrides"].(map[string]any)
-			overrides["hp"] = map[string]any{"type": "boolean", "value": true}
+			stats := wolf["materialized"].(map[string]any)["stats"].(map[string]any)
+			stats["hp"] = map[string]any{"type": "boolean", "value": true}
 		},
 		"duplicate id mismatch": func(session map[string]any) {
 			instances := session["characterInstances"].(map[string]any)
@@ -320,7 +292,7 @@ func TestSaveRefusesInvalidCharacterState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.CharacterInstances["wrong-key"] = CharacterInstance{ID: "different", Name: "Broken", StatOverrides: map[string]StatValue{}}
+	session.CharacterInstances["wrong-key"] = CharacterInstance{ID: "different", Name: "Broken"}
 	server.dirty = true
 	if err := server.save(); err == nil {
 		t.Fatal("invalid state was saved")

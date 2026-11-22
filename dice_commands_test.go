@@ -21,7 +21,7 @@ type diceCommandFixture struct {
 	sceneA, sceneB *Scene
 	gm, alice, bob map[string]string
 	rng            *deterministicDiceRNG
-	actionRoll     RollRequest
+	manualRoll     RollRequest
 	characterID    string
 }
 
@@ -36,13 +36,8 @@ func newDiceCommandFixture(t *testing.T) diceCommandFixture {
 	sceneA.Published = true
 	sceneB := newScene("scene-b", "Scene B")
 	sceneB.Published = true
-	registry := emptyCampaignRegistry()
-	registry.Stats["agility"] = StatDefinition{ID: "agility", Name: "Agility", Type: StatTypeInteger}
-	registry.Actions["strike"] = ActionDefinition{ID: "strike", Name: "Strike", Rolls: []RollSpec{{ID: "attack", Name: "Attack", Count: 2, Sides: 10, ModifierStat: "agility", ModifierFixed: 0.5}}}
 	character := NewCharacterInstance("hero", nil)
 	character.Name = "Hero"
-	character.Materialized.Stats["agility"] = IntegerStatValue(2)
-	character.Materialized.ActionIDs = []string{"strike"}
 	character.Persistent = true
 	addToken := func(scene *Scene, tokenID string) {
 		token := Token{ID: tokenID, Name: "Hero", FloorID: firstFloorID(scene), X: 50, Y: 60, Size: 80, Opacity: 1, Color: "#ffffff", OwnerIDs: []string{aliceMember.ID}, CharacterInstanceID: character.ID}
@@ -59,7 +54,6 @@ func newDiceCommandFixture(t *testing.T) diceCommandFixture {
 			gmMember.Secret: gmMember.ID, aliceMember.Secret: aliceMember.ID, bobMember.Secret: bobMember.ID,
 		}, Receipts: map[string]Receipt{}, CampaignRevision: 1, RegistryRevision: 1, CharacterRevision: 1,
 		DefinitionOperations: map[string]DefinitionOperationReceipt{}, Scenes: map[string]*Scene{sceneA.ID: sceneA, sceneB.ID: sceneB},
-		Ruleset:            RulesetSnapshot{Registry: RulesetRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets}},
 		CharacterInstances: map[string]CharacterInstance{character.ID: character}, RollHistory: []RollEvent{},
 	}
 	rebuildCharacterReferences(session)
@@ -77,10 +71,11 @@ func newDiceCommandFixture(t *testing.T) diceCommandFixture {
 	credentials := func(member *Member) map[string]string {
 		return map[string]string{"session": session.ID, "key": member.Secret}
 	}
+	modifier := 2.5
 	return diceCommandFixture{
 		root: root, server: server, host: host, session: session, sceneA: sceneA, sceneB: sceneB,
 		gm: credentials(gmMember), alice: credentials(aliceMember), bob: credentials(bobMember), rng: rng,
-		actionRoll: RollRequest{CharacterInstanceID: character.ID, ActionID: "strike", RollSpecID: "attack"}, characterID: character.ID,
+		manualRoll: RollRequest{CharacterInstanceID: character.ID, Count: rollInt(2), Sides: rollInt(10), ManualModifier: &modifier}, characterID: character.ID,
 	}
 }
 
@@ -132,7 +127,7 @@ func TestReliableRollLostACKReconnectRestartAndDigest(t *testing.T) {
 	read(t, observer, "campaignSnapshot")
 	subscribeDiceScene(t, observer, fixture.sceneA.ID)
 
-	command := Command{Type: "roll", Client: "dice-tab", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.actionRoll}
+	command := Command{Type: "roll", Client: "dice-tab", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.manualRoll}
 	if err := alice.WriteJSON(command); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +141,7 @@ func TestReliableRollLostACKReconnectRestartAndDigest(t *testing.T) {
 		t.Fatalf("subscribers did not receive the same authoritative event: %#v / %#v", event, observed)
 	}
 	if fixture.rng.next != 2 {
-		t.Fatalf("action RNG calls = %d", fixture.rng.next)
+		t.Fatalf("manual RNG calls = %d", fixture.rng.next)
 	}
 
 	// Simulate a lost ACK: discard this connection after receiving only the live event.
@@ -202,7 +197,7 @@ func TestRollHistoryBoundedAndReceiptSurvivesEviction(t *testing.T) {
 	alice := dialRaw(t, fixture.host.URL, fixture.alice)
 	read(t, alice, "campaignSnapshot")
 	subscribeDiceScene(t, alice, fixture.sceneA.ID)
-	command := Command{Type: "roll", Client: "eviction", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.actionRoll}
+	command := Command{Type: "roll", Client: "eviction", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.manualRoll}
 	if err := alice.WriteJSON(command); err != nil {
 		t.Fatal(err)
 	}
@@ -225,12 +220,9 @@ func TestRollHistoryBoundedAndReceiptSurvivesEviction(t *testing.T) {
 		fixture.server.mu.Unlock()
 		t.Fatal("roll history retained an otherwise unreferenced character")
 	}
-	action := fixture.session.Ruleset.Registry.Actions["strike"]
-	action.Name = "Renamed after roll"
-	fixture.session.Ruleset.Registry.Actions[action.ID] = action
-	if fixture.session.RollHistory[0].CharacterName != "Hero" || fixture.session.RollHistory[0].ActionName != "Strike" {
+	if fixture.session.RollHistory[0].CharacterName != "Hero" {
 		fixture.server.mu.Unlock()
-		t.Fatal("history did not retain character/action name snapshots")
+		t.Fatal("history did not retain the character name snapshot")
 	}
 	for index := 0; index < MaxRollHistory; index++ {
 		event := RollEvent{
@@ -290,7 +282,7 @@ func TestRollSaveFailureRollsBackAndDoesNotBroadcast(t *testing.T) {
 	if err := os.Mkdir(blocker, 0755); err != nil {
 		t.Fatal(err)
 	}
-	command := Command{Type: "roll", Client: "failure", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.actionRoll}
+	command := Command{Type: "roll", Client: "failure", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.manualRoll}
 	if err := alice.WriteJSON(command); err != nil {
 		t.Fatal(err)
 	}
@@ -329,12 +321,12 @@ func TestRollSceneAccessTwoScenesUnpublishAndDelete(t *testing.T) {
 	alice := dialRaw(t, fixture.host.URL, fixture.alice)
 	read(t, alice, "campaignSnapshot")
 	subscribeDiceScene(t, alice, fixture.sceneA.ID)
-	first := Command{Type: "roll", Client: "scenes", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.actionRoll}
+	first := Command{Type: "roll", Client: "scenes", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.manualRoll}
 	alice.WriteJSON(first)
 	eventA := rollEventFromMessage(t, read(t, alice, "rollEvent"), "event")
 	read(t, alice, "ack")
 	subscribeDiceScene(t, alice, fixture.sceneB.ID)
-	second := Command{Type: "roll", Client: "scenes", Seq: 2, SceneID: fixture.sceneB.ID, Roll: &fixture.actionRoll}
+	second := Command{Type: "roll", Client: "scenes", Seq: 2, SceneID: fixture.sceneB.ID, Roll: &fixture.manualRoll}
 	alice.WriteJSON(second)
 	eventB := rollEventFromMessage(t, read(t, alice, "rollEvent"), "event")
 	read(t, alice, "ack")
@@ -354,7 +346,7 @@ func TestRollSceneAccessTwoScenesUnpublishAndDelete(t *testing.T) {
 	bob := dialRaw(t, fixture.host.URL, fixture.bob)
 	read(t, bob, "campaignSnapshot")
 	subscribeDiceScene(t, bob, fixture.sceneA.ID)
-	denied := Command{Type: "roll", Client: "denied", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.actionRoll}
+	denied := Command{Type: "roll", Client: "denied", Seq: 1, SceneID: fixture.sceneA.ID, Roll: &fixture.manualRoll}
 	bob.WriteJSON(denied)
 	ack := read(t, bob, "ack")
 	var issue string

@@ -101,10 +101,7 @@ func validateRollEvent(event RollEvent) error {
 	if event.Total != float64(diceTotal)+event.Modifier {
 		return errors.New("roll total does not match results and modifier")
 	}
-	if (event.ActionID == "") != (event.RollSpecID == "") || (event.ActionID == "") != (event.ActionName == "") || (event.RollSpecID == "") != (event.RollSpecName == "") {
-		return errors.New("roll action metadata is incomplete")
-	}
-	if event.CharacterInstanceID == "" && (event.CharacterName != "" || event.ActionID != "") {
+	if event.CharacterInstanceID == "" && event.CharacterName != "" {
 		return errors.New("roll character metadata is incomplete")
 	}
 	return nil

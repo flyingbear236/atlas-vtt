@@ -188,8 +188,16 @@ func TestBrowser(t *testing.T) {
  const uploadResponse=await fetch('/api/upload?session='+encodeURIComponent(creds.session)+'&scene='+encodeURIComponent(sceneId)+'&kind=scene&name=bitmap.png',{method:'POST',headers:{Authorization:'Bearer '+creds.key},body:blob});if(!uploadResponse.ok)throw Error('bitmap upload failed: '+uploadResponse.status);const bitmapAsset=await uploadResponse.json();if(bitmapAsset.kind!=='scene'||bitmapAsset.renderMode!=='bitmap'||!bitmapAsset.sourceId||!bitmapAsset.representationVersion)throw Error('bitmap representation metadata');
  const tiledCanvas=document.createElement('canvas');tiledCanvas.width=2048;tiledCanvas.height=2048;const tiledContext=tiledCanvas.getContext('2d');for(let y=0;y<8;y++)for(let x=0;x<8;x++){tiledContext.fillStyle='hsl('+((x+y*8)*23%360)+' 45% 35%)';tiledContext.fillRect(x*256,y*256,256,256)}const tiledBlob=await new Promise(resolve=>tiledCanvas.toBlob(resolve,'image/png'));const tiledResponse=await fetch('/api/upload?session='+encodeURIComponent(creds.session)+'&scene='+encodeURIComponent(sceneId)+'&kind=scene&name=tiled.png',{method:'POST',headers:{Authorization:'Bearer '+creds.key},body:tiledBlob});if(!tiledResponse.ok)throw Error('tiled upload failed: '+tiledResponse.status);const tiledAsset=await tiledResponse.json();if(tiledAsset.kind!=='scene'||tiledAsset.renderMode!=='tiled'||tiledAsset.id===bitmapAsset.id||!tiledAsset.sourceId||tiledAsset.representationVersion!==bitmapAsset.representationVersion)throw Error('tiled representation metadata');
  await wait(()=>document.getElementById('emptyMap').hidden);
- await wait(()=>document.querySelectorAll('.tree-element-row').length===2);const rotationRow=document.querySelector('.tree-element-row');rotationRow.click();const allowRotation=document.getElementById('allowElementRotation');if(document.getElementById('fixElementRotation'))throw Error('fix rotation UI still exposed');if(allowRotation.hidden)throw Error('base rotation opt-in missing');allowRotation.click();if(!allowRotation.hidden)throw Error('base rotation opt-in not applied');const transformCount=sentCommands.filter(command=>command.type==='elementTransform').length,rotationInput=document.getElementById('elementRotation');for(const value of ['3','31','37']){rotationInput.value=value;rotationInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);const transforms=sentCommands.filter(command=>command.type==='elementTransform');if(transforms.length!==transformCount+1)throw Error('element input was not coalesced: before='+transformCount+' after='+transforms.length+' valid='+document.getElementById('elementProperties').checkValidity());if(Number(transforms.at(-1).element.transform.rotation)!==37)throw Error('element autosave lost final rotation');if(!document.querySelector('#elementProperties button[type=submit]').hidden)throw Error('element save button is visible');if(sentCommands.some(command=>command.type==='elementFixRotation'))throw Error('disabled fix rotation command was sent');
- const offscreenID=rotationRow.dataset.elementId,xInput=document.getElementById('elementX');xInput.value='50000';xInput.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>xInput.disabled).catch(()=>{throw Error('offscreen state timeout: x='+xInput.value+', selected='+document.querySelector('.tree-element-row.selected')?.dataset.elementId+', transforms='+JSON.stringify(sentCommands.filter(command=>command.type==='elementTransform').slice(-2)))});if(!document.querySelector('[data-element-id="'+offscreenID+'"]'))throw Error('offscreen element disappeared from editor tree');if(!document.getElementById('duplicateElement').disabled||document.getElementById('elementName').disabled||document.getElementById('deleteElement').disabled)throw Error('offscreen editor restrictions are wrong');const offscreenName=document.getElementById('elementName');offscreenName.value='Offscreen renamed';offscreenName.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>document.querySelector('[data-element-id="'+offscreenID+'"]').textContent.includes('Offscreen renamed'));document.querySelector('[data-element-id="'+offscreenID+'"] [title="Центрировать на элементе"]').click();await wait(()=>!xInput.disabled);if(document.getElementById('duplicateElement').disabled)throw Error('centered element did not return to loaded editor state');document.getElementById('fit').click();await sleep(300);
+ await wait(()=>document.querySelectorAll('.tree-element-row').length===2);const rotationRow=document.querySelector('.tree-element-row');rotationRow.click();if(document.getElementById('fixElementRotation'))throw Error('fix rotation UI still exposed');
+ const transformCount=sentCommands.filter(command=>command.type==='elementTransform').length;
+ const rotationInput=document.getElementById('elementRotation');
+ if(document.getElementById('elementProperties').hidden||!rotationInput||rotationInput.disabled)throw Error('rotation field is unavailable for a selected element');
+ for(const value of ['3','31','37']){rotationInput.value=value;rotationInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);const transforms=sentCommands.filter(command=>command.type==='elementTransform');if(transforms.length!==transformCount+1)throw Error('element input was not coalesced: before='+transformCount+' after='+transforms.length+' valid='+document.getElementById('elementProperties').checkValidity());if(Number(transforms.at(-1).element.transform.rotation)!==37)throw Error('element autosave lost final rotation');if(!document.querySelector('#elementProperties button[type=submit]').hidden)throw Error('element save button is visible');if(sentCommands.some(command=>command.type==='elementFixRotation'))throw Error('disabled fix rotation command was sent');
+ const offscreenID=rotationRow.dataset.elementId,xInput=document.getElementById('elementX');xInput.value='50000';xInput.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>xInput.disabled).catch(()=>{throw Error('offscreen state timeout: x='+xInput.value+', selected='+document.querySelector('.tree-element-row.selected')?.dataset.elementId+', transforms='+JSON.stringify(sentCommands.filter(command=>command.type==='elementTransform').slice(-2)))});if(!document.querySelector('[data-element-id="'+offscreenID+'"]'))throw Error('offscreen element disappeared from editor tree');if(!document.getElementById('duplicateElement').disabled||document.getElementById('elementName').disabled||document.getElementById('deleteElement').disabled)throw Error('offscreen editor restrictions are wrong');const offscreenName=document.getElementById('elementName');offscreenName.value='Offscreen renamed';offscreenName.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>document.querySelector('[data-element-id="'+offscreenID+'"]').textContent.includes('Offscreen renamed'));const offscreenRow=document.querySelector('[data-element-id="'+offscreenID+'"]');
+ offscreenRow.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2}));
+ const centerElement=[...document.querySelectorAll('.scene-context-menu button')].find(button=>button.textContent==='Центрировать');
+ if(!centerElement)throw Error('center action missing from element context menu');
+ centerElement.click();await wait(()=>!xInput.disabled);if(document.getElementById('duplicateElement').disabled)throw Error('centered element did not return to loaded editor state');document.getElementById('fit').click();await sleep(300);
  if(!document.getElementById('tokenUpload').hidden)throw Error('native token file input leaked into sidebar');document.getElementById('add').click();document.querySelector('[data-token-catalog="roster"]').click();if(document.getElementById('tokenCatalogPicker').hidden||!document.getElementById('tokenCatalogSearch')||!document.getElementById('tokenCatalogRosterTab').classList.contains('active'))throw Error('searchable character picker did not open');document.getElementById('tokenCatalogCancel').click();document.getElementById('add').click();document.getElementById('add').click();document.getElementById('addEmptyToken').click();document.getElementById('add').click();document.getElementById('addEmptyToken').click();await wait(()=>document.querySelectorAll('.token-row').length===2).catch(()=>{throw Error('token create timeout: rows='+document.querySelectorAll('.token-row').length+', connection='+document.getElementById('connection').textContent+', queued='+sentCommands.filter(c=>c.type==='create').length)});
  document.querySelector('.token-row').click();const propertiesForm=document.getElementById('properties');if(propertiesForm.parentElement!==document.getElementById('characterSettingsPanel')||document.querySelectorAll('#properties').length!==1)throw Error('token settings were not moved into character settings');await wait(()=>document.getElementById('characterPanel').dataset.characterId&&!document.getElementById('characterSummary').hidden);if(!document.querySelector('.inspector').contains(propertiesForm)||!document.getElementById('noSelection').hidden||document.getElementById('characterPanel').hidden)throw Error('right inspector is not showing character state');if(sentCommands.some(command=>command.type==='characterCreate'))throw Error('new token did not receive its character atomically');if(document.querySelectorAll('.token-floor-group').length!==1)throw Error('GM character list is not grouped by floor');const navigatorRow=document.querySelector('.token-row');if(!navigatorRow.querySelector('.token-row-focus')||!navigatorRow.querySelector('.token-row-menu'))throw Error('character navigator controls missing');const navigatorFocus=navigatorRow.querySelector('.token-row-focus'),navigatorMenu=navigatorRow.querySelector('.token-row-menu');navigatorMenu.click();if(document.getElementById('tokenContextMenu').hidden||document.getElementById('tokenContextMenu').textContent.includes('Переименовать')||!document.getElementById('tokenContextMenu').textContent.includes('Сменить этаж'))throw Error('character context menu is wrong');navigatorMenu.click();if(!document.getElementById('tokenContextMenu').hidden)throw Error('character context menu did not close');navigatorFocus.click();if(document.getElementById('characterPanel').hidden)throw Error('focus control closed the character sheet');const characterGM=document.getElementById('characterGM'),gmScope=characterGM.closest('.gm');if(!gmScope||gmScope.hidden)throw Error('character mutations are not GM-scoped');document.getElementById('characterSettingsToggle').click();if(propertiesForm.hidden)throw Error('token settings are unavailable behind GM gear');const propertyCount=sentCommands.filter(command=>command.type==='properties').length,sizeInput=document.getElementById('tokenSize');for(const value of ['81','82','83']){sizeInput.value=value;sizeInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);let propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.length!==propertyCount+1)throw Error('token input was not coalesced: before='+propertyCount+' after='+propertyCommands.length+' valid='+propertiesForm.checkValidity()+' selected='+document.querySelector('.token-row.selected')?.dataset.tokenId);if(propertyCommands.at(-1).properties.size!==83)throw Error('token autosave lost final size');const opacityCount=propertyCommands.length,opacityInput=document.getElementById('tokenOpacity');opacityInput.value='0.5';opacityInput.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>sentCommands.filter(command=>command.type==='properties').length===opacityCount+1);propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.at(-1).properties.opacity!==0.5)throw Error('token opacity was not sent as a numeric field patch');if(!propertiesForm.querySelector('button[type=submit]').hidden)throw Error('token save button is visible');
  const modeRect=document.getElementById('viewMode').getBoundingClientRect(),headerRect=document.querySelector('header').getBoundingClientRect(),sceneTabRect=document.getElementById('mapTab').getBoundingClientRect();if(Math.abs(modeRect.height-sceneTabRect.height)>4||Math.abs((modeRect.left+modeRect.right-headerRect.left-headerRect.right)/2)>2)throw Error('GM / player switch does not match the header controls');const panBoard=document.getElementById('board'),panRect=panBoard.getBoundingClientRect(),panX=panRect.left+panRect.width/2,panY=panRect.top+panRect.height/2,selectedBeforePan=document.querySelector('.token-row.selected')?.dataset.tokenId;panBoard.onpointerdown({button:1,pointerId:91,clientX:panX,clientY:panY,preventDefault(){}});panBoard.onpointermove({pointerId:91,clientX:panX+30,clientY:panY+20,shiftKey:false});panBoard.onpointerup();if(document.querySelector('.token-row.selected')?.dataset.tokenId!==selectedBeforePan||document.getElementById('characterPanel').hidden)throw Error('middle-button pan closed the character sheet');
@@ -200,6 +208,7 @@ func TestBrowser(t *testing.T) {
  return {tokens:document.querySelectorAll('.token-row').length,mapLoaded:document.getElementById('emptyMap').hidden,bitmapMode:bitmapAsset.renderMode,tiledMode:tiledAsset.renderMode,representationRequests:representationEntries.length,diagnostics:document.getElementById('diagnostics').textContent};
 })()`)
 	t.Log(result)
+	eval(`function movementCheckbox(label){const row=[...document.querySelectorAll('.tree-floor.active [data-area="movement"] label')].find(row=>row.textContent===label);if(!row)throw Error('movement setting missing: '+label);return row.querySelector('input');}true`)
 	type walkableGesture struct {
 		X1, Y1, X2, Y2 float64
 		Before         int
@@ -207,8 +216,9 @@ func TestBrowser(t *testing.T) {
 	gestureJSON := eval(`(async()=>{
  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),wait=async test=>{for(let i=0;i<100;i++){if(test())return;await sleep(50)}throw Error('walkable UI timeout')};
  document.getElementById('mapTab').click();await wait(()=>!document.getElementById('sidebarMap').hidden);
- const mode=()=>document.querySelector('.tree-layer-walkable [title="Переключить ограничение движения"]');if(mode().textContent==='Своб.'){mode().click();await wait(()=>mode().textContent==='Огр.'&&document.getElementById('saveStatus').textContent==='Изменения приняты')}
- document.querySelector('.tree-layer-walkable [title="Добавить проходимую область"]').click();const rect=document.getElementById('board').getBoundingClientRect();return {X1:rect.left+100,Y1:rect.top+150,X2:rect.left+280,Y2:rect.top+290,Before:sentCommands.filter(command=>command.type==='addWalkableRect').length};
+ document.querySelector('.tree-floor.active .tree-areas').open=true;
+ const mode=()=>movementCheckbox('Включить границы движения');if(!mode().checked){mode().click();await wait(()=>mode().checked&&document.getElementById('saveStatus').textContent==='Изменения приняты')}
+ document.querySelector('.tree-floor.active [data-area="movement"] [title="Добавить проходимую область"]').click();const rect=document.getElementById('board').getBoundingClientRect();return {X1:rect.left+100,Y1:rect.top+150,X2:rect.left+280,Y2:rect.top+290,Before:sentCommands.filter(command=>command.type==='addWalkableRect').length};
 })()`)
 	var walkable walkableGesture
 	if err := json.Unmarshal([]byte(gestureJSON), &walkable); err != nil {
@@ -230,7 +240,7 @@ func TestBrowser(t *testing.T) {
 		t.Fatal("walkable rectangle streamed a command during drag")
 	}
 	releaseMouse(walkable.X2, walkable.Y2)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%d&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, walkable.Before+1)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%d&&document.querySelector('.tree-floor.active [data-area="movement"]')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, walkable.Before+1)) != "true" {
 		t.Fatal("walkable rectangle was not committed once")
 	}
 
@@ -241,26 +251,26 @@ func TestBrowser(t *testing.T) {
 		t.Fatal("second walkable rectangle streamed during drag")
 	}
 	releaseMouse(walkable.X2+270, walkable.Y2)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%d&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='2')return true;await sleep(50)}return false})()`, secondBefore+1)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%d&&document.querySelector('.tree-floor.active [data-area="movement"]')?.dataset.componentCount==='2')return true;await sleep(50)}return false})()`, secondBefore+1)) != "true" {
 		t.Fatal("second walkable component was not created")
 	}
 
-	if eval(`(()=>{document.querySelector('.tree-layer-walkable [title="Вычесть проходимую область"]').click();return true})()`) != "true" {
+	if eval(`(()=>{document.querySelector('.tree-floor.active [data-area="movement"] [title="Вычесть проходимую область"]').click();return true})()`) != "true" {
 		t.Fatal("subtract tool unavailable")
 	}
 	subtractBefore := eval(`sentCommands.filter(command=>command.type==='subtractWalkableRect').length`)
-	subtractRevision := eval(`document.querySelector('.tree-layer-walkable').dataset.geometryRevision`)
+	subtractRevision := eval(`document.querySelector('.tree-floor.active [data-area="movement"]').dataset.geometryRevision`)
 	dragMouse(walkable.X1+55, walkable.Y1+45, walkable.X1+125, walkable.Y1+95)
 	if eval(`sentCommands.filter(command=>command.type==='subtractWalkableRect').length`) != subtractBefore {
 		t.Fatal("walkable subtraction streamed during drag")
 	}
 	releaseMouse(walkable.X1+125, walkable.Y1+95)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='subtractWalkableRect').length===1&&document.querySelector('.tree-layer-walkable').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, subtractRevision)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='subtractWalkableRect').length===1&&document.querySelector('.tree-floor.active [data-area="movement"]').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, subtractRevision)) != "true" {
 		t.Fatal("walkable subtraction was not committed once")
 	}
 
 	// Escape removes the local preview and pointerup must not resurrect it.
-	eval(`document.querySelector('.tree-layer-walkable [title="Добавить проходимую область"]').click();true`)
+	eval(`document.querySelector('.tree-floor.active [data-area="movement"] [title="Добавить проходимую область"]').click();true`)
 	cancelBefore := eval(`sentCommands.filter(command=>command.type==='addWalkableRect').length`)
 	dragMouse(walkable.X1, walkable.Y1+330, walkable.X2, walkable.Y2+330)
 	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));true`)
@@ -270,15 +280,15 @@ func TestBrowser(t *testing.T) {
 	}
 
 	// Move without merge. The hole must not itself select the component.
-	eval(`document.querySelector('.tree-layer-walkable [title="Перемещать проходимые компоненты"]').click();true`)
+	eval(`document.querySelector('.tree-floor.active [data-area="movement"] [title="Переместить область"]').click();true`)
 	moveBefore := eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`)
-	walkableMoveRevision := eval(`document.querySelector('.tree-layer-walkable').dataset.geometryRevision`)
+	walkableMoveRevision := eval(`document.querySelector('.tree-floor.active [data-area="movement"]').dataset.geometryRevision`)
 	dragMouse(walkable.X1+25, walkable.Y1+25, walkable.X1+40, walkable.Y1+35)
 	if eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`) != moveBefore {
 		t.Fatal("walkable component streamed during drag")
 	}
 	releaseMouse(walkable.X1+40, walkable.Y1+35)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===1&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='2'&&document.querySelector('.tree-layer-walkable').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, walkableMoveRevision)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===1&&document.querySelector('.tree-floor.active [data-area="movement"]')?.dataset.componentCount==='2'&&document.querySelector('.tree-floor.active [data-area="movement"]').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, walkableMoveRevision)) != "true" {
 		t.Fatal("plain walkable component move failed")
 	}
 	holeMoveBefore := eval(`sentCommands.filter(command=>command.type==='moveWalkableComponent').length`)
@@ -294,24 +304,24 @@ func TestBrowser(t *testing.T) {
 		t.Fatal("merge move streamed during drag")
 	}
 	releaseMouse(walkable.X1+105, walkable.Y1+70)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===2&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
-		t.Fatalf("walkable merge result did not replace client topology: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect'),moves:sentCommands.filter(command=>command.type==='moveWalkableComponent'),tool:document.querySelector('.tree-layer-walkable .tree-action.active')?.title,components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='moveWalkableComponent').length===2&&document.querySelector('.tree-floor.active [data-area="movement"]')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatalf("walkable merge result did not replace client topology: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect'),moves:sentCommands.filter(command=>command.type==='moveWalkableComponent'),tool:document.querySelector('.tree-floor.active [data-area="movement"] .tree-action.active')?.title,components:document.querySelector('.tree-floor.active [data-area="movement"]')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
 	}
 
 	// An invalid oversized preview is sent once, rejected by the server and
 	// replaced by the unchanged authoritative snapshot.
-	invalidBefore := eval(`(()=>{document.querySelector('.tree-layer-walkable [title="Добавить проходимую область"]').click();return sentCommands.filter(command=>command.type==='addWalkableRect').length})()`)
+	invalidBefore := eval(`(()=>{document.querySelector('.tree-floor.active [data-area="movement"] [title="Добавить проходимую область"]').click();return sentCommands.filter(command=>command.type==='addWalkableRect').length})()`)
 	dragMouse(walkable.X1, walkable.Y1, walkable.X1+10, walkable.Y1+10)
 	eval(`(()=>{const board=document.getElementById('board');board.onpointermove({clientX:2000000,clientY:2000000});board.onpointerup();return true})()`)
 	releaseMouse(walkable.X1+10, walkable.Y1+10)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%s+1&&document.querySelector('.tree-layer-walkable')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, invalidBefore)) != "true" {
-		t.Fatalf("rejected walkable preview did not return to authoritative state: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect').slice(-3),components:document.querySelector('.tree-layer-walkable')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='addWalkableRect').length===%s+1&&document.querySelector('.tree-floor.active [data-area="movement"]')?.dataset.componentCount==='1'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, invalidBefore)) != "true" {
+		t.Fatalf("rejected walkable preview did not return to authoritative state: %s", eval(`JSON.stringify({adds:sentCommands.filter(command=>command.type==='addWalkableRect').slice(-3),components:document.querySelector('.tree-floor.active [data-area="movement"]')?.dataset.componentCount,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
 	}
-	eval(`(async()=>{const board=document.getElementById('board'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));board.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));const mode=()=>document.querySelector('.tree-layer-walkable [title="Переключить ограничение движения"]');if(mode().textContent==='Огр.'){mode().click();for(let i=0;i<100;i++){if(mode().textContent==='Своб.'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}throw Error('walkable mode cleanup timeout')}return true})()`)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>document.querySelector('.tree-layer-walkable [title="Показывать непроходимые области игрокам"]');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-layer-walkable')?.dataset.playerOverlay==='visible'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+	eval(`(async()=>{const board=document.getElementById('board'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));board.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));const mode=()=>movementCheckbox('Включить границы движения');if(mode().checked){mode().click();for(let i=0;i<100;i++){if(!mode().checked&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}throw Error('walkable mode cleanup timeout')}return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>movementCheckbox('Показывать границы движения игрокам');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-floor.active [data-area="movement"]')&&movementCheckbox('Показывать границы движения игрокам').checked&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
 		t.Fatal("walkable player overlay visibility was not enabled")
 	}
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>document.querySelector('.tree-layer-walkable [title="Показывать непроходимые области игрокам"]');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-layer-walkable')?.dataset.playerOverlay==='hidden'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),button=()=>movementCheckbox('Показывать границы движения игрокам');button().click();for(let i=0;i<100;i++){if(document.querySelector('.tree-floor.active [data-area="movement"]')&&!movementCheckbox('Показывать границы движения игрокам').checked&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
 		t.Fatal("walkable player overlay visibility was not disabled")
 	}
 
@@ -319,24 +329,24 @@ func TestBrowser(t *testing.T) {
 	renderX1, renderY1 := walkable.X1+35, walkable.Y1+35
 	renderX2, renderY2 := renderX1+210, renderY1+170
 	renderBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
-	renderRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
-	eval(`document.querySelector('.tree-render-bounds [title="Создать прямоугольную границу отрисовки"]').click();true`)
+	renderRevision := eval(`document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision`)
+	eval(`document.querySelector('.tree-floor.active [data-area="render"] [title="Прямоугольник"]').click();true`)
 	dragMouse(renderX1, renderY1, renderX2, renderY2)
 	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != renderBefore {
 		t.Fatal("render bounds rectangle streamed during drag")
 	}
 	releaseMouse(renderX2, renderY2)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){const row=document.querySelector('.tree-render-bounds');if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&row?.dataset.boundsState==='set'&&row.dataset.geometryRevision!==%s&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, renderBefore, renderRevision)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){const row=document.querySelector('.tree-floor.active [data-area="render"]');if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&row?.dataset.boundsState==='set'&&row.dataset.geometryRevision!==%s&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`, renderBefore, renderRevision)) != "true" {
 		t.Fatal("render bounds rectangle was not committed once")
 	}
-	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='clearRenderBounds').length===1&&document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
-		t.Fatalf("render bounds clear failed: %s", eval(`JSON.stringify({commands:sentCommands.filter(command=>command.type==='clearRenderBounds'),state:document.querySelector('.tree-render-bounds')?.dataset.boundsState,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-floor.active [data-area="render"] [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='clearRenderBounds').length===1&&document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
+		t.Fatalf("render bounds clear failed: %s", eval(`JSON.stringify({commands:sentCommands.filter(command=>command.type==='clearRenderBounds'),state:document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState,status:document.getElementById('saveStatus').textContent,toast:document.getElementById('toast').textContent})`))
 	}
 
 	// A self-intersecting polygon remains a local invalid preview and Enter
 	// must not send it. Escape then discards the unfinished draft.
-	eval(`document.querySelector('.tree-render-bounds [title="Нарисовать границу отрисовки"]').click();true`)
+	eval(`document.querySelector('.tree-floor.active [data-area="render"] [title="Многоугольник"]').click();true`)
 	invalidRenderBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
 	clickMouse(renderX1, renderY1)
 	clickMouse(renderX2, renderY2)
@@ -355,11 +365,11 @@ func TestBrowser(t *testing.T) {
 	clickMouse(renderX2, renderY2)
 	clickMouse(renderX1, renderY2)
 	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));true`)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds')?.dataset.boundsState==='set')return true;await sleep(50)}return false})()`, invalidRenderBefore)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState==='set')return true;await sleep(50)}return false})()`, invalidRenderBefore)) != "true" {
 		t.Fatal("concave render bounds polygon was not completed by Enter")
 	}
-	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
-	eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`)
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-floor.active [data-area="render"] [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`)
 
 	// Clicking the first point is the second completion path. Keep this
 	// polygon for the vertex editing checks in the following stage.
@@ -369,54 +379,54 @@ func TestBrowser(t *testing.T) {
 	clickMouse(renderX2, renderY2)
 	clickMouse(renderX1, renderY2)
 	clickMouse(renderX1, renderY1)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='set'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState==='set'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
 		t.Fatal("render bounds polygon was not completed through its first vertex")
 	}
 
 	// Stage 15: moving a vertex remains local until pointerup.
-	eval(`document.querySelector('.tree-render-bounds [title="Редактировать границу отрисовки"]').click();true`)
+	eval(`document.querySelector('.tree-floor.active [data-area="render"] [title="Редактировать"]').click();true`)
 	editBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
-	editRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	editRevision := eval(`document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision`)
 	dragMouse(renderX1, renderY1, renderX1+15, renderY1+10)
 	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != editBefore {
 		t.Fatal("render bounds vertex streamed during drag")
 	}
 	releaseMouse(renderX1+15, renderY1+10)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, editBefore, editRevision)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, editBefore, editRevision)) != "true" {
 		t.Fatal("render bounds vertex move did not commit once")
 	}
 
 	// Dragging from the polygon interior moves the complete contour.
 	moveRenderBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
-	moveRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	moveRevision := eval(`document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision`)
 	dragMouse(renderX1+40, renderY1+115, renderX1+52, renderY1+123)
 	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != moveRenderBefore {
 		t.Fatal("render bounds polygon streamed during drag")
 	}
 	releaseMouse(renderX1+52, renderY1+123)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, moveRenderBefore, moveRevision)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, moveRenderBefore, moveRevision)) != "true" {
 		t.Fatal("whole render bounds polygon move failed")
 	}
 
 	// Pressing an edge inserts a vertex; dragging it still produces one command.
 	edgeX, edgeY := (renderX1+27+renderX2+12)/2, (renderY1+18+renderY1+8)/2
 	insertBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
-	insertRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	insertRevision := eval(`document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision`)
 	dragMouse(edgeX, edgeY, edgeX, edgeY+20)
 	if eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`) != insertBefore {
 		t.Fatal("render bounds vertex insertion streamed during drag")
 	}
 	releaseMouse(edgeX, edgeY+20)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, insertBefore, insertRevision)) != "true" {
-		t.Fatalf("render bounds edge insertion failed: %s", eval(`JSON.stringify({sets:sentCommands.filter(command=>command.type==='setRenderBounds').slice(-3),toast:document.getElementById('toast').textContent,tool:document.querySelector('.tree-render-bounds .tree-action.active')?.title})`))
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, insertBefore, insertRevision)) != "true" {
+		t.Fatalf("render bounds edge insertion failed: %s", eval(`JSON.stringify({sets:sentCommands.filter(command=>command.type==='setRenderBounds').slice(-3),toast:document.getElementById('toast').textContent,tool:document.querySelector('.tree-floor.active [data-area="render"] .tree-action.active')?.title})`))
 	}
 
 	// Select and delete the inserted vertex with a single durable update.
 	deleteBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
-	deleteRevision := eval(`document.querySelector('.tree-render-bounds').dataset.geometryRevision`)
+	deleteRevision := eval(`document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision`)
 	clickMouse(edgeX, edgeY+20)
 	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Delete'}));true`)
-	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-render-bounds').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, deleteBefore, deleteRevision)) != "true" {
+	if eval(fmt.Sprintf(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(sentCommands.filter(command=>command.type==='setRenderBounds').length===%s+1&&document.querySelector('.tree-floor.active [data-area="render"]').dataset.geometryRevision!==%s)return true;await sleep(50)}return false})()`, deleteBefore, deleteRevision)) != "true" {
 		t.Fatal("render bounds vertex deletion failed")
 	}
 
@@ -437,8 +447,8 @@ func TestBrowser(t *testing.T) {
 	// A newer authoritative geometry revision cancels the in-flight edit.
 	dragMouse(renderX1+27, renderY1+18, renderX1+37, renderY1+28)
 	conflictBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
-	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-floor.active [data-area="render"] [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
 		t.Fatal("authoritative render bounds conflict update did not arrive")
 	}
 	releaseMouse(renderX1+37, renderY1+28)
@@ -447,15 +457,15 @@ func TestBrowser(t *testing.T) {
 	}
 
 	// A triangle is valid, but deleting any one of its vertices is forbidden.
-	eval(`document.querySelector('.tree-render-bounds [title="Нарисовать границу отрисовки"]').click();true`)
+	eval(`document.querySelector('.tree-floor.active [data-area="render"] [title="Многоугольник"]').click();true`)
 	clickMouse(renderX1, renderY1)
 	clickMouse(renderX2, renderY1)
 	clickMouse(renderX1+100, renderY2)
 	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));true`)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='set'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState==='set'&&document.getElementById('saveStatus').textContent==='Изменения приняты')return true;await sleep(50)}return false})()`) != "true" {
 		t.Fatal("render bounds triangle setup failed")
 	}
-	eval(`document.querySelector('.tree-render-bounds [title="Редактировать границу отрисовки"]').click();true`)
+	eval(`document.querySelector('.tree-floor.active [data-area="render"] [title="Редактировать"]').click();true`)
 	minimumBefore := eval(`sentCommands.filter(command=>command.type==='setRenderBounds').length`)
 	clickMouse(renderX1, renderY1)
 	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Delete'}));true`)
@@ -463,8 +473,8 @@ func TestBrowser(t *testing.T) {
 		t.Fatal("render bounds editor deleted below three vertices")
 	}
 	eval(`document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));true`)
-	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-render-bounds [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
-	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-render-bounds')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
+	eval(`(()=>{const old=window.confirm;window.confirm=()=>true;document.querySelector('.tree-floor.active [data-area="render"] [title="Удалить границу отрисовки"]').click();window.confirm=old;return true})()`)
+	if eval(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<100;i++){if(document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState==='none')return true;await sleep(50)}return false})()`) != "true" {
 		t.Fatal("render bounds cleanup failed")
 	}
 	if eval(`sentCommands.filter(c=>c.type==='properties').every(c=>!('x' in c.token)&&!('y' in c.token))`) != "true" {
@@ -541,7 +551,7 @@ func TestBrowser(t *testing.T) {
 		t.Fatal("zoom did not retain decoded images")
 	}
 	if eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20){colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','))}return colors.size>10})()`) != "true" {
-		t.Fatalf("Canvas did not render map detail: %s", eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20)colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','));return JSON.stringify({colors:colors.size,bounds:document.querySelector('.tree-render-bounds')?.dataset.boundsState,diagnostics:document.getElementById('diagnostics').textContent})})()`))
+		t.Fatalf("Canvas did not render map detail: %s", eval(`(()=>{const c=document.getElementById('board'),g=c.getContext('2d'),colors=new Set();for(let y=100;y<c.height-100;y+=20)for(let x=100;x<c.width-100;x+=20)colors.add(Array.from(g.getImageData(x,y,1,1).data).join(','));return JSON.stringify({colors:colors.size,bounds:document.querySelector('.tree-floor.active [data-area="render"]')?.dataset.boundsState,diagnostics:document.getElementById('diagnostics').textContent})})()`))
 	}
 	if len(browserErrors) > 0 {
 		t.Fatalf("Browser errors: %v", browserErrors)

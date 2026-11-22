@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"slices"
 	"time"
 )
 
@@ -47,10 +46,6 @@ type RollEvent struct {
 	AuthorName          string      `json:"authorName"`
 	CharacterInstanceID string      `json:"characterInstanceId,omitempty"`
 	CharacterName       string      `json:"characterName,omitempty"`
-	ActionID            string      `json:"actionId,omitempty"`
-	ActionName          string      `json:"actionName,omitempty"`
-	RollSpecID          string      `json:"rollSpecId,omitempty"`
-	RollSpecName        string      `json:"rollSpecName,omitempty"`
 	Count               int         `json:"count"`
 	Sides               int         `json:"sides"`
 	Results             []int       `json:"results"`
@@ -96,10 +91,6 @@ func NewRollService(rng DiceRNG) *RollService {
 type resolvedRoll struct {
 	characterID   string
 	characterName string
-	actionID      string
-	actionName    string
-	rollSpecID    string
-	rollSpecName  string
 	count         int
 	sides         int
 	modifier      float64
@@ -180,8 +171,6 @@ func (service *RollService) Execute(session *Session, sceneID string, member *Me
 	event := RollEvent{
 		ID: service.newEventID(), SceneID: sceneID, UserID: author.ID, AuthorName: author.Name,
 		CharacterInstanceID: resolved.characterID, CharacterName: resolved.characterName,
-		ActionID: resolved.actionID, ActionName: resolved.actionName,
-		RollSpecID: resolved.rollSpecID, RollSpecName: resolved.rollSpecName,
 		Count: resolved.count, Sides: resolved.sides, Results: results,
 		Modifier: resolved.modifier, Total: total, Timestamp: service.now().UTC(),
 	}
@@ -208,86 +197,39 @@ func rejectServerOwnedRollFields(request RollRequest) error {
 }
 
 func resolveRoll(session *Session, scene *Scene, member *Member, request RollRequest) (resolvedRoll, error) {
-	actionMode := request.ActionID != "" || request.RollSpecID != ""
-	if !actionMode {
-		if len(request.Groups) > 0 {
-			if request.Count != nil || request.Sides != nil {
-				return resolvedRoll{}, errors.New("manual roll must use either groups or count and sides")
-			}
-			if err := validateDiceGroups(request.Groups); err != nil {
-				return resolvedRoll{}, err
-			}
-		} else if request.Count == nil || request.Sides == nil {
-			return resolvedRoll{}, errors.New("manual roll requires count and sides")
-		}
-		resolved := resolvedRoll{groups: append([]DiceGroup(nil), request.Groups...)}
-		if request.ManualModifier != nil {
-			if err := validateRollNumber("manual modifier", *request.ManualModifier); err != nil {
-				return resolvedRoll{}, err
-			}
-			resolved.modifier = *request.ManualModifier
-		}
-		if len(request.Groups) == 0 {
-			resolved.count, resolved.sides = *request.Count, *request.Sides
-		}
-		if request.CharacterInstanceID != "" {
-			registry, err := rollRegistry(session)
-			if err != nil {
-				return resolvedRoll{}, err
-			}
-			character, err := resolveRollCharacter(session, scene, member, registry, request.CharacterInstanceID)
-			if err != nil {
-				return resolvedRoll{}, err
-			}
-			resolved.characterID = character.ID
-			resolved.characterName = character.Name
-		}
-		return resolved, nil
-	}
-
-	if session.Ruleset.Registry.Actions[request.ActionID].V04 != nil {
+	if request.ActionID != "" || request.RollSpecID != "" {
 		return resolvedRoll{}, errors.New(v04RollCommandIssue)
 	}
-	if request.CharacterInstanceID == "" || request.ActionID == "" || request.RollSpecID == "" {
-		return resolvedRoll{}, errors.New("action roll requires character, action, and roll spec ids")
-	}
-	if request.Count != nil || request.Sides != nil || len(request.Groups) != 0 || request.ManualModifier != nil {
-		return resolvedRoll{}, errors.New("action roll count and sides are server-owned")
-	}
-	registry, err := rollRegistry(session)
-	if err != nil {
-		return resolvedRoll{}, err
-	}
-	character, err := resolveRollCharacter(session, scene, member, registry, request.CharacterInstanceID)
-	if err != nil {
-		return resolvedRoll{}, err
-	}
-	if !slices.Contains(character.ActionIDs, request.ActionID) {
-		return resolvedRoll{}, fmt.Errorf("character %q does not have action %q", character.ID, request.ActionID)
-	}
-	action, exists := registry.Actions[request.ActionID]
-	if !exists {
-		return resolvedRoll{}, fmt.Errorf("unknown action %q", request.ActionID)
-	}
-	var spec *RollSpec
-	for index := range action.Rolls {
-		if action.Rolls[index].ID == request.RollSpecID {
-			spec = &action.Rolls[index]
-			break
+	if len(request.Groups) > 0 {
+		if request.Count != nil || request.Sides != nil {
+			return resolvedRoll{}, errors.New("manual roll must use either groups or count and sides")
 		}
+		if err := validateDiceGroups(request.Groups); err != nil {
+			return resolvedRoll{}, err
+		}
+	} else if request.Count == nil || request.Sides == nil {
+		return resolvedRoll{}, errors.New("manual roll requires count and sides")
 	}
-	if spec == nil {
-		return resolvedRoll{}, fmt.Errorf("action %q has no roll spec %q", action.ID, request.RollSpecID)
+
+	resolved := resolvedRoll{groups: request.Groups}
+	if request.ManualModifier != nil {
+		if err := validateRollNumber("manual modifier", *request.ManualModifier); err != nil {
+			return resolvedRoll{}, err
+		}
+		resolved.modifier = *request.ManualModifier
 	}
-	modifier, err := resolveRollModifier(character, *spec)
-	if err != nil {
-		return resolvedRoll{}, err
+	if len(request.Groups) == 0 {
+		resolved.count, resolved.sides = *request.Count, *request.Sides
 	}
-	return resolvedRoll{
-		characterID: character.ID, characterName: character.Name,
-		actionID: action.ID, actionName: action.Name, rollSpecID: spec.ID, rollSpecName: spec.Name,
-		count: spec.Count, sides: spec.Sides, modifier: modifier,
-	}, nil
+	if request.CharacterInstanceID != "" {
+		instance, exists := session.CharacterInstances[request.CharacterInstanceID]
+		if !exists || !characterHasControllableToken(session, scene, member, request.CharacterInstanceID) {
+			return resolvedRoll{}, errors.New("character has no accessible linked token in scene")
+		}
+		resolved.characterID = instance.ID
+		resolved.characterName = instance.Name
+	}
+	return resolved, nil
 }
 
 func rollRegistry(session *Session) (EffectiveRegistry, error) {
@@ -296,27 +238,6 @@ func rollRegistry(session *Session) (EffectiveRegistry, error) {
 		return EffectiveRegistry{}, fmt.Errorf("definition registry: %w", err)
 	}
 	return registry, nil
-}
-
-func resolveRollCharacter(session *Session, scene *Scene, member *Member, registry EffectiveRegistry, characterID string) (EffectiveCharacter, error) {
-	instance, exists := session.CharacterInstances[characterID]
-	if !exists {
-		return EffectiveCharacter{}, fmt.Errorf("unknown character %q", characterID)
-	}
-	if !characterHasControllableToken(session, scene, member, characterID) {
-		return EffectiveCharacter{}, fmt.Errorf("character %q has no accessible linked token in scene %q", characterID, scene.ID)
-	}
-	var preset *CharacterPresetDefinition
-	if instance.PresetID != "" {
-		value, ok := registry.Presets[instance.PresetID]
-		if !ok && instance.Materialized == nil {
-			return EffectiveCharacter{}, fmt.Errorf("character %q references unknown preset %q", characterID, instance.PresetID)
-		}
-		if ok {
-			preset = &value
-		}
-	}
-	return EffectiveCharacterState(instance, preset, registry)
 }
 
 func characterHasControllableToken(session *Session, scene *Scene, member *Member, characterID string) bool {
@@ -330,42 +251,6 @@ func characterHasControllableToken(session *Session, scene *Scene, member *Membe
 		}
 	}
 	return false
-}
-
-func resolveRollModifier(character EffectiveCharacter, spec RollSpec) (float64, error) {
-	modifier := spec.ModifierFixed
-	if err := validateRollNumber("fixed modifier", modifier); err != nil {
-		return 0, err
-	}
-	if spec.ModifierStat == "" {
-		return modifier, nil
-	}
-	value, exists := character.Stats[spec.ModifierStat]
-	if !exists {
-		if resource, resourceExists := character.Resources[spec.ModifierStat]; resourceExists {
-			value, exists = resource.Current, true
-		}
-	}
-	if !exists {
-		return 0, fmt.Errorf("character %q has no value for modifier stat %q", character.ID, spec.ModifierStat)
-	}
-	var statModifier float64
-	switch value.Type() {
-	case StatTypeNumber:
-		statModifier = value.Number()
-	case StatTypeInteger:
-		statModifier = float64(value.Integer())
-	default:
-		return 0, fmt.Errorf("modifier stat %q is not numeric", spec.ModifierStat)
-	}
-	if err := validateRollNumber("stat modifier", statModifier); err != nil {
-		return 0, err
-	}
-	modifier += statModifier
-	if err := validateRollNumber("combined modifier", modifier); err != nil {
-		return 0, err
-	}
-	return modifier, nil
 }
 
 func validateDiceParameters(count, sides int) error {

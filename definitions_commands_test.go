@@ -297,7 +297,7 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 	}
 
 	oversize := bytes.Repeat([]byte{'x'}, MaxDefinitionDocumentBytes+1)
-	if status, _ := definitionHTTP(t, host.URL, "/api/definitions/campaign/preview", gm, oversize, nil); status != http.StatusRequestEntityTooLarge {
+	if status, _ := definitionHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, oversize, nil); status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversize definitions document status = %d", status)
 	}
 
@@ -357,63 +357,53 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 		t.Fatalf("duplicate changed registry: status=%d %#v", status, registry.Effective.Stats["hp"])
 	}
 
-	largeRegistry := emptyCampaignRegistry()
+	var largeRuleset strings.Builder
 	for index := 0; index < 12; index++ {
-		definitionID := fmt.Sprintf("large_action_%02d", index)
-		largeRegistry.Actions[definitionID] = ActionDefinition{ID: definitionID, Name: definitionID, Description: strings.Repeat(string(rune('a'+index)), 1800)}
+		fmt.Fprintf(&largeRuleset, "[action.large_action_%02d]\nroll = '1d6'\ndescription = %q\n", index, strings.Repeat("a", 1800))
 	}
-	largeDocument, err := ExportDefinitionsTOML(largeRegistry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	largeDocument := []byte(largeRuleset.String())
 	if len(largeDocument) <= maxWebSocketMessageBytes {
 		t.Fatalf("HTTP acceptance document is only %d bytes", len(largeDocument))
 	}
-	status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/preview", gm, largeDocument, nil)
+	status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, largeDocument, nil)
 	if status != http.StatusOK {
-		t.Fatalf("large campaign preview: %d %s", status, body)
+		t.Fatalf("large ruleset preview: %d %s", status, body)
 	}
 	var largePreview definitionPreviewResponse
 	json.Unmarshal(body, &largePreview)
 	largeApply := url.Values{"expectedRevision": {fmt.Sprint(largePreview.RegistryRevision)}, "digest": {largePreview.Digest}, "key": {"large-import"}}
-	status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/apply", gm, largeDocument, largeApply)
+	status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, largeDocument, largeApply)
 	if status != http.StatusOK {
-		t.Fatalf("large campaign apply: %d %s", status, body)
+		t.Fatalf("large ruleset apply: %d %s", status, body)
 	}
-	status, repeatedBody = definitionHTTP(t, host.URL, "/api/definitions/campaign/apply", gm, largeDocument, largeApply)
+	status, repeatedBody = definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, largeDocument, largeApply)
 	if status != http.StatusOK || !bytes.Equal(bytes.TrimSpace(body), bytes.TrimSpace(repeatedBody)) {
-		t.Fatalf("campaign apply was not idempotent: %d %s", status, repeatedBody)
+		t.Fatalf("ruleset apply was not idempotent: %d %s", status, repeatedBody)
 	}
 
-	staleRegistry := emptyCampaignRegistry()
-	staleRegistry.Stats["stale"] = StatDefinition{ID: "stale", Name: "Stale", Type: StatTypeBoolean}
-	staleDocument, _ := ExportDefinitionsTOML(staleRegistry)
-	status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/preview", gm, staleDocument, nil)
+	staleDocument := []byte("[stat.stale]\ndefault = false\n")
+	status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, staleDocument, nil)
 	if status != http.StatusOK {
 		t.Fatal(string(body))
 	}
 	var stalePreview definitionPreviewResponse
 	json.Unmarshal(body, &stalePreview)
 
-	interveningRegistry := emptyCampaignRegistry()
-	interveningRegistry.Stats["newer"] = StatDefinition{ID: "newer", Name: "Newer", Type: StatTypeString}
-	interveningDocument, _ := ExportDefinitionsTOML(interveningRegistry)
-	status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/preview", gm, interveningDocument, nil)
+	interveningDocument := []byte("[stat.newer]\ndefault = 'note'\n")
+	status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, interveningDocument, nil)
 	var interveningPreview definitionPreviewResponse
 	json.Unmarshal(body, &interveningPreview)
 	interveningApply := url.Values{"expectedRevision": {fmt.Sprint(interveningPreview.RegistryRevision)}, "digest": {interveningPreview.Digest}, "key": {"intervening"}}
-	if status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/apply", gm, interveningDocument, interveningApply); status != http.StatusOK {
+	if status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, interveningDocument, interveningApply); status != http.StatusOK {
 		t.Fatalf("intervening apply: %d %s", status, body)
 	}
 	staleApply := url.Values{"expectedRevision": {fmt.Sprint(stalePreview.RegistryRevision)}, "digest": {stalePreview.Digest}, "key": {"stale"}}
-	if status, _ := definitionHTTP(t, host.URL, "/api/definitions/campaign/apply", gm, staleDocument, staleApply); status != http.StatusConflict {
-		t.Fatalf("stale campaign apply status = %d", status)
+	if status, _ := definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, staleDocument, staleApply); status != http.StatusConflict {
+		t.Fatalf("stale ruleset apply status = %d", status)
 	}
 
-	failureRegistry := emptyCampaignRegistry()
-	failureRegistry.Stats["must_not_persist"] = StatDefinition{ID: "must_not_persist", Name: "Rollback", Type: StatTypeInteger}
-	failureDocument, _ := ExportDefinitionsTOML(failureRegistry)
-	status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/preview", gm, failureDocument, nil)
+	failureDocument := []byte("[stat.must_not_persist]\ndefault = 0\n[action.check]\nroll = '1d6'\n")
+	status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/preview", gm, failureDocument, nil)
 	var failurePreview definitionPreviewResponse
 	json.Unmarshal(body, &failurePreview)
 	server.mu.Lock()
@@ -425,7 +415,7 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	failureApply := url.Values{"expectedRevision": {fmt.Sprint(failurePreview.RegistryRevision)}, "digest": {failurePreview.Digest}, "key": {"failed-import"}}
-	status, _ = definitionHTTP(t, host.URL, "/api/definitions/campaign/apply", gm, failureDocument, failureApply)
+	status, _ = definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, failureDocument, failureApply)
 	if status != http.StatusInternalServerError {
 		t.Fatalf("save failure apply status = %d", status)
 	}
@@ -439,20 +429,20 @@ func TestDefinitionHTTPInstallImportIdempotencyAndRollback(t *testing.T) {
 	if err := os.Remove(blocker); err != nil {
 		t.Fatal(err)
 	}
-	if status, body = definitionHTTP(t, host.URL, "/api/definitions/campaign/apply", gm, failureDocument, failureApply); status != http.StatusOK {
+	if status, body = definitionHTTP(t, host.URL, "/api/definitions/ruleset/apply", gm, failureDocument, failureApply); status != http.StatusOK {
 		t.Fatalf("retry after rolled-back save failure: %d %s", status, body)
 	}
-	status, exportedCampaign, exportHeaders := exportDefinitionsHTTP(t, host.URL, "/api/definitions/campaign/export", gm)
-	if status != http.StatusOK || !strings.Contains(exportHeaders.Get("Content-Disposition"), "definitions.toml") {
-		t.Fatalf("campaign export: %d %s", status, exportedCampaign)
+	status, exportedRuleset, exportHeaders = exportDefinitionsHTTP(t, host.URL, "/api/definitions/ruleset/export", gm)
+	if status != http.StatusOK || !strings.Contains(exportHeaders.Get("Content-Disposition"), "ruleset.toml") {
+		t.Fatalf("ruleset export: %d %s", status, exportedRuleset)
 	}
-	if status, _, _ := exportDefinitionsHTTP(t, host.URL, "/api/definitions/campaign/export", player); status != http.StatusForbidden {
-		t.Fatalf("player campaign export status = %d", status)
+	if status, _, _ := exportDefinitionsHTTP(t, host.URL, "/api/definitions/ruleset/export", player); status != http.StatusForbidden {
+		t.Fatalf("player ruleset export status = %d", status)
 	}
-	if bytes.Contains(exportedCampaign, []byte("characters")) || bytes.Contains(exportedCampaign, []byte("instances")) {
-		t.Fatalf("campaign export leaked runtime state: %s", exportedCampaign)
+	if bytes.Contains(exportedRuleset, []byte("characters")) || bytes.Contains(exportedRuleset, []byte("instances")) {
+		t.Fatalf("ruleset export leaked runtime state: %s", exportedRuleset)
 	}
-	exported, err := ParseRulesetTOML(exportedCampaign)
+	exported, err := ParseRulesetTOML(exportedRuleset)
 	if err != nil || len(exported.Registry.Actions) == 0 {
 		t.Fatalf("definitions export round trip: %v %#v", err, exported.Registry)
 	}

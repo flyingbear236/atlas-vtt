@@ -206,12 +206,6 @@ export class DiceRuntime {
     this.awaitingManual=true;this.awaitingRoll=true;this.#setSending(true);return true;
   }
 
-  rollAction(characterInstanceId,actionId,rollSpecId){
-    if(!this.sceneId||this.awaitingRoll||!characterInstanceId||!actionId||!rollSpecId)return false;
-    if(!this.queue?.('roll',{sceneId:this.sceneId,roll:{characterInstanceId,actionId,rollSpecId}})){this.toast('Бросок не отправлен: нет соединения с сервером');return false;}
-    this.awaitingRoll=true;return true;
-  }
-
   handle(message){
     if(message?.type==='actionRoll'||message?.type==='actionMessage'){
       const action=message.event;
@@ -329,7 +323,7 @@ export class DiceRuntime {
       row.append(heading,...this.#actionLines(event));
       return row;
     }
-    const source=document.createElement('span');source.className='roll-source';source.textContent=[event.actionName,event.rollSpecName].filter(Boolean).join(' · ')||'Ручной бросок';
+    const source=document.createElement('span');source.className='roll-source';source.textContent='Ручной бросок';
     const notation=document.createElement('span');notation.className='roll-notation';notation.textContent=`${diceNotation(event)}${modifierText(Number(event.modifier)||0)}`;
     const result=document.createElement('span');result.className='roll-result';result.textContent=`[${event.results.join(', ')}]${modifierText(Number(event.modifier)||0)} = ${numberText(event.total)}`;
     row.append(heading,source,notation,result);return row;

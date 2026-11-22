@@ -5,7 +5,6 @@ import (
 	"errors"
 	"math"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -45,19 +44,7 @@ func newDiceFixture(t *testing.T) diceFixture {
 	gm := &Member{ID: "gm", Name: "Game Master", Role: "gm", GM: true}
 	scene := newScene("scene", "Scene")
 	scene.Published = true
-	registry := emptyCampaignRegistry()
-	registry.Stats["agility"] = StatDefinition{ID: "agility", Name: "Agility", Type: StatTypeNumber}
-	registry.Stats["title"] = StatDefinition{ID: "title", Name: "Title", Type: StatTypeString}
-	registry.Actions["strike"] = ActionDefinition{
-		ID: "strike", Name: "Server Strike",
-		Rolls: []RollSpec{{ID: "damage", Name: "Server Damage", Count: 2, Sides: 10, ModifierStat: "agility", ModifierFixed: -2.5}},
-	}
-	registry.Actions["unused"] = ActionDefinition{ID: "unused", Name: "Unused", Rolls: []RollSpec{{ID: "roll", Name: "Roll", Count: 1, Sides: 6}}}
-	heroPreset := CharacterPresetDefinition{
-		ID: "hero", Name: "Hero Preset", Stats: map[string]StatValue{"agility": NumberStatValue(1.25)}, ActionIDs: []string{"strike"},
-	}
-	registry.Presets[heroPreset.ID] = heroPreset
-	character := NewCharacterInstance("hero-1", &heroPreset)
+	character := NewCharacterInstance("hero-1", nil)
 	character.Name = "Server Hero"
 	token := Token{
 		ID: "hero-token", Name: "Hero Token", FloorID: firstFloorID(scene), Size: 80, Opacity: 1,
@@ -68,7 +55,6 @@ func newDiceFixture(t *testing.T) diceFixture {
 	scene.rebuildRuntime()
 	session := &Session{
 		ID: "campaign", Members: map[string]*Member{alice.ID: alice, gm.ID: gm}, Scenes: map[string]*Scene{scene.ID: scene},
-		Ruleset:            RulesetSnapshot{Registry: RulesetRegistry{Stats: registry.Stats, Actions: registry.Actions, Presets: registry.Presets}},
 		CharacterInstances: map[string]CharacterInstance{character.ID: character},
 	}
 	rebuildCharacterReferences(session)
@@ -153,78 +139,25 @@ func TestManualRollSupportedSidesAndCountBounds(t *testing.T) {
 	}
 }
 
-func TestActionRollUsesEffectiveServerDefinitionAndModifiers(t *testing.T) {
+func TestManualRollRejectsActionFieldsBeforeRNG(t *testing.T) {
 	fixture := newDiceFixture(t)
-	fixture.rng.values = []int{9, 4}
-	event, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{
-		CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if event.Count != 2 || event.Sides != 10 || !reflect.DeepEqual(event.Results, []int{10, 5}) {
-		t.Fatalf("action dice were not resolved on the server: %#v", event)
-	}
-	if event.Modifier != -1.25 || event.Total != 13.75 {
-		t.Fatalf("fixed and fractional stat modifiers were not summed: %#v", event)
-	}
-	if event.CharacterName != "Server Hero" || event.ActionName != "Server Strike" || event.RollSpecName != "Server Damage" {
-		t.Fatalf("server names missing from event: %#v", event)
-	}
-
-	character := fixture.session.CharacterInstances["hero-1"]
-	preset := fixture.session.Ruleset.Registry.Presets["hero"]
-	registry, err := rollRegistry(fixture.session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	character = MaterializeCharacter(character, &preset, registry)
-	character.Materialized.Stats["agility"] = IntegerStatValue(-3)
-	fixture.session.CharacterInstances[character.ID] = character
-	fixture.rng.next = 0
-	event, err = fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage"})
-	if err != nil || event.Modifier != -5.5 {
-		t.Fatalf("negative integer modifier: event=%#v err=%v", event, err)
-	}
-}
-
-func TestActionRollRejectsMissingOrWrongStatAndAction(t *testing.T) {
-	fixture := newDiceFixture(t)
-	request := RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage"}
-	character := fixture.session.CharacterInstances["hero-1"]
-	character.PresetID = ""
-	character.Materialized = &CharacterMechanicalState{Stats: map[string]StatValue{}, ActionIDs: []string{"strike"}}
-	fixture.session.CharacterInstances[character.ID] = character
-	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil || !strings.Contains(err.Error(), "no value") {
-		t.Fatalf("missing modifier stat error = %v", err)
-	}
-
-	character.Materialized.Stats["agility"] = StringStatValue("fast")
-	fixture.session.CharacterInstances[character.ID] = character
-	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil || !strings.Contains(err.Error(), "not numeric") {
-		t.Fatalf("wrong modifier stat error = %v", err)
-	}
-
-	character.Materialized.Stats["agility"] = NumberStatValue(1)
-	fixture.session.CharacterInstances[character.ID] = character
-	for _, bad := range []RollRequest{
-		{CharacterInstanceID: "hero-1", ActionID: "missing", RollSpecID: "damage"},
-		{CharacterInstanceID: "hero-1", ActionID: "unused", RollSpecID: "roll"},
-		{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "missing"},
+	for _, request := range []RollRequest{
+		{ActionID: "strike"},
+		{RollSpecID: "damage"},
+		{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage", Count: rollInt(1), Sides: rollInt(6)},
 	} {
-		if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, bad); err == nil {
-			t.Fatalf("invalid action request accepted: %#v", bad)
+		if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil || err.Error() != v04RollCommandIssue {
+			t.Fatalf("expected actionExecute diagnostic, got %v", err)
 		}
+	}
+	if fixture.rng.next != 0 {
+		t.Fatal("obsolete action request reached RNG")
 	}
 }
 
 func TestRollRejectsSpoofedAuthorityAndUsesCanonicalAuthor(t *testing.T) {
 	fixture := newDiceFixture(t)
-	request := RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage", Count: rollInt(99)}
-	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil {
-		t.Fatal("action count override accepted")
-	}
-	request.Count = nil
+	request := RollRequest{CharacterInstanceID: "hero-1", Count: rollInt(2), Sides: rollInt(10)}
 	request.Results = []int{10, 10}
 	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, request); err == nil {
 		t.Fatal("client results accepted")
@@ -252,7 +185,7 @@ func TestRollRejectsSpoofedAuthorityAndUsesCanonicalAuthor(t *testing.T) {
 
 func TestCharacterRollRequiresAccessibleLinkedTokenInScene(t *testing.T) {
 	fixture := newDiceFixture(t)
-	request := RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage"}
+	request := RollRequest{CharacterInstanceID: "hero-1", Count: rollInt(1), Sides: rollInt(10)}
 	token := fixture.scene.Tokens["hero-token"]
 	token.Hidden = true
 	fixture.scene.Tokens[token.ID] = token
@@ -272,11 +205,8 @@ func TestCharacterRollRequiresAccessibleLinkedTokenInScene(t *testing.T) {
 
 func TestRollRejectsUnsafeTotalBeforeRNG(t *testing.T) {
 	fixture := newDiceFixture(t)
-	action := fixture.session.Ruleset.Registry.Actions["strike"]
-	action.Rolls[0].ModifierFixed = float64(MaxSafeInteger)
-	action.Rolls[0].ModifierStat = ""
-	fixture.session.Ruleset.Registry.Actions[action.ID] = action
-	_, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage"})
+	modifier := float64(MaxSafeInteger)
+	_, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Count: rollInt(1), Sides: rollInt(6), ManualModifier: &modifier})
 	if err == nil || fixture.rng.next != 0 {
 		t.Fatalf("unsafe total should fail before RNG: calls=%d err=%v", fixture.rng.next, err)
 	}
@@ -325,9 +255,6 @@ func TestManualCompoundRollWithModifier(t *testing.T) {
 	single, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Count: rollInt(1), Sides: rollInt(6), ManualModifier: &minus})
 	if err != nil || single.Modifier != -2 || single.Total != 4 {
 		t.Fatalf("single modifier event=%#v err=%v", single, err)
-	}
-	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{CharacterInstanceID: "hero-1", ActionID: "strike", RollSpecID: "damage", ManualModifier: &bonus}); err == nil {
-		t.Fatal("client changed the modifier of an action roll")
 	}
 	tooLarge := float64(MaxSafeInteger) + 10
 	if _, err := fixture.service.Execute(fixture.session, fixture.scene.ID, fixture.alice, RollRequest{Count: rollInt(1), Sides: rollInt(6), ManualModifier: &tooLarge}); err == nil {

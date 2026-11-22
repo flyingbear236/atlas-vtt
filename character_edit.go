@@ -22,7 +22,6 @@ type CharacterEditPayload struct {
 	ResourceCurrent           map[string]StatValue `json:"resourceCurrent"`
 	ActionIDs                 []string             `json:"actionIds"`
 	Definitions               []StatDefinition     `json:"definitions,omitempty"`
-	NewActions                []ActionDefinition   `json:"newActions,omitempty"`
 	ResetAvatar               bool                 `json:"resetAvatar,omitempty"`
 	AvatarAssetID             string               `json:"avatarAssetId,omitempty"`
 	ArtworkPath               string               `json:"artworkPath,omitempty"`
@@ -60,7 +59,7 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 	if registry.statPlan != nil {
 		editLimit = MaxStatsPerRegistry // the form may echo every ruleset default
 	}
-	if len(draft.Definitions) > MaxStatsPerRegistry || len(draft.NewActions) > MaxActionsPerRegistry || len(draft.Stats)+len(draft.ResourceInitial) > editLimit || len(draft.ResourceCurrent) > editLimit || len(draft.ActionIDs) > MaxActionsPerCharacter {
+	if len(draft.Definitions) > MaxStatsPerRegistry || len(draft.Stats)+len(draft.ResourceInitial) > editLimit || len(draft.ResourceCurrent) > editLimit || len(draft.ActionIDs) > MaxActionsPerCharacter {
 		return errors.New("character edit exceeds limits")
 	}
 	campaign := emptyCampaignRegistry()
@@ -82,19 +81,7 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 		}
 		campaign.Stats[definition.ID] = definition
 	}
-	if campaign.Actions == nil {
-		campaign.Actions = map[string]ActionDefinition{}
-	}
-	for _, definition := range draft.NewActions {
-		if _, exists := registry.Actions[definition.ID]; exists {
-			return fmt.Errorf("action %q already exists", definition.ID)
-		}
-		if _, exists := campaign.Actions[definition.ID]; exists {
-			return fmt.Errorf("action %q duplicated", definition.ID)
-		}
-		campaign.Actions[definition.ID] = definition
-	}
-	if len(draft.Definitions) > 0 || len(draft.NewActions) > 0 {
+	if len(draft.Definitions) > 0 {
 		merged, err := MergeDefinitionRegistries(DefinitionRegistries{Ruleset: session.Ruleset.Registry, Campaign: campaign})
 		if err != nil {
 			return err
@@ -191,7 +178,7 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 	for id, resource := range originalState.Resources {
 		originalInitial[id] = resource.Initial
 	}
-	changedMechanics := len(draft.Definitions) > 0 || len(draft.NewActions) > 0 ||
+	changedMechanics := len(draft.Definitions) > 0 ||
 		!maps.Equal(originalState.Stats, stats) ||
 		!maps.Equal(originalInitial, initial) ||
 		!slices.Equal(originalState.ActionIDs, draft.ActionIDs)
@@ -201,9 +188,6 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 			ResourceInitial: initial,
 			ActionIDs:       append([]string(nil), draft.ActionIDs...),
 		}
-		instance.StatOverrides = nil
-		instance.AddedActionIDs = nil
-		instance.RemovedActionIDs = nil
 	}
 	instance.ResourceCurrent = make(map[string]StatValue, len(draft.ResourceCurrent))
 	for id, current := range existing.ResourceCurrent {
@@ -257,7 +241,7 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 		instance = ResetAvatarOverride(instance)
 	}
 
-	if len(draft.Definitions) > 0 || len(draft.NewActions) > 0 {
+	if len(draft.Definitions) > 0 {
 		if err := mutation.setCampaign(campaign); err != nil {
 			return err
 		}

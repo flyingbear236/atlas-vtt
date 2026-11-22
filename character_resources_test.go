@@ -286,20 +286,3 @@ func TestResourceCurrentSaveFailureRollsBack(t *testing.T) {
 		t.Fatalf("retry did not persist current independently: %#v", instance)
 	}
 }
-
-func TestNumericResourceCurrentCanDriveRollModifier(t *testing.T) {
-	character := EffectiveCharacter{
-		ID:    "resource-character",
-		Stats: map[string]StatValue{},
-		Resources: map[string]EffectiveResource{
-			"stamina": {Current: NumberStatValue(3.5), Initial: NumberStatValue(10)},
-		},
-	}
-	modifier, err := resolveRollModifier(character, RollSpec{ModifierStat: "stamina", ModifierFixed: 1.5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if modifier != 5 {
-		t.Fatalf("resource modifier = %v, want 5", modifier)
-	}
-}

@@ -5,29 +5,16 @@ import (
 	"testing"
 )
 
-func TestDefinitionExampleCampaignExtensionsConflictWithUnifiedRegistry(t *testing.T) {
-	rulesetData, err := os.ReadFile("examples/definitions/fantasy-ruleset.toml")
+func TestDefinitionExampleUsesV04(t *testing.T) {
+	data, err := os.ReadFile("examples/definitions/fantasy-ruleset.toml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ruleset, err := ParseRulesetTOML(rulesetData)
-	if err != nil {
-		t.Fatalf("parse example ruleset: %v", err)
-	}
-
-	campaignData, err := os.ReadFile("examples/definitions/fantasy-campaign-extensions.toml")
+	snapshot, err := ParseRulesetTOML(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = PreviewCampaignDefinitionsImport(DefinitionRegistries{
-		Ruleset: ruleset.Registry,
-		Campaign: CampaignRegistry{
-			Stats:   map[string]StatDefinition{},
-			Actions: map[string]ActionDefinition{},
-			Presets: map[string]CharacterPresetDefinition{},
-		},
-	}, campaignData)
-	if err == nil {
-		t.Fatal("legacy campaign overrides were accepted by the unified registry")
+	if !snapshot.usesV04() || len(snapshot.actionPlans) != 3 || len(snapshot.Characters) != 2 {
+		t.Fatal("example must contain v0.4 characters and executable actions")
 	}
 }

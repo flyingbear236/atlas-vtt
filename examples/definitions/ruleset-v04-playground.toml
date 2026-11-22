@@ -1,0 +1,269 @@
+# ATLAS Ruleset v0.4. Испытательный полигон для новой кампании.
+
+[stat.body.strength]
+name = "Сила"
+description = "База и эффективное значение проверяются отдельно."
+type = "integer"
+default = 16
+bonus = { formula = "floor((value - 10) / 2)" }
+
+[stat.level]
+name = "Уровень"
+default = 6
+
+[stat.mastery]
+name = "Мастерство"
+default = { formula = "2 + floor((stat.level - 1) / 4)" }
+
+[stat.athletics]
+name = "Атлетика"
+default = { formula = "stat.body.strength.bonus" }
+
+[stat.hp]
+name = "Здоровье"
+default = { formula = "20 + stat.body.strength" }
+resource = true
+
+[stat.armor]
+name = "Защита"
+default = 15
+
+[stat.open_guard]
+name = "Открытая стойка"
+default = 0
+
+[stat.focus]
+name = "Фокус"
+default = 2
+
+[stat.signal]
+name = "Сигнал"
+default = 0
+gain = 10
+
+[stat.motto]
+name = "Девиз"
+default = "Проверяй по одному"
+
+[stat.calibrated]
+name = "Готов к проверке"
+default = true
+
+[effect.ring_strength]
+target = "stat.body.strength"
+formula = "target + 2"
+scope = "actor"
+stack = "repeat"
+
+[effect.ring_focus]
+target = "stat.focus"
+formula = "target + 3"
+stack = "unique"
+
+[effect.signal_boost]
+target = "stat.signal.gain"
+formula = "target + 5"
+priority = 1
+
+[effect.signal_reduce]
+target = "stat.signal.gain"
+formula = "floor(target / 2)"
+priority = 2
+
+[effect.training]
+target = ["action.lab.skill.roll", "action.lab.aim.roll"]
+formula = "target + stat.mastery"
+when = "actor.training.ready"
+
+[effect.martial]
+target = "action.weapon.strike.hit.roll"
+formula = "target + stat.mastery"
+when = "source.weapon_group == 'martial' && actor.training.ready"
+
+[effect.runic_accuracy]
+target = "action.weapon.strike.hit.roll"
+formula = "target + 2"
+priority = 1
+scope = "source"
+
+[effect.open_guard]
+target = "action.weapon.strike.hit.roll"
+formula = "target + action.target.stat.open_guard"
+priority = 2
+when = "action.target.stat.open_guard > 0"
+
+[action.lab.report]
+name = "Сводка испытателя"
+message = "{actor.profile.codename} · сила {stat.body.strength.base} → {stat.body.strength} · бонус {stat.body.strength.bonus} · фокус {stat.focus} · усиление {stat.signal.gain} · HP {stat.hp.current}/{stat.hp}"
+
+[action.lab.skill]
+name = "Проверка навыка"
+roll = "1d20 + stat.athletics"
+message = "Проверка навыка дала {roll}"
+
+[action.lab.aim]
+name = "Пробный выпад"
+description = "Фиксированный исходный результат для сравнения двух целей."
+target = "select(character)"
+roll = "12"
+var.dc = "10 + stat.mastery"
+var.margin = "roll - var.dc"
+success = "roll >= target.stat.armor && actor.training.ready"
+message = "DC {var.dc} · запас {var.margin}"
+
+[action.lab.aim.on.success]
+message = "Успех. Цель теряет 3 HP."
+apply = { path = "target.stat.hp.current", formula = "value - 3" }
+
+[action.lab.aim.on.fail]
+message = "Провал. Цель выдержала выпад."
+
+[action.weapon.strike]
+name = "Удар оружием"
+
+[action.weapon.strike.hit]
+name = "Попадание"
+target = "select(character)"
+roll = "1d20 + stat.body.strength.bonus"
+success = "roll >= target.stat.armor"
+on.success = { message = "Оружие попало." }
+on.fail = { message = "Оружие промахнулось." }
+
+[action.weapon.strike.damage]
+name = "Урон"
+target = "select(character)"
+roll = "dice(source.damage) + stat.body.strength.bonus"
+message = "Урон {roll}"
+apply = { path = "target.stat.hp.current", formula = "value - roll" }
+
+[action.lab.recover]
+name = "Восстановить 2 HP"
+target = "self"
+apply = { path = "target.stat.hp.current", formula = "value + 2" }
+message = "Испытатель восстановил 2 HP."
+
+[action.lab.inspect]
+name = "Осмотр предмета"
+target = "select(object)"
+message = "{target.name} · маркировка {target.notes.label} · заряды {target.state.charges}"
+
+[action.lab.calibrate]
+name = "Калибровка предмета"
+target = "select(object)"
+roll = "10"
+success = "roll >= target.dc"
+on.success = { message = "Калибровка прошла." }
+on.fail = { message = "Калибровка не прошла." }
+
+[action.lab.discharge]
+name = "Пуск катушки"
+target = "source"
+success = "source.state.charges > 0"
+message = "Проверка питания {source.name}"
+on.success = { apply = { path = "target.state.charges", formula = "value - 1" }, message = "Потрачен один заряд." }
+on.fail = { message = "Катушка разряжена." }
+
+[object.weapon.rune_blade]
+name = "Рунный клинок"
+description = "У каждого экземпляра клинка свой источник действия."
+damage = "1d8"
+weapon_group = "martial"
+actions = ["action.weapon.strike"]
+effects = ["effect.runic_accuracy"]
+
+[object.weapon.plain_blade]
+name = "Обычный клинок"
+damage = "1d8"
+weapon_group = "martial"
+actions = ["action.weapon.strike"]
+
+[object.weapon.dagger]
+name = "Учебный кинжал"
+damage = "1d4"
+weapon_group = "simple"
+actions = ["action.weapon.strike"]
+
+[object.lab.ring]
+name = "Кольцо испытателя"
+effects = ["effect.ring_strength", "effect.ring_focus"]
+
+[object.lab.coil]
+name = "Сигнальная катушка"
+dc = 8
+notes.label = "ЛАТУНЬ"
+actions = ["action.lab.discharge"]
+
+[character.tester]
+name = "Испытатель"
+profile.codename = "Маяк"
+training.ready = true
+actions = [
+  "action.lab.report",
+  "action.lab.skill",
+  "action.lab.aim",
+  "action.lab.recover",
+  "action.lab.inspect",
+  "action.lab.calibrate",
+]
+effects = [
+  "effect.signal_boost",
+  "effect.signal_reduce",
+  "effect.training",
+  "effect.martial",
+  "effect.open_guard",
+]
+stat.hp.current = 24
+
+[[character.tester.inventory]]
+id = "ring-a"
+object = "object.lab.ring"
+equipped = true
+
+[[character.tester.inventory]]
+id = "ring-b"
+object = "object.lab.ring"
+equipped = true
+
+[[character.tester.inventory]]
+id = "rune-a"
+object = "object.weapon.rune_blade"
+equipped = true
+
+[[character.tester.inventory]]
+id = "rune-b"
+object = "object.weapon.rune_blade"
+equipped = true
+
+[[character.tester.inventory]]
+id = "plain"
+object = "object.weapon.plain_blade"
+equipped = true
+
+[[character.tester.inventory]]
+id = "dagger"
+object = "object.weapon.dagger"
+equipped = true
+
+[[character.tester.inventory]]
+id = "coil"
+object = "object.lab.coil"
+equipped = true
+state.charges = 2
+
+[character.dummy]
+name = "Манекен"
+stat.body.strength.base = 10
+stat.armor.base = 14
+stat.open_guard.base = 1
+stat.hp.current = 30
+
+[character.guard]
+name = "Страж"
+stat.armor.base = 16
+stat.hp.current = 36
+
+[[character.guard.inventory]]
+id = "coil-guard"
+object = "object.lab.coil"
+equipped = false
+state.charges = 9

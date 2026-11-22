@@ -15,7 +15,7 @@ import (
 func TestCharacterMechanicalMaterializationLifecycle(t *testing.T) {
 	preset := CharacterPresetDefinition{
 		ID: "wolf", Name: "Wolf",
-		Stats: map[string]StatValue{"hp": IntegerStatValue(11), "dex": IntegerStatValue(14)},
+		Stats:     map[string]StatValue{"hp": IntegerStatValue(11), "dex": IntegerStatValue(14)},
 		ActionIDs: []string{"bite", "dash"},
 	}
 	linked := NewCharacterInstance("linked", &preset)
@@ -66,59 +66,10 @@ func TestCharacterMechanicalMaterializationLifecycle(t *testing.T) {
 	}
 }
 
-func TestLegacyPartialOverridesBecomesWholeSnapshot(t *testing.T) {
-	preset := CharacterPresetDefinition{
-		ID: "wolf", Name: "Wolf",
-		Stats: map[string]StatValue{"hp": IntegerStatValue(11), "dex": IntegerStatValue(14)},
-		ActionIDs: []string{"bite", "dash"},
-	}
-	session := &Session{
-		Ruleset: RulesetSnapshot{Registry: RulesetRegistry{
-			Stats: map[string]StatDefinition{
-				"hp": {ID: "hp", Type: StatTypeInteger},
-				"dex": {ID: "dex", Type: StatTypeInteger},
-			},
-			Actions: map[string]ActionDefinition{
-				"bite": {ID: "bite", Name: "Bite"},
-				"dash": {ID: "dash", Name: "Dash"},
-				"claw": {ID: "claw", Name: "Claw"},
-			},
-			Presets: map[string]CharacterPresetDefinition{"wolf": preset},
-		}},
-		CampaignDefinitions: emptyCampaignRegistry(),
-		CharacterInstances: map[string]CharacterInstance{
-			"custom": {
-				ID: "custom", Name: "Retained", PresetID: "wolf", Persistent: true,
-				StatOverrides: map[string]StatValue{"hp": IntegerStatValue(4)},
-				AddedActionIDs: []string{"claw"}, RemovedActionIDs: []string{"bite"},
-			},
-			"linked": {ID: "linked", Name: "Independently named", PresetID: "wolf"},
-			"empty": {ID: "empty", Name: "Empty"},
-		},
-	}
-	changed, err := migrateLegacyCharacterMechanics(session)
-	if err != nil || !changed {
-		t.Fatalf("migration failed: changed=%v err=%v", changed, err)
-	}
-	custom := session.CharacterInstances["custom"]
-	if custom.Materialized == nil || custom.Materialized.Stats["hp"].Integer() != 4 ||
-		custom.Materialized.Stats["dex"].Integer() != 14 ||
-		!reflect.DeepEqual(custom.Materialized.ActionIDs, []string{"dash", "claw"}) ||
-		custom.PresetID != "wolf" || custom.Name != "Retained" || !custom.Persistent {
-		t.Fatalf("legacy mechanics/independent fields lost: %#v", custom)
-	}
-	if len(custom.StatOverrides) != 0 || len(custom.AddedActionIDs) != 0 || len(custom.RemovedActionIDs) != 0 {
-		t.Fatal("legacy overrides were left after migration")
-	}
-	if session.CharacterInstances["linked"].Materialized != nil || session.CharacterInstances["empty"].Materialized == nil {
-		t.Fatal("linked or standalone legacy semantics were lost")
-	}
-}
-
 func TestRulesetPresetRemovalProjectionGuardsGlobals(t *testing.T) {
 	preset := CharacterPresetDefinition{ID: "wolf", Name: "Wolf", Stats: map[string]StatValue{"hp": IntegerStatValue(11)}, ActionIDs: []string{"bite"}}
 	old := RulesetSnapshot{Registry: RulesetRegistry{
-		Stats: map[string]StatDefinition{"hp": {ID: "hp", Type: StatTypeInteger}},
+		Stats:   map[string]StatDefinition{"hp": {ID: "hp", Type: StatTypeInteger}},
 		Actions: map[string]ActionDefinition{"bite": {ID: "bite", Name: "Bite"}},
 		Presets: map[string]CharacterPresetDefinition{"wolf": preset},
 	}}
@@ -212,8 +163,8 @@ func TestRulesetPresetRemovalSaveRollbackAndCommit(t *testing.T) {
 	}
 	query := map[string][]string{
 		"expectedRevision": {fmt.Sprint(preview.RegistryRevision)},
-		"digest": {preview.Digest},
-		"key": {"remove-preset"},
+		"digest":           {preview.Digest},
+		"key":              {"remove-preset"},
 	}
 	blocker := filepath.Join(root, "sessions.json.tmp")
 	if err := os.Mkdir(blocker, 0755); err != nil {

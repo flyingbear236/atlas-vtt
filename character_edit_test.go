@@ -16,7 +16,8 @@ func TestCharacterEditAtomicReplaceAndIsolatedConflict(t *testing.T) {
 	original := NewCharacterInstance("sheet-edit-test", &preset)
 	session.CharacterInstances[original.ID] = original
 	tracked := StatDefinition{ID: "energy_edit", Name: "Energy", Kind: StatKindResource, Type: StatTypeInteger}
-	action := ActionDefinition{ID: "rest_edit", Name: "Rest"}
+	const actionID = "rest_edit"
+	session.Ruleset.Registry.Actions[actionID] = ActionDefinition{ID: actionID, Name: "Rest"}
 	edit := &CharacterEditPayload{
 		ExpectedCharacterRevision: session.CharacterRevision,
 		ExpectedRegistryRevision:  session.RegistryRevision,
@@ -25,9 +26,8 @@ func TestCharacterEditAtomicReplaceAndIsolatedConflict(t *testing.T) {
 		Stats:                     map[string]StatValue{"dexterity": IntegerStatValue(18)},
 		ResourceInitial:           map[string]StatValue{tracked.ID: IntegerStatValue(10)},
 		ResourceCurrent:           map[string]StatValue{tracked.ID: IntegerStatValue(4)},
-		ActionIDs:                 []string{action.ID},
+		ActionIDs:                 []string{actionID},
 		Definitions:               []StatDefinition{tracked},
-		NewActions:                []ActionDefinition{action},
 	}
 	command := Command{Type: "characterEdit", CharacterID: original.ID, CharacterEdit: edit}
 	mutation := newCharacterMutation(session)
@@ -43,6 +43,9 @@ func TestCharacterEditAtomicReplaceAndIsolatedConflict(t *testing.T) {
 	}
 	if session.Ruleset.Registry.Presets["wolf"].Stats["hp"].Integer() != 11 {
 		t.Fatal("original preset changed")
+	}
+	if len(after.Materialized.ActionIDs) != 1 || after.Materialized.ActionIDs[0] != actionID {
+		t.Fatal("assigned action missing")
 	}
 	if _, ok := session.Ruleset.Registry.Stats[tracked.ID]; !ok {
 		t.Fatal("new definition missing")

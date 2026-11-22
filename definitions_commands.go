@@ -26,15 +26,13 @@ const (
 	definitionKindPreset = "preset"
 
 	definitionOperationRulesetInstall = "rulesetInstall"
-	definitionOperationCampaignImport = "campaignImport"
 )
 
 type DefinitionApplyResult struct {
-	Kind                string             `json:"kind"`
-	RegistryRevision    uint64             `json:"registryRevision"`
-	Diff                CampaignImportDiff `json:"diff,omitempty"`
-	RulesetMetadata     *RulesetMetadata   `json:"rulesetMetadata,omitempty"`
-	ExecutionDiagnostic string             `json:"executionDiagnostic,omitempty"`
+	Kind                string           `json:"kind"`
+	RegistryRevision    uint64           `json:"registryRevision"`
+	RulesetMetadata     *RulesetMetadata `json:"rulesetMetadata,omitempty"`
+	ExecutionDiagnostic string           `json:"executionDiagnostic,omitempty"`
 }
 
 type DefinitionOperationReceipt struct {
@@ -57,7 +55,6 @@ type definitionRegistryResponse struct {
 type definitionPreviewResponse struct {
 	Digest              string                  `json:"digest"`
 	RegistryRevision    uint64                  `json:"registryRevision"`
-	Diff                *CampaignImportDiff     `json:"diff,omitempty"`
 	RulesetDiff         *RulesetReplacementDiff `json:"rulesetDiff,omitempty"`
 	Ruleset             *RulesetSnapshot        `json:"ruleset,omitempty"`
 	ArtworkWarnings     []ArtworkWarning        `json:"artworkWarnings,omitempty"`
@@ -67,7 +64,7 @@ type definitionPreviewResponse struct {
 
 func definitionCommandType(commandType string) bool {
 	switch commandType {
-	case "definitionCreate", "definitionUpdate", "definitionDuplicate", "definitionDelete", "definitionRulesetUpdate", "definitionRulesetDelete":
+	case "definitionCreate", "definitionUpdate", "definitionDuplicate", "definitionDelete":
 		return true
 	default:
 		return false
@@ -363,7 +360,7 @@ func applyDefinitionCommand(session *Session, command Command) (RulesetSnapshot,
 		if err := addGeneratedDefinitions(&candidate, changes); err != nil {
 			return RulesetSnapshot{}, false, err
 		}
-	case "definitionUpdate", "definitionRulesetUpdate":
+	case "definitionUpdate":
 		if !currentExists {
 			return RulesetSnapshot{}, false, errors.New("definition not found")
 		}
@@ -400,7 +397,7 @@ func applyDefinitionCommand(session *Session, command Command) (RulesetSnapshot,
 		default:
 			return RulesetSnapshot{}, false, errors.New("unknown definition kind")
 		}
-	case "definitionDelete", "definitionRulesetDelete":
+	case "definitionDelete":
 		if !currentExists {
 			return RulesetSnapshot{}, false, errors.New("definition not found")
 		}
@@ -589,11 +586,6 @@ func (s *Server) publishRegistryChanged(session *Session) {
 		}
 	}
 	s.publishResourceOverlayConfig(session)
-}
-
-func definitionsDigest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func readDefinitionDocument(w http.ResponseWriter, request *http.Request) ([]byte, bool) {
@@ -808,22 +800,6 @@ func (s *Server) exportRulesetDefinitions(w http.ResponseWriter, request *http.R
 	writeDefinitionsTOML(w, data, "ruleset.toml")
 }
 
-func (s *Server) exportCampaignDefinitions(w http.ResponseWriter, request *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	session, member := s.auth(request)
-	if !memberIsGM(member) {
-		fail(w, http.StatusForbidden, "Нужны права ведущего")
-		return
-	}
-	data, err := ExportRulesetSnapshotTOML(session.Ruleset)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeDefinitionsTOML(w, data, "definitions.toml")
-}
-
 func rulesetInstalled(snapshot RulesetSnapshot) bool {
 	return len(snapshot.Files) != 0 || len(snapshot.Media) != 0 || rulesetSnapshotHasContent(snapshot)
 }
@@ -873,81 +849,10 @@ func (s *Server) previewRulesetInstall(w http.ResponseWriter, request *http.Requ
 	})
 }
 
-func (s *Server) previewCampaignImport(w http.ResponseWriter, request *http.Request) {
-	if !s.authorizeDefinitionsRequest(w, request) {
-		return
-	}
-	data, ok := readDefinitionDocument(w, request)
-	if !ok {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	session, member := s.auth(request)
-	if !memberIsGM(member) {
-		fail(w, http.StatusForbidden, "Нужны права ведущего")
-		return
-	}
-	candidate, diff, err := prepareDefinitionsImport(session, data)
-	if err != nil {
-		fail(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	reply(w, definitionPreviewResponse{
-		Digest: definitionsDigest(data), RegistryRevision: session.RegistryRevision, Diff: &diff,
-		ExecutionDiagnostic: candidate.executionDiagnostic(), RulesetWarnings: candidate.effectPriorityWarnings(),
-	})
-}
-
-// Imports are additional TOML sources. A duplicate ID conflicts instead of
-// silently replacing a definition, regardless of its current file owner.
-func prepareDefinitionsImport(session *Session, data []byte) (RulesetSnapshot, CampaignImportDiff, error) {
-	candidate, err := RulesetSnapshotWithSources(session.Ruleset)
-	if err != nil {
-		return RulesetSnapshot{}, CampaignImportDiff{}, err
-	}
-	files := make(map[string]string, len(candidate.Files)+1)
-	for name := range candidate.Files {
-		files[name], err = RenderRulesetFileTOML(candidate, name)
-		if err != nil {
-			return RulesetSnapshot{}, CampaignImportDiff{}, err
-		}
-	}
-	name := "imported-definitions.toml"
-	for n := 2; ; n++ {
-		if _, exists := files[name]; !exists {
-			break
-		}
-		name = fmt.Sprintf("imported-definitions-%d.toml", n)
-	}
-	files[name] = string(data)
-	combined, err := CompileRulesetFiles(files)
-	if err != nil {
-		return RulesetSnapshot{}, CampaignImportDiff{}, err
-	}
-	added := combined.Files[name]
-	if added.HasMetadata {
-		return RulesetSnapshot{}, CampaignImportDiff{}, errors.New("imported definitions must not contain ruleset metadata")
-	}
-	combined.Media = candidate.Media
-	if err := validateDefinitionState(session, combined, emptyCampaignRegistry()); err != nil {
-		return RulesetSnapshot{}, CampaignImportDiff{}, err
-	}
-	return combined, CampaignImportDiff{
-		Stats:      DefinitionImportChanges{Added: added.Stats},
-		Actions:    DefinitionImportChanges{Added: added.Actions},
-		Presets:    DefinitionImportChanges{Added: added.Presets},
-		Effects:    DefinitionImportChanges{Added: added.Effects},
-		Objects:    DefinitionImportChanges{Added: added.Objects},
-		Characters: DefinitionImportChanges{Added: added.Characters},
-	}, nil
-}
-
 func cloneDefinitionOperationReceipts(receipts map[string]DefinitionOperationReceipt) map[string]DefinitionOperationReceipt {
 	result := make(map[string]DefinitionOperationReceipt, len(receipts))
 	for key, receipt := range receipts {
 		copy := receipt
-		copy.Result.Diff = cloneCampaignImportDiff(receipt.Result.Diff)
 		if receipt.Result.RulesetMetadata != nil {
 			metadata := *receipt.Result.RulesetMetadata
 			copy.Result.RulesetMetadata = &metadata
@@ -955,14 +860,6 @@ func cloneDefinitionOperationReceipts(receipts map[string]DefinitionOperationRec
 		result[key] = copy
 	}
 	return result
-}
-
-func cloneCampaignImportDiff(diff CampaignImportDiff) CampaignImportDiff {
-	for _, changes := range []*DefinitionImportChanges{&diff.Stats, &diff.Actions, &diff.Presets, &diff.Effects, &diff.Objects, &diff.Characters} {
-		changes.Added = slices.Clone(changes.Added)
-		changes.Updated = slices.Clone(changes.Updated)
-	}
-	return diff
 }
 
 func pruneDefinitionOperationReceipts(receipts map[string]DefinitionOperationReceipt, keep string) {
@@ -996,9 +893,7 @@ func validateDefinitionOperationReceipts(receipts map[string]DefinitionOperation
 		if _, err := hex.DecodeString(receipt.Digest); err != nil {
 			return errors.New("invalid definition operation digest")
 		}
-		switch receipt.Kind {
-		case definitionOperationRulesetInstall, definitionOperationCampaignImport:
-		default:
+		if receipt.Kind != definitionOperationRulesetInstall {
 			return errors.New("invalid definition operation kind")
 		}
 	}
@@ -1006,14 +901,7 @@ func validateDefinitionOperationReceipts(receipts map[string]DefinitionOperation
 }
 
 func (s *Server) applyRulesetInstall(w http.ResponseWriter, request *http.Request) {
-	s.applyDefinitionDocument(w, request, definitionOperationRulesetInstall)
-}
-
-func (s *Server) applyCampaignImport(w http.ResponseWriter, request *http.Request) {
-	s.applyDefinitionDocument(w, request, definitionOperationCampaignImport)
-}
-
-func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Request, kind string) {
+	const kind = definitionOperationRulesetInstall
 	if !s.authorizeDefinitionsRequest(w, request) {
 		return
 	}
@@ -1022,24 +910,11 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var data []byte
-	var candidatePackage rulesetPackage
-	actualDigest := ""
-	if kind == definitionOperationRulesetInstall {
-		var ok bool
-		candidatePackage, ok = readRulesetPackage(w, request)
-		if !ok {
-			return
-		}
-		actualDigest = rulesetPackageDigest(candidatePackage)
-	} else {
-		var ok bool
-		data, ok = readDefinitionDocument(w, request)
-		if !ok {
-			return
-		}
-		actualDigest = definitionsDigest(data)
+	candidatePackage, ok := readRulesetPackage(w, request)
+	if !ok {
+		return
 	}
+	actualDigest := rulesetPackageDigest(candidatePackage)
 	if actualDigest != expectedDigest {
 		fail(w, http.StatusConflict, "Документ не совпадает с результатом проверки")
 		return
@@ -1069,50 +944,35 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 	oldRuleset := cloneRulesetSnapshot(session.Ruleset)
 	oldOperations := cloneDefinitionOperationReceipts(session.DefinitionOperations)
 	oldCharacters := map[string]CharacterInstance{}
-	var oldAssets map[string]Asset
 	oldRevision, oldCharacterRevision, oldDirty := session.RegistryRevision, session.CharacterRevision, s.dirty
 	result := DefinitionApplyResult{Kind: kind}
-	switch kind {
-	case definitionOperationRulesetInstall:
-		if candidatePackage.Media == nil {
-			candidatePackage.Media = session.Ruleset.Media
+	if candidatePackage.Media == nil {
+		candidatePackage.Media = session.Ruleset.Media
+	}
+	snapshot, parseErr := compileRulesetPackage(candidatePackage)
+	var updates map[string]CharacterInstance
+	if parseErr == nil {
+		updates, parseErr = prepareDefinitionCharacters(session, snapshot, emptyCampaignRegistry())
+	}
+	if parseErr != nil {
+		var conflict *RulesetDefinitionConflictError
+		if errors.As(parseErr, &conflict) {
+			fail(w, http.StatusConflict, parseErr.Error())
+		} else {
+			fail(w, http.StatusBadRequest, parseErr.Error())
 		}
-		snapshot, parseErr := compileRulesetPackage(candidatePackage)
-		var updates map[string]CharacterInstance
-		if parseErr == nil {
-			updates, parseErr = prepareDefinitionCharacters(session, snapshot, emptyCampaignRegistry())
-		}
-		if parseErr != nil {
-			var conflict *RulesetDefinitionConflictError
-			if errors.As(parseErr, &conflict) {
-				fail(w, http.StatusConflict, parseErr.Error())
-			} else {
-				fail(w, http.StatusBadRequest, parseErr.Error())
-			}
-			return
-		}
-		oldAssets = cloneAssetRegistry(session.Assets)
-		session.Ruleset = cloneRulesetSnapshot(snapshot)
-		for characterID, next := range updates {
-			oldCharacters[characterID] = cloneCharacterInstance(session.CharacterInstances[characterID])
-			session.CharacterInstances[characterID] = next
-		}
-		refreshAssetOrphans(session, time.Now())
-		if snapshot.Metadata != (RulesetMetadata{}) {
-			metadata := snapshot.Metadata
-			result.RulesetMetadata = &metadata
-		}
-	case definitionOperationCampaignImport:
-		candidate, imported, importErr := prepareDefinitionsImport(session, data)
-		if importErr != nil {
-			fail(w, http.StatusBadRequest, importErr.Error())
-			return
-		}
-		session.Ruleset = candidate
-		result.Diff = imported
-	default:
-		fail(w, http.StatusBadRequest, "Неизвестная операция definitions")
 		return
+	}
+	oldAssets := cloneAssetRegistry(session.Assets)
+	session.Ruleset = cloneRulesetSnapshot(snapshot)
+	for characterID, next := range updates {
+		oldCharacters[characterID] = cloneCharacterInstance(session.CharacterInstances[characterID])
+		session.CharacterInstances[characterID] = next
+	}
+	refreshAssetOrphans(session, time.Now())
+	if snapshot.Metadata != (RulesetMetadata{}) {
+		metadata := snapshot.Metadata
+		result.RulesetMetadata = &metadata
 	}
 	session.RegistryRevision++
 	session.CharacterRevision++
@@ -1131,9 +991,7 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 				session.CharacterInstances[characterID] = original
 			}
 		}
-		if oldAssets != nil {
-			session.Assets = oldAssets
-		}
+		session.Assets = oldAssets
 		session.RegistryRevision, session.CharacterRevision, s.dirty = oldRevision, oldCharacterRevision, oldDirty
 		fail(w, http.StatusInternalServerError, "Ошибка сохранения definitions")
 		return

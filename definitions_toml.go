@@ -20,25 +20,6 @@ const (
 	MaxRulesetPackageBytes   = MaxDefinitionDocumentBytes
 )
 
-type DefinitionImportChanges struct {
-	Added   []string `json:"added"`
-	Updated []string `json:"updated"`
-}
-
-type CampaignImportDiff struct {
-	Stats      DefinitionImportChanges `json:"stats"`
-	Actions    DefinitionImportChanges `json:"actions"`
-	Presets    DefinitionImportChanges `json:"presets"`
-	Effects    DefinitionImportChanges `json:"effects"`
-	Objects    DefinitionImportChanges `json:"objects"`
-	Characters DefinitionImportChanges `json:"characters"`
-}
-
-type CampaignImportPreview struct {
-	Registry CampaignRegistry
-	Diff     CampaignImportDiff
-}
-
 type definitionsTOMLDocument struct {
 	SchemaVersion int                             `toml:"schema_version"`
 	Ruleset       *rulesetTOMLMetadata            `toml:"ruleset,omitempty"`
@@ -316,7 +297,7 @@ func compileLegacyRulesetFiles(files map[string]string, names []string) (Ruleset
 	if err != nil {
 		return RulesetSnapshot{}, fmt.Errorf("encode merged ruleset: %w", err)
 	}
-	registry, metadata, err := decodeDefinitionsTOML(combined, EffectiveRegistry{})
+	registry, metadata, err := decodeDefinitionsTOML(combined)
 	if err != nil {
 		return RulesetSnapshot{}, err
 	}
@@ -490,11 +471,9 @@ func diffRulesetSnapshots(old, next RulesetSnapshot) RulesetReplacementDiff {
 	return diff
 }
 
-// ParseDefinitionsTOML parses and validates a self-contained definitions
-// document. Campaign imports that may reference an installed ruleset should be
-// parsed through PreviewCampaignDefinitionsImport instead.
+// ParseDefinitionsTOML validates a self-contained versioned definitions document.
 func ParseDefinitionsTOML(data []byte) (CampaignRegistry, error) {
-	registry, metadata, err := decodeDefinitionsTOML(data, EffectiveRegistry{})
+	registry, metadata, err := decodeDefinitionsTOML(data)
 	if err != nil {
 		return CampaignRegistry{}, err
 	}
@@ -522,15 +501,6 @@ func ExportDefinitionsTOML(registry CampaignRegistry) ([]byte, error) {
 		return nil, fmt.Errorf("definitions TOML: %w", err)
 	}
 	return encodeDefinitionsTOML(registry)
-}
-
-// ExportCampaignDefinitionsTOML exports only campaign extensions after
-// validating their references against the complete ruleset overlay.
-func ExportCampaignDefinitionsTOML(registries DefinitionRegistries) ([]byte, error) {
-	if _, err := MergeDefinitionRegistries(registries); err != nil {
-		return nil, fmt.Errorf("definitions TOML: %w", err)
-	}
-	return encodeDefinitionsTOML(registries.Campaign)
 }
 
 // ExportRulesetSnapshotTOML exports one TOML document. A single v0.4 source
@@ -565,67 +535,7 @@ func ExportRulesetSnapshotTOML(snapshot RulesetSnapshot) ([]byte, error) {
 	return encodeDefinitionsDocumentTOML(registry, metadata)
 }
 
-// PreviewCampaignDefinitionsImport performs a pure all-or-nothing upsert.
-// Definitions omitted from the document remain in the returned registry.
-func PreviewCampaignDefinitionsImport(registries DefinitionRegistries, data []byte) (CampaignImportPreview, error) {
-	base, err := MergeDefinitionRegistries(registries)
-	if err != nil {
-		return CampaignImportPreview{}, fmt.Errorf("current definitions: %w", err)
-	}
-	imported, metadata, err := decodeDefinitionsTOML(data, base)
-	if err != nil {
-		return CampaignImportPreview{}, err
-	}
-	if metadata != nil {
-		return CampaignImportPreview{}, fmt.Errorf("definitions TOML: ruleset metadata is not allowed in campaign import")
-	}
-
-	result := cloneCampaignRegistry(registries.Campaign)
-	diff := CampaignImportDiff{}
-	for id, definition := range imported.Stats {
-		old, exists := result.Stats[id]
-		if !exists {
-			diff.Stats.Added = append(diff.Stats.Added, id)
-		} else if !equalStatDefinition(old, definition) {
-			diff.Stats.Updated = append(diff.Stats.Updated, id)
-		}
-		result.Stats[id] = cloneStatDefinition(definition)
-	}
-	for id, definition := range imported.Actions {
-		old, exists := result.Actions[id]
-		if !exists {
-			diff.Actions.Added = append(diff.Actions.Added, id)
-		} else if !equalActionDefinition(old, definition) {
-			diff.Actions.Updated = append(diff.Actions.Updated, id)
-		}
-		result.Actions[id] = cloneActionDefinition(definition)
-	}
-	for id, definition := range imported.Presets {
-		old, exists := result.Presets[id]
-		if !exists {
-			diff.Presets.Added = append(diff.Presets.Added, id)
-		} else if !equalPresetDefinition(old, definition) {
-			diff.Presets.Updated = append(diff.Presets.Updated, id)
-		}
-		result.Presets[id] = clonePresetDefinition(definition)
-	}
-
-	candidate := registries
-	candidate.Campaign = result
-	merged, err := MergeDefinitionRegistries(candidate)
-	if err != nil {
-		return CampaignImportPreview{}, fmt.Errorf("definitions TOML: %w", err)
-	}
-	for id, importedDefinition := range imported.Stats {
-		if oldDefinition, exists := base.Stats[id]; exists && oldDefinition.Type != importedDefinition.Type && statDefinitionReferenced(merged, id) {
-			return CampaignImportPreview{}, fmt.Errorf("definitions TOML: cannot change type of referenced stat %q", id)
-		}
-	}
-	sortImportDiff(&diff)
-	return CampaignImportPreview{Registry: result, Diff: diff}, nil
-}
-
-func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistry, *RulesetMetadata, error) {
+func decodeDefinitionsTOML(data []byte) (CampaignRegistry, *RulesetMetadata, error) {
 	if len(data) > MaxDefinitionDocumentBytes {
 		return CampaignRegistry{}, nil, fmt.Errorf("definitions TOML exceeds %d bytes", MaxDefinitionDocumentBytes)
 	}
@@ -645,10 +555,6 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 		Actions: make(map[string]ActionDefinition, len(document.Actions)),
 		Presets: make(map[string]CharacterPresetDefinition, len(document.Presets)),
 	}
-	knownStats := make(map[string]StatDefinition, len(base.Stats)+len(document.Stats))
-	for id, definition := range base.Stats {
-		knownStats[id] = cloneStatDefinition(definition)
-	}
 	for id, raw := range document.Stats {
 		definition := StatDefinition{ID: id, Name: raw.Name, Type: StatType(raw.Type), Kind: StatKind(raw.Kind), Group: raw.Group}
 		if raw.Default != nil {
@@ -662,7 +568,6 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 			return CampaignRegistry{}, nil, fmt.Errorf("definitions TOML: %w", err)
 		}
 		registry.Stats[id] = definition
-		knownStats[id] = definition
 	}
 	for id, raw := range document.Actions {
 		definition := ActionDefinition{
@@ -686,7 +591,7 @@ func decodeDefinitionsTOML(data []byte, base EffectiveRegistry) (CampaignRegistr
 			Stats: make(map[string]StatValue, len(raw.Stats)), ActionIDs: append([]string(nil), raw.Actions...),
 		}
 		for statID, rawValue := range raw.Stats {
-			stat, exists := knownStats[statID]
+			stat, exists := registry.Stats[statID]
 			if !exists {
 				return CampaignRegistry{}, nil, fmt.Errorf("definitions TOML: preset %q references unknown stat %q", id, statID)
 			}
@@ -794,13 +699,6 @@ func tomlStatValue(raw any, expected StatType) (StatValue, error) {
 		return StatValue{}, fmt.Errorf("unknown stat type %q", expected)
 	}
 	return StatValue{}, fmt.Errorf("value has incompatible TOML type for %q", expected)
-}
-
-func sortImportDiff(diff *CampaignImportDiff) {
-	for _, changes := range []*DefinitionImportChanges{&diff.Stats, &diff.Actions, &diff.Presets, &diff.Effects, &diff.Objects, &diff.Characters} {
-		sort.Strings(changes.Added)
-		sort.Strings(changes.Updated)
-	}
 }
 
 func equalStatDefinition(left, right StatDefinition) bool {

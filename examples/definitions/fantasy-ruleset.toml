@@ -1,93 +1,63 @@
-schema_version = 1
-
-[ruleset]
-id = "fantasy-core"
-name = "Fantasy Core"
-version = "1.0.0"
-
-[stats.strength_mod]
+[stat.strength_mod]
 name = "Модификатор силы"
-type = "integer"
 default = 0
 
-[stats.dexterity_mod]
+[stat.dexterity_mod]
 name = "Модификатор ловкости"
-type = "integer"
 default = 0
 
-[stats.hp]
+[stat.hp]
 name = "Здоровье"
-type = "integer"
 default = 1
+resource = true
 
-[stats.speed]
+[stat.speed]
 name = "Скорость"
-type = "number"
-default = 6.0
+default = 6
 
-[stats.alive]
+[stat.alive]
 name = "Жив"
-type = "boolean"
 default = true
 
-[stats.motto]
+[stat.motto]
 name = "Девиз"
-type = "string"
 default = ""
 
-[actions.sword_attack]
+[action.sword_attack]
 name = "Удар мечом"
 description = "Проверка попадания и отдельный бросок урона."
 tags = ["attack", "melee"]
 
-[[actions.sword_attack.rolls]]
-id = "attack"
+[action.sword_attack.hit]
 name = "Попадание"
-count = 1
-sides = 20
-modifier_stat = "strength_mod"
+roll = "1d20 + stat.strength_mod"
 
-[[actions.sword_attack.rolls]]
-id = "damage"
+[action.sword_attack.damage]
 name = "Урон"
-count = 1
-sides = 8
-modifier_stat = "strength_mod"
+roll = "1d8 + stat.strength_mod"
 
-[actions.dodge]
+[action.dodge]
 name = "Уклонение"
 description = "Проверка ловкости."
 tags = ["defence"]
+roll = "1d20 + stat.dexterity_mod"
 
-[[actions.dodge.rolls]]
-id = "check"
-name = "Проверка"
-count = 1
-sides = 20
-modifier_stat = "dexterity_mod"
-
-[presets.goblin]
+[character.goblin]
 name = "Гоблин"
 kind = "monster"
-actions = ["sword_attack", "dodge"]
+actions = ["action.sword_attack", "action.dodge"]
+stat.strength_mod.base = 1
+stat.dexterity_mod.base = 2
+stat.hp.base = 7
+stat.hp.current = 7
+stat.motto.base = "Бери всё блестящее"
 
-[presets.goblin.stats]
-strength_mod = 1
-dexterity_mod = 2
-hp = 7
-speed = 6.0
-alive = true
-motto = "Бери всё блестящее"
-
-[presets.knight]
+[character.knight]
 name = "Рыцарь"
 kind = "npc"
-actions = ["sword_attack", "dodge"]
-
-[presets.knight.stats]
-strength_mod = 3
-dexterity_mod = 0
-hp = 24
-speed = 5.0
-alive = true
-motto = "Честь прежде всего"
+actions = ["action.sword_attack", "action.dodge"]
+stat.strength_mod.base = 3
+stat.hp.base = 24
+stat.hp.current = 24
+stat.speed.base = 5
+stat.motto.base = "Честь прежде всего"

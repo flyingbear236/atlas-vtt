@@ -115,31 +115,3 @@ hp = 10
 		t.Fatal("registry changed after reload")
 	}
 }
-
-func TestUnifiedDefinitionsImportRejectsCrossFileDuplicate(t *testing.T) {
-	rules, err := CompileRulesetFiles(map[string]string{"core.toml": "schema_version = 1\n[stats.hp]\nname = 'HP'\ntype = 'integer'\n"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	session := &Session{Ruleset: rules, CharacterInstances: map[string]CharacterInstance{}, Assets: map[string]Asset{}}
-	imported := []byte("schema_version = 1\n# imported source\n[stats.focus]\nname = 'Focus'\ntype = 'integer'\n")
-	next, _, err := prepareDefinitionsImport(session, imported)
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner, err := definitionFileOwner(next, definitionKindStat, "focus")
-	if err != nil || owner != "imported-definitions.toml" {
-		t.Fatalf("owner %q: %v", owner, err)
-	}
-	text, err := RenderRulesetFileTOML(next, owner)
-	if err != nil || text != string(imported) {
-		t.Fatalf("source changed: %v\n%s", err, text)
-	}
-	session.Ruleset = next
-	if _, _, err := prepareDefinitionsImport(session, imported); err == nil {
-		t.Fatal("duplicate import should be rejected")
-	}
-	if _, _, err := prepareDefinitionsImport(session, []byte("schema_version = 1\n[stats.hp]\nname = 'Other'\ntype = 'integer'\n")); err == nil {
-		t.Fatal("existing original-file id was overridden")
-	}
-}
