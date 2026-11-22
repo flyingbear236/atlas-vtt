@@ -376,6 +376,7 @@ type ExpressionFrame struct {
 	valueAddress       string
 	intermediate       *exprValue
 	modifyRoll         func(exprValue) (exprValue, error)
+	diceTrace          *[]DiceGroup
 	Bindings           map[string]any
 	RNG                DiceRNG
 	Locals             map[string]*Expression
@@ -610,6 +611,10 @@ func (f *ExpressionFrame) throw(d exprDice) (exprValue, error) {
 		rng = CryptoDiceRNG{}
 	}
 	var sum int64
+	var values []int
+	if f.diceTrace != nil {
+		values = make([]int, 0, d.count)
+	}
 	for i := 0; i < d.count; i++ {
 		v, err := rng.Intn(d.sides)
 		if err != nil {
@@ -619,6 +624,12 @@ func (f *ExpressionFrame) throw(d exprDice) (exprValue, error) {
 			return exprValue{}, fmt.Errorf("invalid server RNG result")
 		}
 		sum += int64(v + 1)
+		if values != nil {
+			values = append(values, v+1)
+		}
+	}
+	if f.diceTrace != nil {
+		*f.diceTrace = append(*f.diceTrace, DiceGroup{Count: d.count, Sides: d.sides, Results: values})
 	}
 	return exprInteger(sum), nil
 }

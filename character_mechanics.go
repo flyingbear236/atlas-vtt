@@ -188,22 +188,36 @@ func (s RulesetSnapshot) characterActionFrame(instance CharacterInstance, regist
 	if err != nil {
 		return nil, err
 	}
-	if !slices.Contains(state.ActionSources, choice) {
-		return nil, fmt.Errorf("character %q cannot use action %q from source %q", instance.ID, choice.ActionID, choice.SourceID)
+	bindings, _, err := characterActionBindings(instance, state, registry, choice)
+	if err != nil {
+		return nil, err
 	}
-	actor := map[string]any{}
-	if instance.V04 != nil {
-		maps.Copy(actor, instance.V04.values)
-	}
-	actor["id"], actor["name"] = instance.ID, instance.Name
-	bindings := map[string]any{"actor": actor}
 	if target != nil {
 		bindings["target"] = target
 	}
+	return s.actionFrameWithEffects(choice.ActionID, bindings, rng, state.activeEffects), nil
+}
+
+func characterInstanceBindings(instance CharacterInstance) map[string]any {
+	fields := map[string]any{}
+	if instance.V04 != nil {
+		maps.Copy(fields, instance.V04.values)
+	}
+	fields["id"], fields["name"] = instance.ID, instance.Name
+	return fields
+}
+
+func characterActionBindings(instance CharacterInstance, state EffectiveCharacter, registry EffectiveRegistry, choice ActionSource) (map[string]any, *InventoryItem, error) {
+	if !slices.Contains(state.ActionSources, choice) {
+		return nil, nil, fmt.Errorf("character %q cannot use action %q from source %q", instance.ID, choice.ActionID, choice.SourceID)
+	}
+	bindings := map[string]any{"actor": characterInstanceBindings(instance)}
+	var source *InventoryItem
 	if choice.SourceID != "" {
 		for _, item := range instance.Inventory {
 			if item.ID == choice.SourceID {
 				bindings["source"] = registry.itemBindings(item)
+				source = &item
 				break
 			}
 		}
@@ -211,5 +225,5 @@ func (s RulesetSnapshot) characterActionFrame(instance CharacterInstance, regist
 	for address, value := range state.StatValues {
 		bindings[address] = value
 	}
-	return s.actionFrameWithEffects(choice.ActionID, bindings, rng, state.activeEffects), nil
+	return bindings, source, nil
 }

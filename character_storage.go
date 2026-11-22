@@ -124,6 +124,7 @@ type RulesetSnapshot struct {
 	// Source-owned v0.4 declarations live apart from the live CharacterInstances.
 	Characters  map[string]*RulesetFields `json:"characters,omitempty"`
 	expressions map[string]*Expression
+	actionPlans map[string]compiledAction
 }
 
 func (s *RulesetSnapshot) UnmarshalJSON(data []byte) error {
@@ -166,6 +167,7 @@ func emptyCampaignRegistry() CampaignRegistry {
 func cloneRulesetSnapshot(snapshot RulesetSnapshot) RulesetSnapshot {
 	result := RulesetSnapshot{Metadata: snapshot.Metadata, Registry: emptyRulesetRegistry(), Characters: maps.Clone(snapshot.Characters)}
 	result.expressions = snapshot.expressions // immutable after compilation
+	result.actionPlans = snapshot.actionPlans
 	result.Registry.mechanics = snapshot.Registry.mechanics
 	result.Registry.statPlan = snapshot.Registry.statPlan
 	result.Registry.Effects = maps.Clone(snapshot.Registry.Effects)

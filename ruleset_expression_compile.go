@@ -9,6 +9,7 @@ import (
 
 type expressionSite struct {
 	kind, owner, field string
+	selector           string
 	source             string
 	expected           exprType
 	targets            []string
@@ -74,6 +75,7 @@ func (c *expressionCompiler) recordField(kind, key string, typ exprType) {
 
 func (s *RulesetSnapshot) compileExpressions() error {
 	s.expressions = nil
+	s.actionPlans = nil
 	s.Registry.mechanics = nil
 	s.Registry.statPlan = nil
 	if s.ExecutionReady() {
@@ -93,9 +95,10 @@ func (s *RulesetSnapshot) compileExpressions() error {
 					c.addFields(kind, owner, []string{key}, raw)
 				}
 			}
+			selector, _ := fields.values["target"].(string)
 			add := func(field string, raw any, want exprType, targets ...string) {
 				if source, ok := raw.(string); ok {
-					c.sites[owner+"."+field] = expressionSite{kind: kind, owner: owner, field: field, source: source, expected: want, targets: targets}
+					c.sites[owner+"."+field] = expressionSite{kind: kind, owner: owner, field: field, source: source, expected: want, targets: targets, selector: selector}
 				}
 			}
 			switch kind {
@@ -145,7 +148,7 @@ func (s *RulesetSnapshot) compileExpressions() error {
 						path, _ := apply["path"].(string)
 						parts, _ := parseRulesetPath(path)
 						var targets []string
-						if len(parts) > 2 && parts[1] == "stat" {
+						if len(parts) > 2 && parts[1] == "stat" && !objectWritePath(parts, selector) {
 							targets = []string{rulesetPath(parts[1:])}
 						}
 						add(block+"apply.formula", apply["formula"], exprDynamic, targets...)
@@ -164,6 +167,11 @@ func (s *RulesetSnapshot) compileExpressions() error {
 			return err
 		}
 	}
+	actions, err := c.compileActionPlans(s.Registry.Actions)
+	if err != nil {
+		return err
+	}
+	s.actionPlans = actions
 	s.expressions = c.programs
 	s.compileMechanics()
 	if len(c.stats.steps) != 0 {
@@ -346,6 +354,12 @@ func (c *expressionCompiler) resolve(site expressionSite, p []string, targetType
 		}
 		if site.kind == "stat" {
 			break
+		}
+		if site.selector == "source" || site.selector == "select(object)" {
+			return c.instanceField("object", p[1:])
+		}
+		if site.selector == "self" || site.selector == "select(character)" {
+			return c.instanceField("character", p[1:])
 		}
 		return c.instanceField("target", p[1:])
 	case "action":

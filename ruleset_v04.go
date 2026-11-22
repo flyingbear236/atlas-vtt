@@ -13,7 +13,7 @@ import (
 	"github.com/pelletier/go-toml/v2/unstable"
 )
 
-const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 character mechanics are available. Gameplay requires the v0.4 action executor."
+const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 actions can produce validated plans. Gameplay requires atomic action commits."
 
 var rulesetV04Kinds = [...]string{"stat", "action", "effect", "object", "character"}
 
@@ -617,7 +617,11 @@ func (s RulesetSnapshot) hasV04EffectTarget(parts []string) bool {
 	return false
 }
 
-func (s RulesetSnapshot) validateV04Apply(raw any) error {
+func objectWritePath(parts []string, selector string) bool {
+	return parts[0] == "source" || parts[0] == "target" && (selector == "source" || selector == "select(object)")
+}
+
+func (s RulesetSnapshot) validateV04Apply(raw any, selector string) error {
 	fields, ok := raw.(map[string]any)
 	if !ok {
 		return fmt.Errorf("apply must be a table")
@@ -636,7 +640,7 @@ func (s RulesetSnapshot) validateV04Apply(raw any) error {
 	if len(parts) < 2 || !slices.Contains([]string{"target", "actor", "source"}, parts[0]) {
 		return fmt.Errorf("apply.path %q must address a saved instance field", path)
 	}
-	if parts[1] != "stat" {
+	if parts[1] != "stat" || objectWritePath(parts, selector) {
 		// The concrete instance and its custom fields are resolved at execution.
 		return nil
 	}
@@ -650,12 +654,12 @@ func (s RulesetSnapshot) validateV04Apply(raw any) error {
 	return fmt.Errorf("apply.path %q must address an editable stat base or resource current", path)
 }
 
-func (s RulesetSnapshot) validateV04Consequences(fields map[string]any) error {
+func (s RulesetSnapshot) validateV04Consequences(fields map[string]any, selector string) error {
 	if _, err := rulesetString(fields, "message", false); err != nil {
 		return err
 	}
 	if raw, exists := fields["apply"]; exists {
-		return s.validateV04Apply(raw)
+		return s.validateV04Apply(raw, selector)
 	}
 	return nil
 }
@@ -702,7 +706,8 @@ func (s RulesetSnapshot) validateV04Action(action *RulesetFields, hasExecutableC
 			}
 		}
 	}
-	if err := s.validateV04Consequences(f); err != nil {
+	selector, _ := f["target"].(string)
+	if err := s.validateV04Consequences(f, selector); err != nil {
 		return err
 	}
 	if raw, exists := f["on"]; exists {
@@ -722,7 +727,7 @@ func (s RulesetSnapshot) validateV04Action(action *RulesetFields, hasExecutableC
 			if f["success"] == nil {
 				return fmt.Errorf("on.%s requires a parent success condition", outcome)
 			}
-			if err := s.validateV04Consequences(fields); err != nil {
+			if err := s.validateV04Consequences(fields, selector); err != nil {
 				return fmt.Errorf("on.%s: %w", outcome, err)
 			}
 		}
