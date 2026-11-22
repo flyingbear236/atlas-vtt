@@ -56,6 +56,7 @@ type characterPermissions struct {
 type characterSnapshot struct {
 	ActionSelectors  map[string]string           `json:"actionSelectors,omitempty"`
 	ActionGroups     map[string]string           `json:"actionGroups,omitempty"`
+	ActionPreviews   []ActionPreview             `json:"actionPreviews,omitempty"`
 	ItemNames        map[string]string           `json:"itemNames,omitempty"`
 	StatFields       map[string]statFieldsView   `json:"statFields,omitempty"`
 	ExecutionID      string                      `json:"executionId,omitempty"`
@@ -139,8 +140,9 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	}
 	return characterSnapshot{
 		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
-		StatFields: statFieldsForSheet(registry, effective),
-		Type:       "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
+		ActionPreviews: actionPreviewsForSheet(session.Ruleset, instance, effective, registry),
+		StatFields:     statFieldsForSheet(registry, effective),
+		Type:           "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
 		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, Effective: effective,
 		StatDefinitions: stats, Actions: actions,
 		Permissions: characterPermissions{Edit: true, Manage: memberIsGM(member)},

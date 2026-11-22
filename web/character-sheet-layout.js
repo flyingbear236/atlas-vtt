@@ -1,7 +1,7 @@
 // Character-sheet presentation preferences. No mechanical character state is stored here.
 export const LAYOUT_VERSION = 1;
 const MAX_TABS = 32, MAX_SECTIONS = 128, MAX_ITEMS = 2048;
-const builtin = [{id:'stats',name:'Статы'},{id:'actions',name:'Действия'}];
+const builtin = [{id:'stats',name:'Статы'},{id:'actions',name:'Действия'},{id:'inventory',name:'Инвентарь'}];
 const keyFor = (scope) => `atlas-character-sheet:v1:${encodeURIComponent(String(scope).slice(0,256))}`;
 const validItem = value => typeof value === 'string' && /^(stat|action):/.test(value) && value.length <= 150 && !/[\u0000-\u001f]/.test(value) && value.slice(value.indexOf(':')+1).trim().length > 0;
 const cleanID = value => typeof value === 'string' && /^[^\s\u0000-\u001f]{1,180}$/.test(value) ? value : '';
@@ -24,7 +24,7 @@ export function normalizeLayout(raw) {
   }
  }
  // Saved tab ordering is respected; the built-in tabs remain present.
- const order=raw.tabs.map(tab=>tab?.id);layout.tabs.sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id));
+ const order=raw.tabs.map(tab=>tab?.id);layout.tabs.sort((a,b)=>(order.indexOf(a.id)<0?order.length:order.indexOf(a.id))-(order.indexOf(b.id)<0?order.length:order.indexOf(b.id)));
  layout.hidden=[...new Set((Array.isArray(raw.hidden)?raw.hidden:[]).filter(item=>validItem(item)).slice(0,MAX_ITEMS))];
  const allocated=new Set();for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>{if(allocated.has(item))return false;allocated.add(item);return true;});
  return layout;

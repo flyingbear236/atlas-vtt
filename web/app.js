@@ -42,10 +42,6 @@ characterPanel.innerHTML=`
     <section id="characterAddPopover" class="character-add-popover" hidden><div id="characterAddActionRow"></div></section>
     <div id="characterLayoutTabs" class="character-tabs character-layout-tabs" role="tablist"></div>
     <div id="characterLayoutContent"></div>
-    <details id="characterInventory" class="character-section" hidden>
-      <summary>Инвентарь</summary>
-      <div id="characterInventoryItems"></div>
-    </details>
     <div class="character-tabs" id="characterLegacyTabs" hidden role="tablist" aria-label="Разделы персонажа">
       <button id="characterTabStats" type="button" role="tab" aria-controls="characterStatsTab">Статы</button>
       <button id="characterTabActions" type="button" role="tab" aria-controls="characterActionsTab">Действия</button>
@@ -811,27 +807,117 @@ function renderCharacterResources(snapshot){
  if(!container.children.length)container.textContent='Нет характеристик с отслеживаемым значением.';
  updateCharacterParameterOptions(snapshot);
 }
-function renderCharacterInventory(snapshot){
- const items=snapshot.instance.inventory||[];
- const panel=$('characterInventory'),rows=$('characterInventoryItems');
- panel.hidden=!items.length;
- rows.replaceChildren();
- for(const item of items){
-  const label=document.createElement('label'),checkbox=document.createElement('input');
-  label.className='check ruleset-inventory-item';
-  checkbox.type='checkbox';checkbox.checked=item.equipped;
-  const payload={characterId:snapshot.characterId,itemId:item.id};
-  const pending=outbox?.data.queue.find(command=>command.type==='characterItemEquip'&&command.characterId===payload.characterId&&command.itemId===item.id);
-  checkbox.disabled=!!pending||!snapshot.permissions?.edit||!!characterEditSession||state?.playerPreview;
-  checkbox.onchange=()=>{
-   if(queueCommand('characterItemEquip',{...payload,equipped:checkbox.checked}))checkbox.disabled=true;
-   checkbox.checked=item.equipped;
-  };
-  const name=snapshot.itemNames?.[item.id]||item.objectId;
-  checkbox.setAttribute('aria-label',`Экипировать ${name} · ${item.id}`);
-  label.append(checkbox,`${name} · ${item.id}`);
-  rows.append(label);
+// The inventory snapshot currently carries item ID, object ID and equipped state.
+// Display only information actually provided by the server; item art/details can
+// be added when the object snapshot exposes public media and descriptions.
+let characterBrowseID='',characterBrowseAction='',characterBrowseItem='',characterBrowseOpen=false;
+let characterInventoryFilter='all',characterInventoryQuery='';
+const characterBrowserIcon=()=>{
+ const icon=document.createElement('span');icon.className='character-table-icon';
+ icon.innerHTML='<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 9 5-9 5-9-5 9-5Zm-9 5v10l9 5 9-5V7M12 12v10"/></svg>';
+ return icon;
+};
+function characterInspectorFrame(title,subtitle){
+ const detail=$('characterTableInspector');if(!detail)return null;
+ detail.replaceChildren();
+ const head=document.createElement('div');head.className='character-table-detail-head';
+ const label=document.createElement('div');const name=document.createElement('strong');name.textContent=title;
+ const smaller=document.createElement('small');smaller.textContent=subtitle;label.append(name,smaller);
+ const close=document.createElement('button');close.type='button';close.className='subtle character-table-detail-close';close.textContent='×';close.title='Закрыть подробности';close.setAttribute('aria-label','Закрыть подробности');
+ close.onclick=()=>{characterBrowseOpen=false;detail.closest('.character-table-browser')?.classList.remove('detail-open');};
+ head.append(label,close);detail.append(head);return detail;
+}
+function characterSelectInventory(snapshot,id,open=true){
+ characterBrowseItem=id;characterBrowseOpen=open;
+ const item=(snapshot.instance.inventory||[]).find(item=>item.id===id),detail=characterInspectorFrame(item?snapshot.itemNames?.[item.id]||item.objectId:'Предмет','Инвентарь');
+ if(!detail)return;
+ detail.closest('.character-table-browser')?.classList.toggle('detail-open',open);
+ for(const row of $('characterInventoryBrowse')?.querySelectorAll('.character-table-row[data-inventory-id]')||[])row.setAttribute('aria-selected',String(row.dataset.inventoryId===id));
+ if(!item){detail.append(document.createTextNode('Выберите предмет в таблице.'));return;}
+ const picture=document.createElement('div');picture.className='character-table-art';picture.append(characterBrowserIcon());
+ const noArt=document.createElement('small');noArt.textContent='Изображение предмета не задано';picture.append(noArt);detail.append(picture);
+ const info=document.createElement('dl');info.className='character-table-properties';
+ for(const [key,value] of [['Тип объекта',item.objectId],['Экземпляр',item.id],['Экипировка',item.equipped?'Экипирован':'Не экипирован']]){
+  const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=key;dd.textContent=value;info.append(dt,dd);
  }
+ detail.append(info);
+ const tip=document.createElement('p');tip.className='muted';tip.textContent='Описание и артворк появятся здесь после подключения публичных данных определения предмета.';detail.append(tip);
+}
+function updateInventoryVisibility(){
+ const host=$('characterInventoryBrowse');if(!host)return;
+ let matches=0;
+ for(const row of host.querySelectorAll('.character-table-row[data-inventory-id]')){
+  const matchesFilter=characterInventoryFilter==='all'||(characterInventoryFilter==='equipped'?row.dataset.equipped==='true':row.dataset.equipped==='false');
+  const visible=matchesFilter&&row.dataset.search.includes(characterInventoryQuery.toLocaleLowerCase());row.hidden=!visible;if(visible)matches++;
+ }
+ const empty=host.querySelector('.character-table-empty');if(empty)empty.hidden=matches>0;
+}
+function renderCharacterInventory(snapshot){
+ const host=$('characterInventoryBrowse');if(!host)return;
+ host.replaceChildren();const items=snapshot.instance.inventory||[];
+ if(characterBrowseItem&&!items.some(item=>item.id===characterBrowseItem))characterBrowseItem='';
+ if(!characterBrowseItem&&items.length)characterBrowseItem=items[0].id;
+ const bar=document.createElement('div');bar.className='character-table-toolbar';
+ const search=document.createElement('input');search.type='search';search.placeholder='Поиск предметов';search.setAttribute('aria-label','Поиск по инвентарю');search.value=characterInventoryQuery;search.oninput=()=>{characterInventoryQuery=search.value;updateInventoryVisibility();};
+ const filters=document.createElement('div');filters.className='character-table-filters';
+ for(const [id,label] of [['all','Все'],['equipped','Экипировано'],['stored','Остальные']]){
+  const button=document.createElement('button');button.className='subtle';button.type='button';button.textContent=label;button.setAttribute('aria-pressed',String(characterInventoryFilter===id));button.onclick=()=>{characterInventoryFilter=id;for(const b of filters.children)b.setAttribute('aria-pressed',String(b===button));updateInventoryVisibility();};filters.append(button);
+ }
+ bar.append(search,filters);host.append(bar);
+ const header=document.createElement('div');header.className='character-table-head character-inventory-head';header.append(document.createTextNode('ПРЕДМЕТ'),document.createTextNode('ЭКИПИРОВКА'));
+ host.append(header);
+ for(const item of items){
+  const name=snapshot.itemNames?.[item.id]||item.objectId;
+  const row=document.createElement('div');row.className='character-table-row character-inventory-row';row.dataset.inventoryId=item.id;row.dataset.search=`${name} ${item.objectId} ${item.id}`.toLocaleLowerCase();row.dataset.equipped=String(!!item.equipped);row.setAttribute('aria-selected',String(item.id===characterBrowseItem));
+  const pick=document.createElement('button');pick.type='button';pick.className='character-table-pick';pick.append(characterBrowserIcon());
+  const text=document.createElement('span'),strong=document.createElement('strong'),small=document.createElement('small');strong.textContent=name;small.textContent=item.objectId;text.append(strong,small);pick.append(text);pick.title=`Осмотреть: ${name}`;pick.onclick=()=>characterSelectInventory(snapshot,item.id);row.append(pick);
+  const control=document.createElement('label');control.className='character-table-equipped';
+  const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=!!item.equipped;checkbox.setAttribute('aria-label',`Экипировать ${name}`);
+  const pending=outbox?.data.queue.find(command=>command.type==='characterItemEquip'&&command.characterId===snapshot.characterId&&command.itemId===item.id);
+  checkbox.disabled=!!pending||!snapshot.permissions?.edit||!!characterEditSession||state?.playerPreview;
+  checkbox.onchange=()=>{if(queueCommand('characterItemEquip',{characterId:snapshot.characterId,itemId:item.id,equipped:checkbox.checked}))checkbox.disabled=true;checkbox.checked=!!item.equipped;};
+  control.append(checkbox,document.createTextNode('Надето'));row.append(control);host.append(row);
+ }
+ const empty=document.createElement('p');empty.className='character-table-empty muted';empty.textContent=items.length?'Ничего не найдено.':'Инвентарь пуст.';host.append(empty);
+ updateInventoryVisibility();characterSelectInventory(snapshot,characterBrowseItem,characterBrowseOpen);
+}
+function actionFormulaPreviews(snapshot,actionID){
+ return (snapshot.actionPreviews||[]).filter(preview=>preview.actionId===actionID);
+}
+function renderActionFormula(preview,compact=false){
+ const row=document.createElement('div');row.className='character-formula'+(compact?' character-formula-compact':'');
+ if(!preview){const unknown=document.createElement('span');unknown.className='muted';unknown.textContent='Без броска';row.append(unknown);return row;}
+ if(!preview.parts?.length){const unknown=document.createElement('span');unknown.className='muted';unknown.textContent='Расчёт при выполнении';row.append(unknown);}
+ for(const [index,part] of (preview.parts||[]).entries()){
+  if(index||part.sign==='-'){const sign=document.createElement('span');sign.className='character-formula-sign';sign.textContent=part.sign==='-'?'−':'+';row.append(sign);}
+  const chip=document.createElement('span');chip.className='character-formula-part';
+  const name=document.createElement('span');name.textContent=part.label;chip.append(name);
+  if(part.value){const value=document.createElement('strong');value.textContent=part.value;chip.append(value);}
+  row.append(chip);
+ }
+ if(preview.notes?.length){const warn=document.createElement('span');warn.className='character-formula-uncertain';warn.textContent='Частично';warn.title=preview.notes.join(' · ');row.append(warn);}
+ return row;
+}
+function characterSelectAction(snapshot,id,open=true){
+ characterBrowseAction=id;characterBrowseOpen=open;
+ const action=snapshot.actions?.[id],detail=characterInspectorFrame(action?.name||id||'Действие',snapshot.actionGroups?.[id]||action?.group||'Действия');if(!detail)return;
+ detail.closest('.character-table-browser')?.classList.toggle('detail-open',open);
+ for(const row of $('characterLayoutContent').querySelectorAll('.character-action-card[data-action-id]'))row.setAttribute('aria-selected',String(row.dataset.actionId===id));
+ if(!action)return;
+ const desc=document.createElement('p');desc.className='character-table-full-description';desc.textContent=action.description||'Описание действия отсутствует.';detail.append(desc);
+ const choices=(snapshot.effective?.actionSources||[]).filter(choice=>choice.actionId===id&&Object.hasOwn(snapshot.actionSelectors||{},id));
+ if(choices.length){const heading=document.createElement('strong');heading.textContent='Расчёт и выполнение';detail.append(heading);
+  for(const choice of choices){
+   if(choice.sourceId){const source=document.createElement('small');source.className='character-formula-source';source.textContent=snapshot.itemNames?.[choice.sourceId]||choice.sourceId;detail.append(source);}
+   const preview=(snapshot.actionPreviews||[]).find(row=>row.actionId===id&&(row.sourceId||'')===(choice.sourceId||''));
+   detail.append(renderActionFormula(preview));
+   if(preview?.notes?.length){const note=document.createElement('p');note.className='character-formula-notes';note.textContent=preview.notes.join('. ');detail.append(note);
+    if(preview.formula){const original=document.createElement('code');original.className='character-formula-original';original.textContent=preview.formula;detail.append(original);}}
+
+   renderRulesetActionChoice(detail,snapshot,choice);
+  }
+ }
+ else if(action.v04){const note=document.createElement('p');note.className='muted';note.textContent='Для выполнения действия нет доступного источника.';detail.append(note);}
 }
 function renderRulesetActionChoice(row,snapshot,choice){
  const button=document.createElement('button');
@@ -868,19 +954,30 @@ function renderCharacterActions(snapshot){
  }
  const ids=sheetActionIDs(snapshot).sort((a,b)=>(snapshot.actions?.[a]?.name||a).localeCompare(snapshot.actions?.[b]?.name||b)||a.localeCompare(b));
  for(const actionID of ids){
-  const action=snapshot.actions?.[actionID],row=document.createElement('section');row.className='character-action-card';row.dataset.sheetItem=`action:${actionID}`;const title=document.createElement('strong');title.textContent=action?.name||actionID;row.append(title);
-  if(action?.description){const description=document.createElement('p');description.className='character-action-description';description.textContent=action.description;row.append(description);if(action.description.length>120){description.classList.add('collapsed');const toggle=document.createElement('button');toggle.type='button';toggle.className='character-description-toggle subtle';toggle.textContent='Подробнее';toggle.onclick=()=>{const collapsed=description.classList.toggle('collapsed');toggle.textContent=collapsed?'Подробнее':'Свернуть';};row.append(toggle);}}
-  if(action?.v04){
-   const group=snapshot.actionGroups?.[actionID];
-   if(group){const breadcrumb=document.createElement('small');breadcrumb.className='muted';breadcrumb.textContent=group;row.prepend(breadcrumb);}
-   for(const choice of choicesByAction.get(actionID)||[])renderRulesetActionChoice(row,snapshot,choice);
-   if(characterEditSession?.actionIds.includes(actionID))row.append(editRemoveButton(actionID,'action'));
-   container.append(row);
-   continue;
-  }
-  if(characterEditSession)row.append(editRemoveButton(actionID,'action'));container.append(row);
+  const action=snapshot.actions?.[actionID],row=document.createElement('section');
+  row.className='character-action-card character-action-table-row';row.dataset.sheetItem=`action:${actionID}`;row.dataset.actionId=actionID;
+  row.setAttribute('aria-selected',String(characterBrowseAction===actionID));
+  const main=document.createElement('div');main.className='character-action-main';
+  const title=document.createElement('button');title.type='button';title.className='character-action-pick';title.textContent=action?.name||actionID;title.onclick=()=>characterSelectAction(snapshot,actionID);
+  main.append(title);
+  const group=snapshot.actionGroups?.[actionID]||action?.group||'';
+  if(group){const breadcrumb=document.createElement('small');breadcrumb.className='muted';breadcrumb.textContent=group;main.append(breadcrumb);}
+  row.append(main);
+  const previews=actionFormulaPreviews(snapshot,actionID);
+  const note=document.createElement('div');note.className='character-action-note';
+  if(action?.v04){note.append(renderActionFormula(previews[0],true));if(previews.length>1){const more=document.createElement('small');more.textContent=`Ещё источников: ${previews.length-1}`;note.append(more);}}
+  else {note.textContent=action?.description||'Описание отсутствует';note.title=action?.description||'';}
+  row.append(note);
+  const controls=document.createElement('div');controls.className='character-action-buttons';
+  if(action?.v04){for(const choice of choicesByAction.get(actionID)||[])renderRulesetActionChoice(controls,snapshot,choice);}
+  if(characterEditSession?.actionIds.includes(actionID))controls.append(editRemoveButton(actionID,'action'));
+  row.append(controls);
+  container.append(row);
   if(!characterEditSession&&snapshot.permissions?.manage&&isEditorView()){
-   const removeRow=document.createElement('div');removeRow.className='character-action-remove';const name=document.createElement('span');name.textContent=action?.name||actionID;const remove=document.createElement('button');remove.type='button';remove.className='danger';remove.textContent='Убрать';remove.onclick=()=>confirmMechanicalEdit(snapshot)&&queueCommand('characterActionRemove',{characterId:snapshot.characterId,actionId:actionID});removeRow.append(name,remove);removal.append(removeRow);
+   const removeRow=document.createElement('div');removeRow.className='character-action-remove';const name=document.createElement('span');name.textContent=action?.name||actionID;
+   const remove=document.createElement('button');remove.type='button';remove.className='danger';remove.textContent='Убрать';
+   remove.onclick=()=>confirmMechanicalEdit(snapshot)&&queueCommand('characterActionRemove',{characterId:snapshot.characterId,actionId:actionID});
+   removeRow.append(name,remove);removal.append(removeRow);
   }
  }
  if(!ids.length)container.textContent='Нет действий.';
@@ -1098,6 +1195,7 @@ function finishSheetDrop(tab,section){
  sheetMutate(layout=>{ensureSheetSection(layout,tab,section);return moveEntry(layout,key,tab.id,section.id,before);});
 }
 function renderSheetLayout(snapshot){
+ if(characterBrowseID!==snapshot.characterId){characterBrowseID=snapshot.characterId;characterBrowseAction='';characterBrowseItem='';characterBrowseOpen=false;characterInventoryQuery='';characterInventoryFilter='all';}
  const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';}
  const entries=sheetEntryList(snapshot);
  const full=buildSheet(sheetLayout,entries);
@@ -1107,19 +1205,29 @@ function renderSheetLayout(snapshot){
  tabs.replaceChildren();body.replaceChildren();
  if(!full.tabs.some(tab=>tab.id===characterActiveTab))characterActiveTab='stats';
  for(const tab of full.tabs){
-  const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;renderCharacterPanel();};
-  if(sheetEdit){button.draggable=true;button.ondragend=clearSheetDrag;button.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};button.ondragover=event=>event.preventDefault();button.ondrop=event=>{event.preventDefault();sheetDropMarker?.remove();sheetDropMarker=null;if(sheetDrag?.kind==='item')sheetMutate(layout=>{const t=layout.tabs.find(t=>t.id===tab.id);let bucket=t.sections.find(s=>s.id===`user:drop:${tab.id}`);if(!bucket){bucket={id:`user:drop:${tab.id}`,name:'Перемещённые',view:'list',collapsed:false,items:[]};t.sections.push(bucket);}characterActiveTab=tab.id;return moveEntry(layout,sheetDrag.key,tab.id,bucket.id);});else if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===sheetDrag.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});else if(sheetDrag?.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===sheetDrag.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});};button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
+  const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;characterBrowseOpen=false;renderCharacterPanel();};
+  if(sheetEdit){button.draggable=true;button.ondragend=clearSheetDrag;button.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};button.ondragover=event=>event.preventDefault();button.ondrop=event=>{event.preventDefault();sheetDropMarker?.remove();sheetDropMarker=null;if(sheetDrag?.kind==='item')sheetMutate(layout=>{const t=layout.tabs.find(t=>t.id===tab.id);let bucket=t.sections.find(s=>s.id===`user:drop:${tab.id}`);if(!bucket){bucket={id:`user:drop:${tab.id}`,name:'Перемещённые',view:'list',collapsed:false,items:[]};t.sections.push(bucket);}characterActiveTab=tab.id;return moveEntry(layout,sheetDrag.key,tab.id,bucket.id);});else if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===sheetDrag.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});else if(sheetDrag?.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===sheetDrag.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});};button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions','inventory'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
   tabs.append(button);
  }
  if(sheetEdit){const add=document.createElement('button');add.type='button';add.textContent='+';add.title='Новая вкладка';add.onclick=()=>{const name=prompt('Название новой вкладки');if(name?.trim())sheetMutate(layout=>{const id=`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;layout.tabs.push({id,name:name.trim().slice(0,120),sections:[]});characterActiveTab=id;return layout;});};tabs.append(add);}
  const selected=full.tabs.find(t=>t.id===characterActiveTab);
  if(!selected)return;
+  const actionInTab=selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')));
+  const useBrowser=!sheetEdit&&(selected.id==='inventory'||actionInTab);
+  const browser=useBrowser?document.createElement('div'):null;
+  const sheetMain=useBrowser?document.createElement('div'):body;
+  if(browser){browser.className='character-table-browser';sheetMain.className='character-table-main';browser.append(sheetMain);const detail=document.createElement('aside');detail.className='character-table-detail';detail.id='characterTableInspector';browser.append(detail);body.append(browser);}
+  if(selected.id==='inventory'){
+   const section=document.createElement('section');section.className='character-section character-inventory-section';
+   const title=document.createElement('h3');title.textContent='Инвентарь';section.append(title);
+   const browse=document.createElement('div');browse.id='characterInventoryBrowse';section.append(browse);sheetMain.append(section);
+  }
  if(sheetEdit){const toolbar=document.createElement('div');toolbar.className='sheet-edit-toolbar';const add=document.createElement('button');add.type='button';add.textContent='+ Раздел';add.onclick=()=>{const name=prompt('Название раздела');if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===selected.id).sections.push({id:`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`,name:name.trim().slice(0,120),view:'list',collapsed:false,items:[]});return layout;});};toolbar.append(add);const hidden=entries.filter(entry=>sheetLayout.hidden.includes(entry.key));if(hidden.length){const restore=document.createElement('button');restore.type='button';restore.textContent=`Скрытые (${hidden.length})`;restore.onclick=()=>{const answer=prompt(hidden.map((entry,i)=>`${i+1}. ${entry.name}`).join('\n'));const entry=hidden[Number(answer)-1];if(entry)sheetMutate(layout=>{layout.hidden=layout.hidden.filter(item=>item!==entry.key);return layout;});};toolbar.append(restore);}body.append(toolbar);}
  for(const section of selected.sections){
   const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
   const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
   if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
-  wrapper.append(heading);const listing=document.createElement('div');listing.className=section.view==='grid'?'sheet-grid':'sheet-list';listing.hidden=section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
+  wrapper.append(heading);const listing=document.createElement('div');const tableActions=!sheetEdit&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
   if(sheetEdit){
    listing.ondragover=event=>previewSheetDrop(event,listing);
    listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
@@ -1128,8 +1236,9 @@ function renderSheetLayout(snapshot){
    if(sheetEdit){const drag=document.createElement('button');drag.type='button';drag.className='subtle sheet-handle';drag.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20m0-20-4 4m4-4 4 4m-4 16-4-4m4 4 4-4M2 12h20m-20 0 4-4m-4 4 4 4m16-4-4-4m4 4-4 4"/></svg>';drag.setAttribute('aria-label','Переместить карточку');drag.draggable=true;drag.title='Перетащить';drag.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'item',key};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',key);frame.classList.add('sheet-entry-moving');};drag.ondragend=clearSheetDrag;const hide=document.createElement('button');hide.type='button';hide.className='subtle sheet-entry-hide';hide.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3 21 21M10.6 6.2A10.5 10.5 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-3 3.4M6.4 6.4C3.8 8 3 12 3 12s3 6 9 6a10 10 0 0 0 3.6-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';hide.title='Скрыть элемент';hide.setAttribute('aria-label','Скрыть элемент');hide.onclick=()=>sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});const controls=document.createElement('div');controls.className='sheet-entry-controls';controls.append(drag,hide);frame.append(item,controls);frame.ondragover=event=>previewSheetDrop(event,listing);frame.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};}
    frame.append(item);listing.append(frame);
   }
-  wrapper.append(listing);body.append(wrapper);
+  wrapper.append(listing);sheetMain.append(wrapper);
  }
+ if(useBrowser&&actionInTab&&selected.id!=='inventory'){const ids=selected.sections.flatMap(section=>section.items.filter(key=>key.startsWith('action:')).map(key=>key.slice(7)));if(!ids.includes(characterBrowseAction))characterBrowseAction=ids[0]||'';characterSelectAction(snapshot,characterBrowseAction,characterBrowseOpen);}
 }
 function updateCharacterPanelMode(){
  $('characterStatsTab').hidden=true;$('characterActionsTab').hidden=true;
