@@ -147,7 +147,7 @@ function initOutbox(){
       dirty=true;
       dice.handleReceipt(cmd,receipt);
       if(Number.isSafeInteger(receipt.actionGeneration))actionGeneration=receipt.actionGeneration;
-      if(cmd.type==='actionExecute'&&!error){const result=receipt.action;if(result&&!result.roll&&!result.messages?.length)toast('Действие выполнено');}
+      if(cmd.type==='actionExecute'&&!error){const result=receipt.action;if(result&&!result.roll&&!result.messages?.length&&!receipt.details?.changes?.length)toast('Действие выполнено');}
       if(cmd.type==='characterItemEquip')renderCharacterPanel();
       definitionsEditor.handleCompleted(cmd,error);
       if(error){

@@ -163,7 +163,9 @@ export function changeDiceCount(parsed,sides,delta){
 
 export function diceGroups(event){
   if(Array.isArray(event?.groups)&&event.groups.length)return event.groups;
-  return [{count:Number(event?.count),sides:Number(event?.sides),results:Array.isArray(event?.results)?event.results:[]}];
+  const count=Number(event?.count),sides=Number(event?.sides);
+  if(!Number.isSafeInteger(count)||count<1||!Number.isSafeInteger(sides)||sides<1)return [];
+  return [{count,sides,results:Array.isArray(event?.results)?event.results:[]}];
 }
 
 export function diceNotation(event){return diceGroups(event).map(group=>`${group.count}d${group.sides}`).join(' + ');}
@@ -198,15 +200,18 @@ export function numericRollFormula(event,preview=null){
  const base=dice.join(' + ');
  const difference=Number(event.total)-diceTotal;
  if(!event.actionExecution)return `${base}${modifierText(Number(event.modifier)||0)}`;
+ // For fixed results there are no dice to prefix: show the known total unless
+ // the preview above reconstructs a verified numeric decomposition.
+ if(!base)return event.rollTotalText??numberText(event.total);
  // The executed total is authoritative, even for context-dependent modifiers.
- return `${base}${Number.isFinite(difference)?modifierText(difference):''}`||numberText(event.total);
+ return `${base}${Number.isFinite(difference)?modifierText(difference):''}`;
 }
 
 
 export class DiceRuntime {
   constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},animator=null,storage=localStorage}={}){
     this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.animator=animator;this.storage=storage;
-    this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.actionPreviews=new Map();this.liveActionRolls=new Set();this.overlayActionID='';this.groups=[{count:1,sides:20}];this.modifier=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
+    this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.actionPreviews=new Map();this.liveActionRolls=new Set();this.liveActionNotices=new Set();this.overlayActionID='';this.groups=[{count:1,sides:20}];this.modifier=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
     this.lastAction=root.querySelector('[data-action-last]');
     this.expression=root.querySelector('[data-dice-expression]');this.error=root.querySelector('[data-dice-error]');this.submit=root.querySelector('[data-dice-submit]');this.entries=root.diceUI.journal.querySelector('[data-roll-entries]');this.journalCount=root.diceUI.journal.querySelector('[data-roll-count]');this.animation=root.querySelector('[data-roll-animation]');this.last=root.querySelector('[data-dice-last]');this.overlay=root.diceUI.overlay;
     try{const saved=JSON.parse(this.storage.getItem('atlas-dice-choice')||'null'),expression=saved?.expression||(saved?.count&&saved?.sides?`${saved.count}d${saved.sides}`:'');if(expression&&!parseDiceFormula(expression).error)this.expression.value=expression;}catch{}
@@ -220,7 +225,7 @@ export class DiceRuntime {
 
   setScene(sceneId,userId=''){
     sceneId=String(sceneId||'');
-    if(sceneId!==this.sceneId){this.sceneId=sceneId;this.events=[];this.eventIds.clear();this.actionPreviews.clear();this.liveActionRolls.clear();this.overlayActionID='';this.entries.replaceChildren();this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);this.last.hidden=true;this.lastAction.hidden=true;this.#updateCount();clearTimeout(this.overlayTimer);this.overlay.hidden=true;this.root.diceUI.setJournal(false);}
+    if(sceneId!==this.sceneId){this.sceneId=sceneId;this.events=[];this.eventIds.clear();this.actionPreviews.clear();this.liveActionRolls.clear();this.liveActionNotices.clear();this.overlayActionID='';this.entries.replaceChildren();this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);this.last.hidden=true;this.lastAction.hidden=true;this.#updateCount();clearTimeout(this.overlayTimer);this.overlay.hidden=true;this.root.diceUI.setJournal(false);}
     this.userId=String(userId||'');this.animator?.setContext(sceneId,this.userId);this.root.hidden=!sceneId;this.root.diceUI.toggle.hidden=!sceneId;if(sceneId&&this.animation.value!=='off')this.animator?.warmup();
   }
 
@@ -312,6 +317,16 @@ export class DiceRuntime {
     this.lastAction.hidden=true;
     if(event.userId===this.userId)this.last.hidden=true;
     if(this.overlayActionID===event.id&&!this.overlay.hidden)this.#updateOverlayMessage(event);
+    // An action may emit messages without ever rolling. Show its first
+    // announcement once; subsequent streamed messages update the same notice.
+    const hasMessages=(event.messages||[]).some(Boolean);
+    const notice=(!event.roll&&message?.type==='actionMessage'&&hasMessages)||
+      (!event.roll&&!hasMessages&&changes?.length>0);
+    if(notice&&!this.liveActionNotices.has(event.id)){
+      this.liveActionNotices.add(event.id);
+      if(this.liveActionNotices.size>128)this.liveActionNotices.delete(this.liveActionNotices.values().next().value);
+      this.showActionNotice(event);
+    }
     if(liveRoll&&event.roll&&!this.liveActionRolls.has(event.id)){this.liveActionRolls.add(event.id);if(this.liveActionRolls.size>128)this.liveActionRolls.delete(this.liveActionRolls.values().next().value);
       const supported=event.groups.length>0&&event.groups.every(group=>DICE_SIDES.includes(group.sides));
       if(supported&&this.#shouldAnimate(event)&&this.animator?.enqueue(event))return;
@@ -377,8 +392,30 @@ export class DiceRuntime {
     const text=(event.messages||[]).filter(Boolean).join(' · ');
     let message=this.overlay.querySelector('.dice-overlay-message');
     if(!text){message?.remove();return;}
-    if(!message){message=document.createElement('div');message.className='dice-overlay-message';this.overlay.prepend(message);}
+    if(!message){message=document.createElement('div');message.className='dice-overlay-message';
+      if(this.overlay.classList.contains('dice-message-only'))this.overlay.append(message);
+      else this.overlay.prepend(message);
+    }
     message.textContent=text;
+  }
+  showActionNotice(event){
+    if(!this.sceneId||event.sceneId!==this.sceneId)return;
+    if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;
+    clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();
+    this.overlay.classList.remove('dice-total-animate');
+    this.overlay.classList.add('dice-message-only');this.overlayActionID=event.id;
+    const title=document.createElement('strong');title.textContent=event.actionName||'Действие';this.overlay.append(title);
+    this.#updateOverlayMessage(event);
+    if(!(event.messages||[]).some(Boolean)&&event.changes?.length){
+      const details=document.createElement('div');details.className='dice-overlay-message';
+      details.textContent=event.changes.slice(0,3).map(change=>
+        `${change.field}: ${String(change.before?.value??'—')} → ${String(change.after?.value??'—')}`).join(' · ');
+      if(event.changes.length>3)details.textContent+=` · ещё ${event.changes.length-3}`;
+      this.overlay.append(details);
+    }
+    const text=(event.messages||[]).filter(Boolean).join(' · ');
+    const duration=Math.min(7000,Math.max(3000,1800+text.length*35));
+    this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;this.overlayActionID='';},duration);
   }
   showTotal(event,animated=true){
     if(!this.sceneId||event.sceneId!==this.sceneId)return;
@@ -387,6 +424,7 @@ export class DiceRuntime {
     const key=[current.actor?.characterId||'',current.actionId||'',current.source?.itemId||''].join('\0');
     const preview=current.actionExecution?this.actionPreviews.get(key):null;
     clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();
+    this.overlay.classList.remove('dice-message-only');
     this.overlayActionID=current.actionExecution?current.id:'';
     if(current.actionExecution)this.#updateOverlayMessage(current);
     const total=document.createElement('strong');total.textContent=current.rollTotalText??numberText(current.total);

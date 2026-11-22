@@ -66,3 +66,20 @@ test('action overlay uses named-free numeric roll components when they match the
  assert.equal(numericRollFormula(event,{...preview,notes:['Цель не выбрана']}),'d20 + 14');
  assert.equal(numericRollFormula({groups:[{count:1,sides:20,results:[12]}],total:15,modifier:3}),'d20 + 3');
 });
+
+test('fixed action results never create an imaginary dice group or NaN formula',()=>{
+ const event={actionExecution:true,groups:[],total:15};
+ assert.equal(diceNotation(event),'');
+ assert.equal(numericRollFormula(event),'15');
+ assert.equal(numericRollFormula(event,{parts:[
+  {label:'Число',value:'12',sign:'+'},
+  {label:'Мастерство',value:'3',sign:'+'}
+ ]}),'12 + 3');
+ assert.equal(numericRollFormula(event,{parts:[{label:'Число',value:'12',sign:'+'}],notes:['Зависит от цели']}),'15');
+ assert.equal(numericRollFormula({...event,rollTotalText:'15'}),'15');
+});
+
+test('manual dice events keep their original notation',()=>{
+ assert.equal(diceNotation({count:1,sides:20,results:[11]}),'1d20');
+ assert.equal(numericRollFormula({count:1,sides:20,results:[11],total:14,modifier:3}),'d20 + 3');
+});
