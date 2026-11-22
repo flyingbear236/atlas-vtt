@@ -2,23 +2,17 @@ package main
 
 import (
 	"fmt"
-	"maps"
 	"math"
 	"strconv"
-	"strings"
 )
 
-// Immutable and shared by projections of the same compiled ruleset. Literal
-// bases come first, followed by formulas in dependency order.
+// Compiled addresses are shared by projections of the same ruleset.
 type statPlan struct {
-	statProgram
-	resources statProgram
-	types     map[string]StatType
-}
-
-type statProgram struct {
-	steps     []statStep
-	constants map[string]any
+	steps                    []statStep
+	constants                map[string]any
+	types                    map[string]StatType
+	byAddress                map[string]statStep
+	outputs, resourceOutputs []string
 }
 
 type statStep struct {
@@ -26,105 +20,187 @@ type statStep struct {
 	formula          *Expression
 }
 
-func EffectiveCharacterState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) (EffectiveCharacter, error) {
-	state := characterSourceState(instance, preset, registry)
-	if registry.statPlan == nil {
-		return state, nil
-	}
-	return registry.statPlan.statProgram.evaluate(instance, registry, state)
-}
-
-// Select the transitive inputs of resource maxima once. Token display updates
-// need neither unrelated formulas nor a copy of all the sheet's metadata.
-func (plan *statPlan) compileResources(stats map[string]StatDefinition, aliases map[string]string) {
-	wanted := map[string]bool{}
-	for id, def := range stats {
-		if def.IsResource() {
-			wanted["stat."+id+".default"] = true
-		}
-	}
-	for i := len(plan.steps) - 1; i >= 0; i-- {
-		step := plan.steps[i]
-		if !wanted[step.owner+"."+step.field] || step.formula == nil {
-			continue
-		}
-		for _, dep := range step.formula.Dependencies {
-			dep = strings.TrimPrefix(dep, "actor.")
-			if key, ok := aliases[dep]; ok {
-				dep = key
-			}
-			wanted[dep] = true
-		}
-	}
-	for _, step := range plan.steps {
-		if wanted[step.owner+"."+step.field] {
-			plan.resources.steps = append(plan.resources.steps, step)
-		}
-	}
-	plan.resources.constants = map[string]any{}
-	for key := range wanted {
-		if raw, ok := plan.constants[key]; ok {
-			plan.resources.constants[key] = raw
-		}
-	}
-}
-
-func (p statProgram) evaluate(instance CharacterInstance, registry EffectiveRegistry, state EffectiveCharacter) (EffectiveCharacter, error) {
-	values := maps.Clone(p.constants)
-	context := map[string]any{"actor.name": instance.Name, "actor.id": instance.ID}
-	frame := ExpressionFrame{Bindings: context, characterStats: values}
+func (p *statPlan) index(stats map[string]StatDefinition) {
+	p.byAddress = make(map[string]statStep)
 	for _, step := range p.steps {
 		address := step.owner + "." + step.field
-		def := registry.Stats[step.id]
-		var raw any
-		if step.formula != nil {
-			context["value"] = values[step.owner]
-			frame.steps = 0 // each compiled expression retains its own operation budget
-			v, err := frame.Evaluate(step.formula)
-			if err != nil {
-				return EffectiveCharacter{}, fmt.Errorf("%s: %w", address, err)
-			}
-			raw = v.scalar()
-		}
-		if step.field != "default" {
-			values[address] = raw
-			continue
-		}
-		var base StatValue
-		if step.formula == nil {
-			base = *def.Default
-			if def.IsResource() {
-				if source, ok := state.Resources[step.id]; ok {
-					base = source.Initial
-				}
-			} else if source, ok := state.Stats[step.id]; ok {
-				base = source
-			}
-		} else {
-			var err error
-			base, err = tomlStatValue(raw, rulesetStatType(raw))
-			if err != nil {
-				return EffectiveCharacter{}, fmt.Errorf("%s: %w", address, err)
+		if step.field == "default" {
+			address = step.owner
+			p.byAddress[address+".base"] = step
+			if stats[step.id].IsResource() {
+				current := address + ".current"
+				p.byAddress[current] = step
+				p.outputs = append(p.outputs, current)
+				p.resourceOutputs = append(p.resourceOutputs, address, current)
 			}
 		}
-		values[step.owner+".base"] = base.Interface()
-		values[step.owner] = base.Interface()
-		if def.IsResource() {
-			current, ok := instance.ResourceCurrent[step.id]
-			if !ok {
-				current = base
-			}
-			if current.Type() != base.Type() {
-				return EffectiveCharacter{}, fmt.Errorf("%s.current requires %s", step.owner, base.Type())
-			}
-			state.Resources[step.id] = EffectiveResource{Initial: base, Current: current}
-			values[step.owner+".current"] = current.Interface()
-		} else {
-			state.Stats[step.id] = base
+		p.byAddress[address] = step
+		p.outputs = append(p.outputs, address)
+	}
+	p.outputs = append(p.outputs, sortedDefinitionIDs(p.constants)...)
+	p.steps = nil
+}
+
+func EffectiveCharacterState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) (EffectiveCharacter, error) {
+	return projectCharacterStats(instance, preset, registry, nil, nil, false)
+}
+
+// actorFields carries custom instance data supplied by the caller.
+func (effects *ActiveEffects) CharacterState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, actorFields map[string]any) (EffectiveCharacter, error) {
+	return projectCharacterStats(instance, preset, registry, effects, actorFields, false)
+}
+
+type statPass struct {
+	instance CharacterInstance
+	registry EffectiveRegistry
+	state    EffectiveCharacter
+	effects  *ActiveEffects
+	values   map[string]any
+	visiting map[string]bool
+	frame    ExpressionFrame
+}
+
+func projectCharacterStats(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, effects *ActiveEffects, actorFields map[string]any, resourcesOnly bool) (EffectiveCharacter, error) {
+	state := characterSourceState(instance, preset, registry)
+	plan := registry.statPlan
+	if plan == nil {
+		return state, nil
+	}
+	pass := statPass{instance: instance, registry: registry, state: state, effects: effects, values: map[string]any{}, visiting: map[string]bool{}}
+	pass.frame = ExpressionFrame{Bindings: map[string]any{"actor": actorFields, "actor.id": instance.ID, "actor.name": instance.Name}, readStat: pass.read}
+	outputs := plan.outputs
+	if resourcesOnly {
+		outputs = plan.resourceOutputs
+	}
+	for _, address := range outputs {
+		if _, err := pass.read(address); err != nil {
+			return EffectiveCharacter{}, err
 		}
 	}
-	state.StatValues = values
-	return state, nil
+	pass.state.StatValues = pass.values
+	return pass.state, nil
+}
+
+// Effect conditions can introduce dependencies in either direction relative to
+// declaration order. Resolve actual reads, once per projection.
+func (p *statPass) read(address string) (any, error) {
+	if raw, ok := p.values[address]; ok {
+		return raw, nil
+	}
+	if p.visiting[address] {
+		return nil, fmt.Errorf("cyclic stat/effect dependency at %s", address)
+	}
+	// Effects can connect independently compiled graphs into a very deep chain.
+	if len(p.visiting) >= maxExpressionSteps {
+		return nil, fmt.Errorf("stat/effect dependency depth exceeded at %s", address)
+	}
+	p.visiting[address] = true
+	defer delete(p.visiting, address)
+	raw, err := p.compute(address)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", address, err)
+	}
+	p.values[address] = raw
+	return raw, nil
+}
+
+func (p *statPass) compute(address string) (any, error) {
+	plan := p.registry.statPlan
+	step, ok := plan.byAddress[address]
+	if !ok {
+		raw, found := plan.constants[address]
+		if !found {
+			return nil, fmt.Errorf("unknown stat address")
+		}
+		return p.modify(address, raw, false)
+	}
+	def := p.registry.Stats[step.id]
+	if step.field != "default" {
+		raw, err := p.formula(step)
+		if err != nil {
+			return nil, err
+		}
+		return p.modify(address, raw, false)
+	}
+	if address == step.owner+".base" {
+		if step.formula != nil {
+			raw, err := p.formula(step)
+			if err != nil {
+				return nil, err
+			}
+			value, err := tomlStatValue(raw, rulesetStatType(raw))
+			if err != nil {
+				return nil, fmt.Errorf("%s.default: %w", step.owner, err)
+			}
+			return value.Interface(), nil
+		}
+		if def.IsResource() {
+			if source, ok := p.state.Resources[step.id]; ok {
+				return source.Initial.Interface(), nil
+			}
+		} else if source, ok := p.state.Stats[step.id]; ok {
+			return source.Interface(), nil
+		}
+		return def.Default.Interface(), nil
+	}
+	base, err := p.read(step.owner + ".base")
+	if err != nil {
+		return nil, err
+	}
+	if address == step.owner+".current" {
+		current, ok := p.instance.ResourceCurrent[step.id]
+		if !ok {
+			current, err = tomlStatValue(base, rulesetStatType(base))
+		}
+		if err != nil || current.Type() != rulesetStatType(base) {
+			return nil, fmt.Errorf("current requires %s", rulesetStatType(base))
+		}
+		resource := p.state.Resources[step.id]
+		resource.Current = current
+		p.state.Resources[step.id] = resource
+		return current.Interface(), nil
+	}
+	raw, err := p.modify(address, base, true)
+	if err != nil {
+		return nil, err
+	}
+	value, err := tomlStatValue(raw, rulesetStatType(base))
+	if err != nil {
+		return nil, err
+	}
+	if def.IsResource() {
+		resource := p.state.Resources[step.id]
+		resource.Initial = value
+		p.state.Resources[step.id] = resource
+	} else {
+		p.state.Stats[step.id] = value
+	}
+	return raw, nil
+}
+
+func (p *statPass) formula(step statStep) (any, error) {
+	frame := ExpressionFrame{Bindings: p.frame.Bindings, readStat: p.read, valueAddress: step.owner}
+	v, err := frame.evaluateOnce(step.formula)
+	if err != nil {
+		return nil, fmt.Errorf("%s.%s: %w", step.owner, step.field, err)
+	}
+	return v.scalar(), nil
+}
+
+func (p *statPass) modify(address string, raw any, integerDestination bool) (any, error) {
+	entries := p.effects.forTarget(address)
+	if len(entries) == 0 {
+		return raw, nil
+	}
+	v, err := exprScalar(raw)
+	if err != nil {
+		return nil, err
+	}
+	v, err = applyEffects(entries, v, &p.frame, effectContext{}, integerDestination)
+	if err != nil {
+		return nil, err
+	}
+	return v.scalar(), nil
 }
 
 func (v exprValue) scalar() any {
@@ -162,11 +238,7 @@ func characterStatsForRegistry(instance CharacterInstance, registry EffectiveReg
 }
 
 func resourceState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) (EffectiveCharacter, error) {
-	state := characterSourceState(instance, preset, registry)
-	if registry.statPlan == nil {
-		return state, nil
-	}
-	return registry.statPlan.resources.evaluate(instance, registry, state)
+	return projectCharacterStats(instance, preset, registry, nil, nil, true)
 }
 
 // Older saves may omit current when a resource is full. Carry that value

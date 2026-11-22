@@ -74,12 +74,13 @@ func (c *expressionCompiler) recordField(kind, key string, typ exprType) {
 
 func (s *RulesetSnapshot) compileExpressions() error {
 	s.expressions = nil
+	s.effects = nil
 	s.Registry.statPlan = nil
 	if s.ExecutionReady() {
 		return nil
 	}
 	c := expressionCompiler{
-		stats: statPlan{statProgram: statProgram{constants: map[string]any{}}, types: map[string]StatType{}},
+		stats: statPlan{constants: map[string]any{}, types: map[string]StatType{}},
 		sites: map[string]expressionSite{}, scalars: map[string]exprType{}, aliases: map[string]string{},
 		instanceTypes: map[string]map[string]exprType{"object": {}, "character": {}},
 		programs:      map[string]*Expression{}, visiting: map[string]bool{},
@@ -164,9 +165,10 @@ func (s *RulesetSnapshot) compileExpressions() error {
 		}
 	}
 	s.expressions = c.programs
+	s.compileEffects()
 	if len(c.stats.steps) != 0 {
 		plan := c.stats
-		plan.compileResources(s.Registry.Stats, c.aliases)
+		plan.index(s.Registry.Stats)
 		s.Registry.statPlan = &plan
 		for _, id := range sortedDefinitionIDs(s.Characters) {
 			if table, ok := s.Characters[id].values["stat"].(map[string]any); ok {
@@ -253,7 +255,14 @@ func (c *expressionCompiler) compile(key string) (*Expression, error) {
 		if want != exprDynamic {
 			p.Type = want
 		}
-		p.integer = p.Type == exprNumber && (site.kind == "stat" && site.field == "default" || len(site.targets) > 0 || site.kind == "action" && site.field == "roll")
+		p.integer = p.Type == exprNumber && (site.kind == "stat" && site.field == "default" || site.kind == "action" && (site.field == "roll" || len(site.targets) > 0))
+		// Only reads in the expression require a game target. An effect may
+		// happen to modify an action whose own ID starts with "target.".
+		for _, dep := range p.Dependencies {
+			if strings.HasPrefix(dep, "target.") || strings.HasPrefix(dep, "action.target.") {
+				p.UsesOptionalTarget = true
+			}
+		}
 		// Bind context aliases to the addresses they actually depend on.
 		if slices.Contains(p.Dependencies, "value") {
 			ref := site.writePath
@@ -277,9 +286,6 @@ func (c *expressionCompiler) compile(key string) (*Expression, error) {
 			}
 		}
 		for _, dep := range p.Dependencies {
-			if strings.HasPrefix(dep, "target.") || strings.HasPrefix(dep, "action.target.") {
-				p.UsesOptionalTarget = true
-			}
 			if site.kind == "action" && (dep == "roll" || strings.HasPrefix(dep, "var.")) {
 				local := c.programs[site.owner+"."+dep]
 				p.UsesOptionalTarget = p.UsesOptionalTarget || local.UsesOptionalTarget
@@ -382,10 +388,20 @@ func (c *expressionCompiler) instanceField(kind string, path []string) (exprType
 }
 
 func (s RulesetSnapshot) actionExpressionFrame(id string, bindings map[string]any, rng DiceRNG) *ExpressionFrame {
+	return s.actionFrameWithEffects(id, bindings, rng, nil)
+}
+
+func (s RulesetSnapshot) actionFrameWithEffects(id string, bindings map[string]any, rng DiceRNG, effects *ActiveEffects) *ExpressionFrame {
 	frame := &ExpressionFrame{Bindings: bindings, RNG: rng, Locals: map[string]*Expression{}}
 	owner := "action." + id + "."
 	if roll := s.expressions[owner+"roll"]; roll != nil {
 		frame.Locals["roll"] = roll
+		if entries := effects.forTarget(owner + "roll"); len(entries) != 0 {
+			ctx := actionEffectContext(bindings)
+			frame.modifyRoll = func(base exprValue) (exprValue, error) {
+				return applyEffects(entries, base, frame, ctx, true)
+			}
+		}
 	}
 	if action := s.Registry.Actions[id]; action.V04 != nil {
 		vars, _ := action.V04.values["var"].(map[string]any)

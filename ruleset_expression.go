@@ -372,8 +372,10 @@ func exprScalar(raw any) (exprValue, error) {
 // One frame belongs to one invocation with stable actor/source/target bindings.
 // Results and failures are memoized, including a failed or successful roll.
 type ExpressionFrame struct {
-	// In a character stat pass, actor.stat and stat address the same projection.
-	characterStats     map[string]any
+	readStat           func(string) (any, error)
+	valueAddress       string
+	intermediate       *exprValue
+	modifyRoll         func(exprValue) (exprValue, error)
 	Bindings           map[string]any
 	RNG                DiceRNG
 	Locals             map[string]*Expression
@@ -400,18 +402,28 @@ func (f *ExpressionFrame) Evaluate(p *Expression) (exprValue, error) {
 	}
 	f.cache[p] = exprResult{err: fmt.Errorf("cyclic expression")}
 	f.depth++
-	v, err := f.eval(p.root)
+	v, err := f.evaluateOnce(p)
+	if err == nil && f.modifyRoll != nil && p == f.Locals["roll"] {
+		v, err = f.modifyRoll(v)
+	}
 	f.depth--
+	f.cache[p] = exprResult{v, err}
+	return v, err
+}
+
+// Deterministic stat and effect formulas have no action locals. Their caller
+// owns the result lifetime and can evaluate them without allocating a cache.
+func (f *ExpressionFrame) evaluateOnce(p *Expression) (exprValue, error) {
+	v, err := f.eval(p.root)
 	if err == nil && (!exprFits(v.typ, p.Type) || p.integer && (v.typ != exprNumber || !v.num.IsInt())) {
 		err = fmt.Errorf("incompatible expression result, expected %s", p.Type)
 	}
 	if err == nil && p.matchTarget {
-		target, e := exprScalar(f.Bindings["target"])
-		if e != nil || target.typ != v.typ || (v.typ == exprNumber && !v.num.IsInt()) {
+		target, e := f.effectTarget()
+		if e != nil || target.typ != v.typ {
 			err = fmt.Errorf("effect result must match the current target type")
 		}
 	}
-	f.cache[p] = exprResult{v, err}
 	return v, err
 }
 func (f *ExpressionFrame) eval(n *exprNode) (exprValue, error) {
@@ -512,30 +524,75 @@ func (f *ExpressionFrame) eval(n *exprNode) (exprValue, error) {
 	return checkedRat(r)
 }
 
+func (f *ExpressionFrame) effectTarget() (exprValue, error) {
+	if f.intermediate != nil {
+		return *f.intermediate, nil
+	}
+	return exprScalar(f.Bindings["target"])
+}
+
+func expressionBinding(bindings map[string]any, address string, path []string) (any, bool) {
+	if raw, ok := bindings[address]; ok {
+		return raw, true
+	}
+	var raw any = bindings
+	for _, key := range path {
+		table, _ := raw.(map[string]any)
+		var ok bool
+		if raw, ok = table[key]; !ok {
+			return nil, false
+		}
+	}
+	return raw, true
+}
+
 func (f *ExpressionFrame) read(n *exprNode) (exprValue, error) {
 	if local := f.Locals[n.address]; local != nil {
 		return f.Evaluate(local)
 	}
-	raw, ok := f.Bindings[n.address]
-	if !ok && f.characterStats != nil {
-		raw, ok = f.characterStats[strings.TrimPrefix(n.address, "actor.")]
+	if n.address == "target" && f.intermediate != nil {
+		return f.chargeRead(n, *f.intermediate)
 	}
-	if !ok {
-		raw = f.Bindings
-		for _, key := range n.path {
-			table, _ := raw.(map[string]any)
-			raw, ok = table[key]
-			if !ok {
-				return exprValue{}, fmt.Errorf("missing context address %s", n.address)
-			}
+	address := strings.TrimPrefix(n.address, "actor.")
+	if n.address == "value" && f.valueAddress != "" {
+		address = f.valueAddress
+	}
+	var raw any
+	if f.readStat != nil && strings.HasPrefix(address, "stat.") {
+		var err error
+		raw, err = f.readStat(address)
+		if err != nil {
+			return exprValue{}, err
+		}
+	} else {
+		var ok bool
+		raw, ok = expressionBinding(f.Bindings, n.address, n.path)
+		if !ok && strings.HasPrefix(n.address, "action.target.") {
+			raw, ok = expressionBinding(f.Bindings, strings.TrimPrefix(n.address, "action."), n.path[1:])
+		}
+		if !ok && strings.HasPrefix(n.address, "actor.stat.") {
+			raw, ok = expressionBinding(f.Bindings, address, n.path[1:])
+		}
+		if !ok && n.path[0] == "stat" {
+			raw, ok = expressionBinding(f.Bindings, "actor."+address, append([]string{"actor"}, n.path...))
+		}
+		if !ok {
+			return exprValue{}, fmt.Errorf("missing context address %s", n.address)
 		}
 	}
 	v, err := exprScalar(raw)
+	if err != nil {
+		return exprValue{}, err
+	}
+	return f.chargeRead(n, v)
+}
+
+func (f *ExpressionFrame) chargeRead(n *exprNode, v exprValue) (exprValue, error) {
 	f.steps += len(n.path) + len(v.text)/64
 	if f.steps > maxExpressionSteps {
 		return exprValue{}, fmt.Errorf("expression execution limit")
 	}
-	return v, err
+	return v, nil
 }
 func checkedRat(r *big.Rat) (exprValue, error) {
 	if r.Num().BitLen() > maxRationalBits || r.Denom().BitLen() > maxRationalBits || r.IsInt() && !r.Num().IsInt64() {

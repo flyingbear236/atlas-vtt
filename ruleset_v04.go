@@ -13,7 +13,7 @@ import (
 	"github.com/pelletier/go-toml/v2/unstable"
 )
 
-const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 expressions are compiled. Gameplay requires effect and action execution."
+const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 expressions and effects are compiled. Gameplay requires character and inventory effect sources and action execution."
 
 var rulesetV04Kinds = [...]string{"stat", "action", "effect", "object", "character"}
 
