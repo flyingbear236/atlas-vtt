@@ -1,4 +1,4 @@
-import {loadLayout,saveLayout,buildSheet,moveEntry,normalizeLayout} from './character-sheet-layout.js';
+import {loadLayout,saveLayout,buildSheet,moveEntry,normalizeLayout,sheetStatGroup} from './character-sheet-layout.js';
 import {groupSheetActionSources,shortActionFormula} from './action-groups.js';
 import {itemActionsForInventory,nestInventoryFields} from './inventory-presentation.js';
 import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
@@ -10,7 +10,7 @@ import {SceneTreeRuntime} from './scene-tree.js';
 import {constrainTokenMovement} from './movement-geometry.js';
 import {CharacterCatalog,CharacterWatch,statInputValue,statValueFromInput,actionDependencies} from './characters.js';
 import {DefinitionsEditor} from './definitions.js';
-import {ActionTargetPicker,appendStatFields} from './ruleset-sheet.js';
+import {ActionTargetPicker,displayRulesetValue} from './ruleset-sheet.js';
 import {ActionVisualGate} from './action-visual-gate.js';
 import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
@@ -759,39 +759,44 @@ function makeCharacterStatInput(snapshot,statID,definition,value){
  input.addEventListener('blur',()=>{if(input.checkValidity()&&Object.hasOwn(characterDrafts.get(snapshot.characterId),statID))queueCharacterStat(snapshot.characterId,statID,characterDrafts.get(snapshot.characterId)[statID]);});
  return input;
 }
+function createStatDerivedFields(fields){
+ const derived=fields?.derived||[];
+ if(!derived.length)return null;
+ const list=document.createElement('div');list.className='character-stat-derived';
+ for(const field of derived){
+  const item=document.createElement('span');item.className='character-stat-derived-item';
+  const label=document.createElement('span');label.className='character-stat-derived-label';label.textContent=field.name;
+  const value=document.createElement('strong');value.className='character-stat-derived-value';value.textContent=displayRulesetValue(field.value);
+  item.append(label,value);list.append(item);
+ }
+ return list;
+}
 function renderCharacterStats(snapshot){
  const container=$('characterStats'),editor=$('characterStatEditor');container.replaceChildren();editor.replaceChildren();
  const effective=snapshot.effective?.stats||{},drafts=characterDrafts.get(snapshot.characterId),ids=Object.keys(effective).sort((a,b)=>(snapshot.statDefinitions?.[a]?.name||a).localeCompare(snapshot.statDefinitions?.[b]?.name||b)||a.localeCompare(b));
  for(const statID of ids){
   const definition=snapshot.statDefinitions?.[statID]||{id:statID,name:statID,type:effective[statID].type},server=effective[statID],value=characterEditSession?server:(Object.hasOwn(drafts,statID)?drafts[statID]:server);
-  const card=document.createElement('div');card.className='character-stat-card';const name=document.createElement('span');name.className='character-stat-name';name.textContent=definition.name||statID;
-  const output=document.createElement('strong');output.className='character-stat-value';output.textContent=definition.type==='boolean'?(value.value?'Да':'Нет'):String(value.value??'');card.title=definition.name||statID;card.dataset.sheetItem=`stat:${statID}`;if(characterEditSession&&!definition.v04){const input=editInput(statID,'stat',definition,value);card.append(name,input,editRemoveButton(statID,'stat'));}else card.append(name,output);
-  const fields=snapshot.statFields?.[statID];
-  appendStatFields(card,fields,fields?.description,!characterEditSession&&definition.default&&snapshot.permissions?.edit&&fields&&!state?.playerPreview?rulesetBaseInput(snapshot,statID,definition,fields.base):null);
+  const card=document.createElement('div');card.className='character-stat-card';card.dataset.sheetItem=`stat:${statID}`;
+  const title=definition.name||statID,fields=snapshot.statFields?.[statID];
+  card.title=fields?.description||title;
+  const main=document.createElement('div');main.className='character-stat-main';
+  const name=document.createElement('span');name.className='character-stat-name';name.textContent=title;main.append(name);
+  if(characterEditSession&&!definition.v04){const input=editInput(statID,'stat',definition,value);input.classList.add('character-stat-inline-input');main.append(input);}else{
+   const output=document.createElement('strong');output.className='character-stat-value'+(definition.type==='string'?' character-stat-text-value':'');output.textContent=definition.type==='boolean'?(value.value?'Да':'Нет'):displayRulesetValue(value.value);
+   main.append(output);
+  }
+  card.append(main);
+  const derived=createStatDerivedFields(fields);
+  if(derived)card.append(derived);
+  if(characterEditSession&&!definition.v04)card.append(editRemoveButton(statID,'stat'));
   container.append(card);
   if(definition.v04||characterEditSession||!snapshot.permissions?.manage||!isEditorView())continue;
-  const row=document.createElement('div');row.className='character-stat-edit';const label=document.createElement('label');label.textContent=definition.name||statID;label.append(makeCharacterStatInput(snapshot,statID,definition,value));row.append(label);
-  const remove=document.createElement('button');remove.type='button';remove.className='subtle character-parameter-remove';remove.textContent='Убрать';remove.title='Убрать характеристику у этого персонажа';remove.onclick=()=>removeCharacterParameter(snapshot,statID,definition.name||statID);row.append(remove);
+  const row=document.createElement('div');row.className='character-stat-edit';const label=document.createElement('label');label.textContent=title;label.append(makeCharacterStatInput(snapshot,statID,definition,value));row.append(label);
+  const remove=document.createElement('button');remove.type='button';remove.className='subtle character-parameter-remove';remove.textContent='Убрать';remove.title='Убрать характеристику у этого персонажа';remove.onclick=()=>removeCharacterParameter(snapshot,statID,title);row.append(remove);
   editor.append(row);
  }
  if(!ids.length)container.textContent='Нет характеристик.';
  $('characterParameterAdd').hidden=!characterEditSession;
-}
-function rulesetBaseInput(snapshot,id,definition,base){
- const input=document.createElement('input');
- input.type=definition.type==='boolean'?'checkbox':definition.type==='integer'?'number':'text';
- input.setAttribute('aria-label',`${definition.name||id}: базовое значение`);
- if(input.type==='checkbox')input.checked=base;
- else input.value=String(base);
- input.onchange=()=>{
-  try{
-   if(snapshot.instance.presetId&&!snapshot.instance.materialized&&!confirmMechanicalEdit(snapshot)){renderCharacterPanel();return;}
-   const statValue=statValueFromInput(definition.type,input.value,input.checked);
-   const type=definition.kind==='resource'?'characterResourceInitialSet':'characterStatSet';
-   if(!queueCommand(type,{characterId:snapshot.characterId,statId:id,statValue}))renderCharacterPanel();
-  }catch(error){toast(error.message);renderCharacterPanel();}
- };
- return input;
 }
 function createCharacterResourceInput(snapshot,statID,definition,resource,field){
  const input=document.createElement('input');input.type=definition.type==='boolean'?'checkbox':definition.type==='string'?'text':'number';
@@ -808,8 +813,9 @@ function renderCharacterResources(snapshot){
  for(const [statID,resource] of Object.entries(resources).sort(([a],[b])=>(snapshot.statDefinitions?.[a]?.name||a).localeCompare(snapshot.statDefinitions?.[b]?.name||b)||a.localeCompare(b))){
   const definition=snapshot.statDefinitions?.[statID]||{type:resource.initial.type,name:statID};
   const row=document.createElement('section');row.className='character-resource-card';
-  const head=document.createElement('div');head.className='character-resource-head';const title=document.createElement('strong');title.textContent=definition.name||statID;
-  const count=document.createElement('span');count.className='character-resource-count';count.textContent=definition.type==='boolean'?(resource.current.value?'Да':'Нет'):definition.type==='string'?String(resource.current.value||'—'):`${resource.current.value} / ${resource.initial.value}`;head.append(title,count);row.append(head);
+  const head=document.createElement('div');head.className='character-stat-main character-resource-head';
+  const title=document.createElement('strong');title.className='character-stat-name';title.textContent=definition.name||statID;
+  head.append(title);row.append(head);
   const edit=document.createElement('div');edit.className='character-resource-controls';
   const input=createCharacterResourceInput(snapshot,statID,definition,resource,'current');
   if(input.type==='number'){
@@ -821,7 +827,8 @@ function renderCharacterResources(snapshot){
   if(characterEditSession&&!definition.v04){edit.replaceChildren();const currentLabel=document.createElement('label');currentLabel.textContent='Текущее';currentLabel.append(editInput(statID,'resource',definition,resource.current,'current'));const initialLabel=document.createElement('label');initialLabel.textContent='Исходное';initialLabel.append(editInput(statID,'resource',definition,resource.initial,'initial'));edit.append(currentLabel,initialLabel);edit.classList.add('character-resource-inline');row.append(editRemoveButton(statID,'stat'));}row.append(edit);row.dataset.sheetItem=`stat:${statID}`;
   if(!characterEditSession&&Object.hasOwn(snapshot.instance?.resourceCurrent||{},statID)&&snapshot.permissions?.edit){const reset=document.createElement('button');reset.type='button';reset.className='subtle character-resource-reset';reset.textContent='Восстановить начальное';reset.onclick=()=>queueCommand('characterResourceCurrentReset',{characterId:snapshot.characterId,statId:statID});row.append(reset);}
   const fields=snapshot.statFields?.[statID];
-  appendStatFields(row,fields,fields?.description,!characterEditSession&&definition.default&&snapshot.permissions?.manage&&isEditorView()&&fields?rulesetBaseInput(snapshot,statID,definition,fields.base):null);
+  row.title=fields?.description||definition.name||statID;
+  const derived=createStatDerivedFields(fields);if(derived)row.append(derived);
   container.append(row);
   if(!definition.v04&&!characterEditSession&&snapshot.permissions?.manage&&isEditorView()){
    const row=document.createElement('div');row.className='character-resource-initial';const label=document.createElement('label');label.textContent=definition.name||statID;label.append(createCharacterResourceInput(snapshot,statID,definition,resource,'initial'));const remove=document.createElement('button');remove.type='button';remove.className='subtle character-parameter-remove';remove.textContent='Убрать';remove.onclick=()=>removeCharacterParameter(snapshot,statID,definition.name||statID);row.append(label,remove);editor.append(row);
@@ -1340,8 +1347,8 @@ const sheetSavedScope=()=>{
 };
 function sheetEntryList(snapshot){
  const definitions=snapshot.statDefinitions||{},entries=[];
- for(const [id,value] of Object.entries(snapshot.effective?.stats||{}))entries.push({key:`stat:${id}`,type:'stat',name:definitions[id]?.name||id,group:definitions[id]?.group||'',resource:false});
- for(const id of Object.keys(snapshot.effective?.resources||{}))entries.push({key:`stat:${id}`,type:'stat',name:definitions[id]?.name||id,group:definitions[id]?.group||'',resource:true});
+ for(const [id,value] of Object.entries(snapshot.effective?.stats||{}))entries.push({key:`stat:${id}`,type:'stat',name:definitions[id]?.name||id,group:sheetStatGroup(id,definitions[id]?.group),resource:false});
+ for(const id of Object.keys(snapshot.effective?.resources||{}))entries.push({key:`stat:${id}`,type:'stat',name:definitions[id]?.name||id,group:sheetStatGroup(id,definitions[id]?.group),resource:true});
  for(const id of sheetActionIDs(snapshot))entries.push({key:`action:${id}`,type:'action',name:snapshot.actions?.[id]?.name||id,group:snapshot.actions?.[id]?.group||'',resource:false});
  return entries;
 }
@@ -1356,7 +1363,7 @@ function sheetSectionMenu(tab,section,entries){
  if(index===2)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const target=layout.tabs.find(t=>t.id===tab.id).sections.find(s=>s.id===section.id);target.view=target.view==='grid'?'list':'grid';return layout;});
  if(index===3)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const target=layout.tabs.find(t=>t.id===tab.id).sections.find(s=>s.id===section.id);target.collapsed=!target.collapsed;return layout;});
  if(index===4){const options=sheetLayout.tabs.map(t=>`${t.id}: ${t.name}`).join('\n');const destination=prompt(`Перенести в какую вкладку?\n${options}`,tab.id);if(destination&&destination!==tab.id)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const from=layout.tabs.find(t=>t.id===tab.id),to=layout.tabs.find(t=>t.id===destination);if(!to)return layout;const pos=from.sections.findIndex(s=>s.id===section.id);if(pos>=0)to.sections.push(...from.sections.splice(pos,1));return layout;});}
- if(index===5)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const from=layout.tabs.find(t=>t.id===tab.id),old=from.sections.find(s=>s.id===section.id);if(!old)return layout;from.sections=from.sections.filter(s=>s!==old);const target=layout.tabs.find(t=>t.id==='stats'||t.id==='actions');for(const key of old.items){const destination=key.startsWith('action:')?'actions':'stats';const t=layout.tabs.find(t=>t.id===destination);let section=t.sections.find(s=>s.id===`auto:${destination}:${encodeURIComponent(destination==='stats'?'Характеристики':'Прочие действия')}`);if(!section){section={id:`auto:${destination}:${encodeURIComponent(destination==='stats'?'Характеристики':'Прочие действия')}`,name:destination==='stats'?'Характеристики':'Прочие действия',view:'grid',collapsed:false,items:[]};t.sections.push(section);}section.items.push(key);}return layout;});
+ if(index===5)sheetMutate(layout=>{ensureSheetSection(layout,tab,section);const from=layout.tabs.find(t=>t.id===tab.id),old=from.sections.find(s=>s.id===section.id);if(!old)return layout;from.sections=from.sections.filter(s=>s!==old);const target=layout.tabs.find(t=>t.id==='stats'||t.id==='actions');for(const key of old.items){const destination=key.startsWith('action:')?'actions':'stats';const t=layout.tabs.find(t=>t.id===destination);let section=t.sections.find(s=>s.id===`auto:${destination}:${encodeURIComponent(destination==='stats'?'Характеристики':'Прочие действия')}`);if(!section){section={id:`auto:${destination}:${encodeURIComponent(destination==='stats'?'Характеристики':'Прочие действия')}`,name:destination==='stats'?'Характеристики':'Прочие действия',view:destination==='stats'?'list':'grid',collapsed:false,items:[]};t.sections.push(section);}section.items.push(key);}return layout;});
 }
 function sheetEntryMenu(key,entries){
  const options=buildSheet(sheetLayout,entries).tabs.flatMap(tab=>tab.sections.map(section=>({tab,section})));
@@ -1424,7 +1431,7 @@ function renderSheetLayout(snapshot){
    const browse=document.createElement('div');browse.id='characterInventoryBrowse';section.append(browse);sheetMain.append(section);
   }
  // In normal play action sections become a separate horizontal tab strip.
- const sectionTabsActive=selected.id==='actions'&&!sheetEdit;
+ const sectionTabsActive=selected.id==='actions';
  let visibleSections=selected.sections;
  if(sectionTabsActive){
   visibleSections=selected.sections.filter(section=>section.items.some(key=>!sourceGroups?.handled.has(key)||sourceGroups.byEntry.has(key)));
@@ -1442,14 +1449,14 @@ function renderSheetLayout(snapshot){
   const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
   const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
   if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
-  if(!sectionTabsActive)wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=sectionTabsActive?false:section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
+  if(!sectionTabsActive||sheetEdit)wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=sectionTabsActive?false:section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
   if(sheetEdit){
    listing.ondragover=event=>previewSheetDrop(event,listing);
    listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
   }
   for(const key of section.items){
    if(sourceGroups?.handled.has(key)){for(const group of sourceGroups.byEntry.get(key)||[])listing.append(renderSourceActionGroup(snapshot,group));continue;}
-   const item=elements.get(key);if(!item)continue;const frame=document.createElement('div');frame.className='sheet-entry';frame.dataset.sheetItem=key;
+   const item=elements.get(key);if(!item)continue;const frame=document.createElement('div');frame.className='sheet-entry'+(key.startsWith('stat:')?' sheet-entry-stat':'');frame.dataset.sheetItem=key;
    if(sheetEdit){const drag=document.createElement('button');drag.type='button';drag.className='subtle sheet-handle';drag.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20m0-20-4 4m4-4 4 4m-4 16-4-4m4 4 4-4M2 12h20m-20 0 4-4m-4 4 4 4m16-4-4-4m4 4-4 4"/></svg>';drag.setAttribute('aria-label','Переместить карточку');drag.draggable=true;drag.title='Перетащить';drag.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'item',key};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',key);frame.classList.add('sheet-entry-moving');};drag.ondragend=clearSheetDrag;const hide=document.createElement('button');hide.type='button';hide.className='subtle sheet-entry-hide';hide.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3 21 21M10.6 6.2A10.5 10.5 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-3 3.4M6.4 6.4C3.8 8 3 12 3 12s3 6 9 6a10 10 0 0 0 3.6-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';hide.title='Скрыть элемент';hide.setAttribute('aria-label','Скрыть элемент');hide.onclick=()=>sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});const controls=document.createElement('div');controls.className='sheet-entry-controls';controls.append(drag,hide);frame.append(item,controls);frame.ondragover=event=>previewSheetDrop(event,listing);frame.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};}
    frame.append(item);listing.append(frame);
   }

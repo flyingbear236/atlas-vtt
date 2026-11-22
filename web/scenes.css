@@ -272,20 +272,30 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .character-tabs button[aria-selected="true"] { background: #35433e; color: var(--text); box-shadow: 0 1px 4px #0005; }
 #characterPanel .character-section { margin: 0 0 18px; }
 #characterPanel h3 { font-size: 11px; font-weight: 650; letter-spacing: .3px; color: #c3d2c1; margin: 0 0 10px; padding-bottom: 7px; border-bottom: 1px solid var(--border); text-transform: none; }
-.character-stat-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(90px,1fr)); gap: 8px; }
-.character-stat-card { min-width: 0; padding: 9px 5px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; border-radius: 7px; background: #222d2c; border: 1px solid #344340; }
-.character-stat-name { font-size: 11px; line-height: 1.25; color: #b5c2b5; overflow-wrap: anywhere; }
-.character-stat-value { font-size: 19px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; max-width: 100%; }
-.character-resource-list { display: grid; gap: 8px; }
-.character-resource-card { min-width: 0; border: 1px solid #344340; background: #202b29; border-radius: 8px; padding: 10px; }
-.character-resource-head { display: flex; align-items: baseline; justify-content: space-between; gap: 9px; margin-bottom: 7px; overflow-wrap: anywhere; }
-.character-resource-head strong { font-size: 12px; font-weight: 600; }
-.character-resource-count { white-space: nowrap; font-size: 12px; color: #c3d2c1; }
-.character-resource-controls { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-.character-resource-controls input { flex: 1; min-width: 0; height: 34px; padding: 5px 8px; margin: 0; }
-.character-resource-controls input[type=checkbox] { flex: 0 0 auto; }
-.character-resource-step { flex: 0 0 32px; height: 34px; padding: 4px; font-size: 17px; }
-#characterPanel .character-resource-reset { padding: 3px 0; margin-top: 5px; border: 0; color: #adbea9; }
+/* Flat character stat rows: effective value and all derived fields stay together. */
+.character-stat-grid { display:flex;flex-direction:column;gap:0; }
+.character-stat-card,.character-resource-card {
+ min-width:0;display:flex;align-items:baseline;flex-wrap:wrap;gap:7px 15px;
+ padding:11px 12px;text-align:left;border:1px solid #3e5b4c;
+ background:#1b2a28;border-radius:9px;
+}
+.character-stat-main,.character-resource-head {display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:6px 11px;flex:0 1 auto;min-width:0;max-width:100%;margin:0}
+.character-stat-name {font-size:15px;font-weight:690;line-height:1.35;color:#e3eee2;overflow-wrap:normal;word-break:normal;hyphens:none}
+.character-stat-value {font-size:21px;font-weight:760;line-height:1.2;color:#f1f7e9;white-space:nowrap;font-variant-numeric:tabular-nums}
+.character-stat-text-value {white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:none}
+.character-stat-derived {display:flex;flex:1 1 155px;align-items:baseline;flex-wrap:wrap;gap:5px 15px;min-width:0}
+.character-stat-derived-item {display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:3px 7px;min-width:0;max-width:100%}
+.character-stat-derived-label {font-size:13px;line-height:1.35;color:#aabfb0;overflow-wrap:normal;word-break:normal;hyphens:none}
+.character-stat-derived-value {font-size:15px;font-weight:720;line-height:1.3;white-space:nowrap;color:#cce3ae;font-variant-numeric:tabular-nums}
+.character-stat-inline-input {width:92px;min-width:0;text-align:center}
+.character-resource-list {display:flex;flex-direction:column;gap:0}
+.character-resource-head {margin:0;justify-content:flex-start}
+.character-resource-head .character-stat-name {font-size:15px;font-weight:690;overflow-wrap:normal;word-break:normal}
+.character-resource-controls {display:flex;align-items:center;justify-content:flex-start;gap:5px;flex:0 1 146px;min-width:0;max-width:100%}
+.character-resource-controls input {flex:1 1 64px;width:65px;min-width:0;max-width:100%;height:32px;margin:0;padding:4px 6px;font-size:15px;text-align:center}
+.character-resource-controls input[type=checkbox] {flex:0 0 auto}
+.character-resource-step {flex:0 0 27px;height:30px;padding:3px;font-size:17px}
+#characterPanel .character-resource-reset {flex-basis:auto;margin:0;padding:3px 5px;border:0;color:#adbea9;font-size:11px}
 .character-action-grid { display: grid; grid-template-columns: 1fr; align-items: start; gap: 9px; }
 .character-action-card { min-width: 0; padding: 11px; border-radius: 8px; background: #202b29; border: 1px solid #344340; display: flex; flex-direction: column; gap: 7px; }
 .character-action-card > strong { font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
@@ -337,6 +347,14 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 
 /* Layout controls belong to the card that they edit. */
 .sheet-entry{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:#1c2927}
+
+/* Stat rows keep the sheet's grouping and drag handles without nested cards. */
+.sheet-grid>.sheet-entry-stat{grid-column:1/-1}
+.sheet-entry.sheet-entry-stat{border:1px solid #3e5b4c;border-radius:9px;background:#1b2a28;overflow:visible}
+.sheet-entry-stat>.character-stat-card,.sheet-entry-stat>.character-resource-card{border:0;padding:10px 5px;background:transparent}
+.sheet-entry-stat:hover{background:#253c32}
+.sheet-entry-stat .sheet-entry-controls{margin-top:0;padding:0 4px 7px}
+
 .sheet-entry > .character-stat-card,.sheet-entry > .character-resource-card,.sheet-entry > .character-action-card{height:auto;min-height:0;flex:1;border:0;background:transparent}
 .sheet-entry-controls{display:flex;align-items:center;gap:4px;margin-top:auto;padding:5px 8px 7px}
 .sheet-entry-controls .sheet-handle,.sheet-entry-controls .sheet-entry-hide{position:static;margin:0;padding:4px 7px;display:grid;place-items:center;border-radius:6px}
@@ -429,7 +447,7 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .character-inline-input {width:100%;max-width:100%;min-width:0;min-height:35px;box-sizing:border-box;border:1px solid #71917e;border-radius:6px;background:#0f201f;color:#edf5e6;padding:6px;font:inherit;text-align:center}
 .character-inline-input[type=checkbox] {width:23px;height:23px;min-height:0;margin:6px auto}
 .character-edit-invalid {border-color:#e77967!important;box-shadow:0 0 0 1px #e77967}
-.character-stat-card:has(.character-inline-input) {gap:7px;padding:10px}
+.character-stat-card:has(.character-inline-input) {gap:7px 15px;padding:10px 8px}
 .character-edit-remove {font-size:11px;padding:5px 9px;align-self:center;margin-top:4px}
 .character-resource-inline {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
 .character-resource-inline label {font-size:11px;color:#b3c9b9;min-width:0;display:flex;flex-direction:column;gap:4px}
@@ -816,6 +834,7 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 #characterPanel .character-action-section-tabs>button[aria-selected=true]{background:#375240;color:#f0f5e5;border-color:#83a17d;box-shadow:inset 0 -2px #c4e0a5}
 #characterPanel .character-action-section-tabs>button:hover{border-color:#a0b98f}
 #characterPanel .sheet-section.as-action-tab{margin-top:0}
+#characterPanel .sheet-section.as-action-tab > .sheet-heading{margin-top:0}
 
 /* Character identity is edited directly in the header; the footer holds Save/Cancel. */
 #characterPanel .character-edit-header{padding:0;background:transparent;border:0;margin:0 0 10px}

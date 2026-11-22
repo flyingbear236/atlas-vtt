@@ -8,6 +8,14 @@ const cleanID = value => typeof value === 'string' && /^[^\s\u0000-\u001f]{1,180
 const label = value => typeof value === 'string' && value.trim() ? value.trim().slice(0,120) : '';
 const compare = (a,b) => a.localeCompare(b,'ru',{sensitivity:'base'}) || (a < b ? -1 : a > b ? 1 : 0);
 const fresh = () => ({version:LAYOUT_VERSION,tabs:builtin.map(tab=>({...tab,sections:[]})),hidden:[]});
+// A path such as stat.basic.strength or stat."Базовые".strength groups
+// automatically, unless the definition explicitly specifies a group.
+export function sheetStatGroup(id,explicit=''){
+ if(typeof explicit==='string'&&explicit.trim())return explicit;
+ const path=String(id||'').replace(/^stats?\./,'');
+ const match=/^(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^\.]+))\./.exec(path);
+ return match?(match[1]??match[2]??match[3]).replace(/\\(["'])/g,'$1'):'';
+}
 export function normalizeLayout(raw) {
  const layout=fresh();if(!raw||raw.version!==LAYOUT_VERSION||!Array.isArray(raw.tabs))return layout;
  const usedTabs=new Set(builtin.map(tab=>tab.id)),seenSections=new Set();
@@ -35,7 +43,7 @@ export function buildSheet(layout,entries){
  const copy=normalizeLayout(layout),exists=new Map(entries.map(entry=>[entry.key,entry]));const allocated=new Set();
  for(const tab of copy.tabs)for(const section of tab.sections)section.items=section.items.filter(key=>{if(!exists.has(key)||allocated.has(key))return false;allocated.add(key);return true;});
  const grouped=new Map();for(const entry of entries){if(allocated.has(entry.key)||copy.hidden.includes(entry.key))continue;const tab=entry.type==='action'?'actions':'stats';const name=label(entry.group)||(entry.type==='action'?'Прочие действия':'Характеристики');const groupKey=`${tab}\0${name}`;if(!grouped.has(groupKey))grouped.set(groupKey,{tab,name,items:[]});grouped.get(groupKey).items.push(entry);}
- for(const group of [...grouped.values()].sort((a,b)=>a.tab.localeCompare(b.tab)||compare(a.name,b.name))){const tab=copy.tabs.find(tab=>tab.id===group.tab),id=`auto:${group.tab}:${encodeURIComponent(group.name).slice(0,130)}`;let section=tab.sections.find(section=>section.id===id);if(!section){section={id,name:group.name,view:group.tab==='actions'?'grid':'grid',collapsed:false,items:[]};tab.sections.push(section);}group.items.sort((a,b)=>compare(a.name,b.name)||compare(a.key,b.key));section.items.push(...group.items.map(entry=>entry.key));}
+ for(const group of [...grouped.values()].sort((a,b)=>a.tab.localeCompare(b.tab)||compare(a.name,b.name))){const tab=copy.tabs.find(tab=>tab.id===group.tab),id=`auto:${group.tab}:${encodeURIComponent(group.name).slice(0,130)}`;let section=tab.sections.find(section=>section.id===id);if(!section){section={id,name:group.name,view:group.tab==='actions'?'grid':'list',collapsed:false,items:[]};tab.sections.push(section);}group.items.sort((a,b)=>compare(a.name,b.name)||compare(a.key,b.key));section.items.push(...group.items.map(entry=>entry.key));}
  return copy;
 }
 export function moveEntry(layout,key,toTab,toSection,before=''){

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import {strict as assert} from 'node:assert';
-import {buildSheet,normalizeLayout,moveEntry} from './character-sheet-layout.js';
+import {buildSheet,normalizeLayout,moveEntry,sheetStatGroup} from './character-sheet-layout.js';
 const entries=[{key:'stat:hp',type:'stat',name:'Health',resource:true},{key:'stat:power',type:'stat',name:'Power',resource:false,group:'Атрибуты'},{key:'action:slash',type:'action',name:'Slash',group:'Атаки'}];
 test('default layout groups deterministically and contains three built-in tabs',()=>{
  const result=buildSheet(normalizeLayout(null),entries);
@@ -41,4 +41,20 @@ test('inventory is a built-in tab, saved custom tabs and assignments survive',()
  inventory.sections.push({id:'user:bag',name:'Панель',view:'list',items:[]});
  const withItem=moveEntry(restored,'stat:power','inventory','user:bag');
  assert.deepEqual(withItem.tabs.find(t=>t.id==='inventory').sections[0].items,['stat:power']);
+});
+
+test('nested stat paths form display groups while manual placements win',()=>{
+ assert.equal(sheetStatGroup('stat.basic.strength'),'basic');
+ assert.equal(sheetStatGroup('stat."Базовые".сила'),'Базовые');
+ assert.equal(sheetStatGroup('stats."Базовые".сила'),'Базовые');
+ assert.equal(sheetStatGroup('stat.body.strength','Мои характеристики'),'Мои характеристики');
+ assert.equal(sheetStatGroup('stat.hp'),'');
+ const grouped=[{key:'stat:body.strength',type:'stat',name:'Сила',group:sheetStatGroup('stat.body.strength')},{key:'stat:body.dexterity',type:'stat',name:'Ловкость',group:sheetStatGroup('stat.body.dexterity')}];
+ const initial=buildSheet(normalizeLayout(null),grouped);
+ assert.deepEqual(initial.tabs[0].sections[0].items,['stat:body.dexterity','stat:body.strength']);
+ assert.equal(initial.tabs[0].sections[0].name,'body');
+ const layout=normalizeLayout({version:1,tabs:[{id:'stats',sections:[{id:'custom:one',name:'Своя папка',items:['stat:body.strength']}]}]});
+ const moved=buildSheet(layout,grouped);
+ assert.deepEqual(moved.tabs[0].sections.find(s=>s.id==='custom:one').items,['stat:body.strength']);
+ assert.deepEqual(moved.tabs[0].sections.filter(s=>s.id!=='custom:one').flatMap(s=>s.items),['stat:body.dexterity']);
 });
