@@ -713,6 +713,9 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				}
 				p.floorID = currentFloorForPeer(p, ss.Scenes[p.sceneID])
 				s.send(p, s.snapshotSceneForPeer(ss, p))
+				if changed && len(ss.ActionHistory) > 0 {
+					s.sendRollHistory(ss, p)
+				}
 			}
 		} else if msg.Type == "activeToken" {
 			if p.sceneID == "" || msg.SceneID != p.sceneID || (memberIsGM(m) && !p.playerPreview) {
@@ -761,6 +764,8 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				s.send(p, s.snapshotSceneForPeer(ss, p))
 				s.sendRollHistory(ss, p)
 			}
+		} else if msg.Type == "actionTargets" {
+			s.sendActionTargets(ss, p, msg)
 		} else if msg.Type == "characterWatch" {
 			s.watchCharacter(ss, p, msg.CharacterID, msg.CharacterWatch)
 		} else if msg.Type == "characterUnwatch" {

@@ -2,12 +2,62 @@ package main
 
 import "errors"
 
+type statFieldsView struct {
+	Description string          `json:"description,omitempty"`
+	Base        any             `json:"base"`
+	Derived     []statFieldView `json:"derived,omitempty"`
+}
+
+type statFieldView struct {
+	Name  string `json:"name"`
+	Value any    `json:"value"`
+}
+
+func statFieldsForSheet(registry EffectiveRegistry, character EffectiveCharacter) map[string]statFieldsView {
+	if registry.statPlan == nil {
+		return nil
+	}
+	fields := make(map[string]statFieldsView)
+	for _, address := range sortedDefinitionIDs(character.StatValues) {
+		parts, err := parseRulesetPath(address)
+		if err != nil {
+			continue
+		}
+		if len(parts) < 3 || registry.Stats[rulesetPath(parts[1:])].V04 != nil {
+			continue
+		}
+		for end := len(parts) - 1; end > 1; end-- {
+			id := rulesetPath(parts[1:end])
+			definition := registry.Stats[id]
+			if definition.V04 == nil {
+				continue
+			}
+			field := rulesetPath(parts[end:])
+			view := fields[id]
+			switch {
+			case field == "base":
+				view.Base = character.StatValues[address]
+				view.Description, _ = definition.V04.values["description"].(string)
+			case field != "current" || !definition.IsResource():
+				view.Derived = append(view.Derived, statFieldView{Name: field, Value: character.StatValues[address]})
+			}
+			fields[id] = view
+			break
+		}
+	}
+	return fields
+}
+
 type characterPermissions struct {
 	Edit   bool `json:"edit"`
 	Manage bool `json:"manage"`
 }
 
 type characterSnapshot struct {
+	ActionSelectors  map[string]string           `json:"actionSelectors,omitempty"`
+	ActionGroups     map[string]string           `json:"actionGroups,omitempty"`
+	ItemNames        map[string]string           `json:"itemNames,omitempty"`
+	StatFields       map[string]statFieldsView   `json:"statFields,omitempty"`
 	ExecutionID      string                      `json:"executionId,omitempty"`
 	Type             string                      `json:"type"`
 	CharacterWatch   uint64                      `json:"characterWatch"`
@@ -68,8 +118,29 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 			}
 		}
 	}
+	selectors := map[string]string{}
+	groups := map[string]string{}
+	for id := range actions {
+		if action, ok := session.Ruleset.actionPlans[id]; ok {
+			selectors[id] = action.selector
+			parts, _ := parseRulesetPath(id)
+			for end := len(parts) - 1; end > 0; end-- {
+				groupID := rulesetPath(parts[:end])
+				if group, ok := registry.Actions[groupID]; ok {
+					groups[id] = group.Name
+					break
+				}
+			}
+		}
+	}
+	itemNames := map[string]string{}
+	for _, item := range instance.Inventory {
+		itemNames[item.ID] = inventoryItemName(registry.Objects, item)
+	}
 	return characterSnapshot{
-		Type: "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
+		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
+		StatFields: statFieldsForSheet(registry, effective),
+		Type:       "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
 		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, Effective: effective,
 		StatDefinitions: stats, Actions: actions,
 		Permissions: characterPermissions{Edit: true, Manage: memberIsGM(member)},

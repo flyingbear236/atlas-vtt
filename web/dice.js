@@ -93,10 +93,10 @@ const diceIcon=sides=>`<svg viewBox="0 0 24 24" width="23" height="23" fill="non
 
 export function createDicePanel(inspector=document.querySelector('.inspector')){
   const root=document.createElement('section');root.id='dicePanel';root.className='dice-panel';root.hidden=true;
-  root.innerHTML=`<div class="panel-heading">БЫСТРЫЙ БРОСОК</div><form class="dice-manual"><label class="dice-expression-label" for="diceExpression">Формула<input id="diceExpression" data-dice-expression value="1d20" maxlength="512" inputmode="text" autocomplete="off" spellcheck="false" aria-describedby="diceExpressionHint"></label><small id="diceExpressionHint" data-dice-error aria-live="polite">Например: 2d20 + 1d6 + 3 · максимум 100 кубиков</small><div class="dice-options" role="group" aria-label="Количество кубиков">${DICE_SIDES.map(sides=>`<div class="dice-pick" data-dice-pick="${sides}"><button class="dice-adjust" type="button" data-dice-plus="${sides}" aria-label="Добавить d${sides}">+</button><output data-dice-count="${sides}" aria-label="Количество d${sides}">0</output><span class="dice-option" aria-label="d${sides}">${diceIcon(sides)}<span>d${sides}</span></span><button class="dice-adjust" type="button" data-dice-minus="${sides}" aria-label="Убрать d${sides}">−</button></div>`).join('')}</div><button class="primary dice-submit" data-dice-submit type="submit">Бросить</button></form><div class="dice-last-result" data-dice-last hidden><small>Результат броска</small><strong data-dice-total></strong><span data-dice-values></span></div><label class="dice-animation">Анимации<select data-roll-animation><option value="all">Все броски</option><option value="self">Только мои</option><option value="off">Выключены</option></select></label>`;
+  root.innerHTML=`<div class="panel-heading">БЫСТРЫЙ БРОСОК</div><form class="dice-manual"><label class="dice-expression-label" for="diceExpression">Формула<input id="diceExpression" data-dice-expression value="1d20" maxlength="512" inputmode="text" autocomplete="off" spellcheck="false" aria-describedby="diceExpressionHint"></label><small id="diceExpressionHint" data-dice-error aria-live="polite">Например: 2d20 + 1d6 + 3 · максимум 100 кубиков</small><div class="dice-options" role="group" aria-label="Количество кубиков">${DICE_SIDES.map(sides=>`<div class="dice-pick" data-dice-pick="${sides}"><button class="dice-adjust" type="button" data-dice-plus="${sides}" aria-label="Добавить d${sides}">+</button><output data-dice-count="${sides}" aria-label="Количество d${sides}">0</output><span class="dice-option" aria-label="d${sides}">${diceIcon(sides)}<span>d${sides}</span></span><button class="dice-adjust" type="button" data-dice-minus="${sides}" aria-label="Убрать d${sides}">−</button></div>`).join('')}</div><button class="primary dice-submit" data-dice-submit type="submit">Бросить</button></form><div class="dice-last-result" data-dice-last hidden><small>Результат броска</small><strong data-dice-total></strong><span data-dice-values></span></div><div class="dice-last-result" data-action-last role="status" hidden></div><label class="dice-animation">Анимации<select data-roll-animation><option value="all">Все броски</option><option value="self">Только мои</option><option value="off">Выключены</option></select></label>`;
   const note=inspector?.querySelector('.inspector-note');if(note)inspector.insertBefore(root,note);else inspector?.append(root);
   const journal=document.createElement('section');journal.id='diceJournal';journal.className='dice-journal-popover';journal.hidden=true;
-  journal.innerHTML='<div class="dice-journal-header"><strong>Журнал бросков <span data-roll-count></span></strong><button type="button" class="subtle" data-journal-close aria-label="Закрыть журнал">×</button></div><div class="roll-entries" data-roll-entries aria-live="polite"></div>';
+  journal.innerHTML='<div class="dice-journal-header"><strong>Журнал действий и бросков <span data-roll-count></span></strong><button type="button" class="subtle" data-journal-close aria-label="Закрыть журнал">×</button></div><div class="roll-entries" data-roll-entries aria-live="polite"></div>';
   document.body.append(journal);
   const overlay=document.createElement('div');overlay.className='dice-total-overlay';overlay.hidden=true;overlay.setAttribute('aria-live','polite');document.body.append(overlay);
   const toggle=document.getElementById('diceJournalToggle');
@@ -175,6 +175,7 @@ export class DiceRuntime {
   constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},animator=null,storage=localStorage}={}){
     this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.animator=animator;this.storage=storage;
     this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.groups=[{count:1,sides:20}];this.modifier=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
+    this.lastAction=root.querySelector('[data-action-last]');
     this.expression=root.querySelector('[data-dice-expression]');this.error=root.querySelector('[data-dice-error]');this.submit=root.querySelector('[data-dice-submit]');this.entries=root.diceUI.journal.querySelector('[data-roll-entries]');this.journalCount=root.diceUI.journal.querySelector('[data-roll-count]');this.animation=root.querySelector('[data-roll-animation]');this.last=root.querySelector('[data-dice-last]');this.overlay=root.diceUI.overlay;
     try{const saved=JSON.parse(this.storage.getItem('atlas-dice-choice')||'null'),expression=saved?.expression||(saved?.count&&saved?.sides?`${saved.count}d${saved.sides}`:'');if(expression&&!parseDiceFormula(expression).error)this.expression.value=expression;}catch{}
     this.animation.value=this.#loadAnimationMode();this.animator?.setPolicy(this.animation.value);
@@ -187,7 +188,7 @@ export class DiceRuntime {
 
   setScene(sceneId,userId=''){
     sceneId=String(sceneId||'');
-    if(sceneId!==this.sceneId){this.sceneId=sceneId;this.events=[];this.eventIds.clear();this.entries.replaceChildren();this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);this.last.hidden=true;this.#updateCount();clearTimeout(this.overlayTimer);this.overlay.hidden=true;this.root.diceUI.setJournal(false);}
+    if(sceneId!==this.sceneId){this.sceneId=sceneId;this.events=[];this.eventIds.clear();this.entries.replaceChildren();this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);this.last.hidden=true;this.lastAction.hidden=true;this.#updateCount();clearTimeout(this.overlayTimer);this.overlay.hidden=true;this.root.diceUI.setJournal(false);}
     this.userId=String(userId||'');this.animator?.setContext(sceneId,this.userId);this.root.hidden=!sceneId;this.root.diceUI.toggle.hidden=!sceneId;if(sceneId&&this.animation.value!=='off')this.animator?.warmup();
   }
 
@@ -212,12 +213,22 @@ export class DiceRuntime {
   }
 
   handle(message){
+    if(message?.type==='actionRoll'||message?.type==='actionMessage'){
+      const action=message.event;
+      if(action?.sceneId===this.sceneId)this.#updateAction(action,message.type==='actionRoll',message);
+      return true;
+    }
     if(message?.type!=='rollEvent'&&message?.type!=='rollHistory')return false;
     if(!this.sceneId||message.sceneId!==this.sceneId)return true;
     if(message.type==='rollHistory'){
-      let changed=false;
-      for(const event of message.events||[])changed=this.#remember(event)||changed;
-      if(changed)this.#renderAll();
+      const hasActionHistory=Array.isArray(message.actions);
+      const merged=new Map(this.events.filter(event=>!hasActionHistory||!event.actionExecution).map(event=>[event.id,event]));
+      if(hasActionHistory)this.lastAction.hidden=true;
+      for(const event of message.events||[])if(event?.id&&event.sceneId===this.sceneId)merged.set(event.id,event);
+      for(const action of message.actions||[])if(action.executionId&&action.sceneId===this.sceneId)merged.set(action.executionId,this.#actionEvent(action));
+      this.events=[...merged.values()].sort((a,b)=>a.timestamp<b.timestamp?-1:a.timestamp>b.timestamp?1:0).slice(-MAX_ROLL_JOURNAL);
+      this.eventIds=new Set(this.events.map(event=>event.id));
+      this.#renderAll();
       return true;
     }
     const added=this.#remember(message.event);
@@ -230,12 +241,65 @@ export class DiceRuntime {
   }
 
   handleReceipt(command,message){
+    if(command?.type==='actionExecute'){
+      if(message.action?.sceneId===this.sceneId)this.#updateAction(message.action,false,null,message.details?.changes);
+      return;
+    }
     if(command?.type!=='roll'||message?.sceneId!==this.sceneId)return;
     this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);
     if(message.rollEvent&&this.#remember(message.rollEvent)){this.#append(message.rollEvent);this.#lastResult(message.rollEvent);if(this.animation.value==='off')this.showTotal(message.rollEvent,false);}
   }
 
   finishAnimation(event){if(event?.userId===this.userId)this.#lastResult(event);this.showTotal(event,true);}
+
+  #actionEvent(action){
+    const groups=action.roll?.dice||[];
+    return {...action,id:action.executionId,actionExecution:true,groups,
+      total:action.roll?.total,results:groups.flatMap(group=>group.results||[])};
+  }
+
+  #updateAction(action,liveRoll,message,changes){
+    const event=this.#actionEvent(action);
+    const index=this.events.findIndex(item=>item.id===event.id);
+    const previous=this.events[index];
+    if(message?.type==='actionMessage'){
+      event.messages=[...(previous?.messages||[])];
+      event.messages[message.index]=message.message;
+    }
+    event.changes=changes||previous?.changes;
+    if(this.#remember(event))this.#append(event);
+    else if(previous){
+      this.events[index]=event;
+      const row=this.entries.querySelector(`[data-event-id="${CSS.escape(event.id)}"]`);
+      if(row)row.replaceWith(this.#row(event));
+    }
+    if(event.userId===this.userId){
+      this.lastAction.hidden=false;
+      this.lastAction.replaceChildren(...this.#actionLines(event));
+    }
+    if(liveRoll&&!previous&&event.roll){
+      const supported=event.groups.length>0&&event.groups.every(group=>DICE_SIDES.includes(group.sides));
+      if(supported&&this.#shouldAnimate(event)&&this.animator?.enqueue(event))return;
+      if(event.userId===this.userId)this.#lastResult(event);
+      if(supported)this.showTotal(event,false);
+    }
+  }
+
+  #actionLines(event){
+    const lines=[];
+    const append=(text,element='span')=>{const node=document.createElement(element);node.textContent=text;lines.push(node);};
+    append(event.actionName||event.actionId,'strong');
+    if(event.roll){
+      const dice=event.groups.map(group=>`${group.count}d${group.sides} [${group.results.join(', ')}]`).join(' · ');
+      append(`Результат ${event.rollTotalText??event.roll.total}${dice?` · ${dice}`:''}`);
+    }
+    if(typeof event.success==='boolean')append(event.success?'Успех':'Провал');
+    for(const message of event.messages||[])if(message!==undefined)append(message);
+    for(const change of event.changes||[]){
+      append(`${change.field} · ${String(change.before.value)} → ${String(change.after.value)}`);
+    }
+    return lines;
+  }
 
   #remember(event){
     if(!event||event.sceneId!==this.sceneId||typeof event.id!=='string'||!event.id||this.eventIds.has(event.id)||!Array.isArray(event.results))return false;
@@ -261,6 +325,10 @@ export class DiceRuntime {
   #row(event){
     const row=document.createElement('article');row.className='roll-entry';row.dataset.eventId=event.id;
     const heading=document.createElement('strong');heading.textContent=[event.authorName,event.characterName].filter(Boolean).join(' · ')||'Бросок';
+    if(event.actionExecution){
+      row.append(heading,...this.#actionLines(event));
+      return row;
+    }
     const source=document.createElement('span');source.className='roll-source';source.textContent=[event.actionName,event.rollSpecName].filter(Boolean).join(' · ')||'Ручной бросок';
     const notation=document.createElement('span');notation.className='roll-notation';notation.textContent=`${diceNotation(event)}${modifierText(Number(event.modifier)||0)}`;
     const result=document.createElement('span');result.className='roll-result';result.textContent=`[${event.results.join(', ')}]${modifierText(Number(event.modifier)||0)} = ${numberText(event.total)}`;
@@ -269,8 +337,8 @@ export class DiceRuntime {
 
   #setSending(sending){this.submit.disabled=!!sending||!!parseDiceFormula(this.expression.value).error;this.submit.textContent=sending?'Ожидание результата…':'Бросить';}
   #saveChoice(){try{this.storage.setItem('atlas-dice-choice',JSON.stringify({expression:this.expression.value}));}catch{}}
-  #lastResult(event){if(event.userId!==this.userId)return;this.last.hidden=false;this.last.querySelector('[data-dice-total]').textContent=numberText(event.total);const groups=diceGroups(event),shown=groups.map(group=>`d${group.sides}: ${(group.results||[]).join(' + ')}`).join(' · ');this.last.querySelector('[data-dice-values]').textContent=`${shown}${modifierText(Number(event.modifier)||0)}`;}
-  showTotal(event,animated=true){if(!this.sceneId||event.sceneId!==this.sceneId)return;if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();const info=document.createElement('small');info.textContent=`${event.authorName} · ${diceNotation(event)}${modifierText(Number(event.modifier)||0)}`;const total=document.createElement('strong');total.textContent=numberText(event.total);this.overlay.append(info,total);this.overlay.classList.remove('dice-total-animate');if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;},animated?1900:1300);}
+  #lastResult(event){if(event.userId!==this.userId)return;this.last.hidden=false;this.last.querySelector('[data-dice-total]').textContent=event.rollTotalText??numberText(event.total);const groups=event.actionExecution?event.groups:diceGroups(event),shown=groups.map(group=>`d${group.sides}: ${(group.results||[]).join(' + ')}`).join(' · ');this.last.querySelector('[data-dice-values]').textContent=`${shown}${modifierText(Number(event.modifier)||0)}`;}
+  showTotal(event,animated=true){if(!this.sceneId||event.sceneId!==this.sceneId)return;if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();const info=document.createElement('small');info.textContent=`${event.authorName} · ${diceNotation(event)}${modifierText(Number(event.modifier)||0)}`;const total=document.createElement('strong');total.textContent=event.rollTotalText??numberText(event.total);this.overlay.append(info,total);this.overlay.classList.remove('dice-total-animate');if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;},animated?1900:1300);}
   #adjustDice(sides,delta){
     const parsed=this.expression.value.trim()?parseDiceFormula(this.expression.value):{groups:[],modifier:0},next=changeDiceCount(parsed,sides,delta);
     if(!next)return;

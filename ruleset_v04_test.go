@@ -53,7 +53,7 @@ apply = { path = "actor.stat.basic.strength.base", formula = "value - 1" }
 `
 
 const v04Objects = `[effect.proficiency.weapon]
-target = ["action.weapon.attack.hit.roll", "stat.basic.strength.bonus"]
+target = ["action.weapon.attack.hit.roll", "action.weapon.attack.damage.roll"]
 formula = "target + stat.proficiency"
 priority = 2
 when = "source.weapon_group == 'martial'"

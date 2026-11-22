@@ -168,9 +168,6 @@ func customSavedField(fields **RulesetFields, path []string) (StatValue, savedFi
 		if child == nil {
 			return StatValue{}, nil, fmt.Errorf("no saved instance field")
 		}
-		if _, formula := child["formula"].(string); formula && len(child) == 1 {
-			return StatValue{}, nil, fmt.Errorf("computed field is read-only")
-		}
 		raw = child
 	}
 	key := path[len(path)-1]

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,7 +24,6 @@ type actionCommandWire struct {
 // subscriber both on live delivery and on replay after permissions change.
 type actionJournalEntry struct {
 	ActionEvent
-	UserID        string                `json:"userId"`
 	Details       json.RawMessage       `json:"details"`
 	Stream        string                `json:"stream"`
 	Seq           uint64                `json:"seq"`
@@ -34,15 +34,20 @@ type actionJournalEntry struct {
 }
 
 type ActionEvent struct {
-	ExecutionID string               `json:"executionId"`
-	SceneID     string               `json:"sceneId"`
-	CharacterID string               `json:"characterId"`
-	ActionID    string               `json:"actionId"`
-	Revision    uint64               `json:"actionRevision"`
-	Timestamp   time.Time            `json:"timestamp"`
-	Roll        *ActionExecutionRoll `json:"roll,omitempty"`
-	Success     *bool                `json:"success,omitempty"`
-	Messages    []string             `json:"messages,omitempty"`
+	UserID        string               `json:"userId"`
+	AuthorName    string               `json:"authorName"`
+	CharacterName string               `json:"characterName"`
+	ActionName    string               `json:"actionName"`
+	ExecutionID   string               `json:"executionId"`
+	SceneID       string               `json:"sceneId"`
+	CharacterID   string               `json:"characterId"`
+	ActionID      string               `json:"actionId"`
+	Revision      uint64               `json:"actionRevision"`
+	Timestamp     time.Time            `json:"timestamp"`
+	Roll          *ActionExecutionRoll `json:"roll,omitempty"`
+	RollTotalText string               `json:"rollTotalText,omitempty"`
+	Success       *bool                `json:"success,omitempty"`
+	Messages      []string             `json:"messages,omitempty"`
 }
 
 type actionMessageAccess struct {
@@ -117,13 +122,16 @@ func (a actionAudience) project(e *actionJournalEntry) (ActionEvent, bool) {
 	if a.scene == nil || e.SceneID != a.scene.ID {
 		return ActionEvent{}, false
 	}
+	out := e.ActionEvent
+	if out.Roll != nil {
+		out.RollTotalText = strconv.FormatInt(out.Roll.Total, 10)
+	}
 	if !peerUsesPlayerProjection(a.peer) {
-		return e.ActionEvent, true
+		return out, true
 	}
 	if e.GMOnly || !a.seesCharacter(e.CharacterID, false) || e.Target != nil && !a.seesCharacter(e.Target.CharacterID, e.Target.ItemID != "") {
 		return ActionEvent{}, false
 	}
-	out := e.ActionEvent
 	out.Messages = nil
 	for i, message := range e.Messages {
 		access := e.MessageAccess[i]
@@ -216,8 +224,9 @@ func (s *Server) prepareAction(session *Session, p *peer, c Command, stream, dig
 	}
 	entry := actionJournalEntry{ActionEvent: ActionEvent{
 		ExecutionID: id(), SceneID: p.sceneID, CharacterID: req.CharacterID, ActionID: req.ActionID, Timestamp: s.rollService.now().UTC(),
+		UserID: p.member.ID, AuthorName: p.member.Name, CharacterName: session.CharacterInstances[req.CharacterID].Name, ActionName: session.Ruleset.Registry.Actions[req.ActionID].Name,
 		Revision: session.ActionRevision + 1, Roll: result.Roll, Success: result.Success, Messages: result.Messages,
-	}, UserID: p.member.ID, Details: encoded, Stream: stream, Seq: c.Seq, Digest: digest, Target: result.Target, MessageAccess: messageAccess(result)}
+	}, Details: encoded, Stream: stream, Seq: c.Seq, Digest: digest, Target: result.Target, MessageAccess: messageAccess(result)}
 	player := &Member{}
 	entry.GMOnly = !a.scene.Published || !actionCharacterVisible(session, a.scene, player, req.CharacterID) || result.Target != nil && !actionCharacterVisible(session, a.scene, player, result.Target.CharacterID)
 	return &actionCommit{entry: entry, plan: result.Plan}, nil
@@ -296,10 +305,17 @@ func (s *Server) publishAction(session *Session, m *actionCommit) {
 			s.send(p, map[string]any{"type": "actionRoll", "executionId": event.ExecutionID, "rollRevision": session.RollRevision, "event": event})
 		}
 		for i, text := range messages {
-			s.send(p, map[string]any{"type": "actionMessage", "executionId": event.ExecutionID, "sceneId": event.SceneID, "actionRevision": event.Revision, "index": i, "message": text})
+			s.send(p, map[string]any{"type": "actionMessage", "executionId": event.ExecutionID, "sceneId": event.SceneID, "actionRevision": event.Revision, "index": i, "message": text, "event": event})
 		}
 	}
 	if len(m.changed) > 0 {
+		renamed := map[string]bool{}
+		for _, change := range m.plan.Changes {
+			if change.Instance.ItemID == "" && change.Field == "name" {
+				renamed[change.Instance.CharacterID] = false
+			}
+		}
+		s.publishCharacterTokens(session, renamed)
 		s.publishCharacterDisplayChanged(session, m.changed, m.entry.ExecutionID)
 		s.refreshCharacterWatches(session, m.changed, false, m.entry.ExecutionID)
 	}

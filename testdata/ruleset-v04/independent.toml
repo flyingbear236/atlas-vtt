@@ -1,0 +1,56 @@
+# Independent examples from sections 5, 6 and 8.
+[stat.hp]
+default = 30
+resource = true
+
+[action.example]
+target = "select(character)"
+roll = "1d20"
+var.dc = "8"
+success = "roll >= var.dc"
+message = "Сложность: {var.dc}"
+
+[action.example.on.success]
+apply = { path = "target.stat.hp.current", formula = "value - 5" }
+message = "Цель получает 5 урона"
+
+[action.rest]
+target = "self"
+apply = { path = "target.stat.hp.current", formula = "value + 2" }
+
+[action.check_object]
+target = "select(object)"
+roll = "1d20"
+success = "roll >= target.dc"
+message = "{target.notes.formula}"
+
+[action.use_axe]
+target = "source"
+roll = "dice(source.damage)"
+apply = { path = "target.stock.uses", formula = "value - 1" }
+
+[effect.two_handed]
+target = "action.use_axe.roll"
+when = "source.two_handed == true"
+formula = "target + action.target.dc"
+
+[object.greataxe]
+name = "Секира"
+damage = "1d12"
+two_handed = true
+dc = 5
+notes = { formula = "verbatim user data" }
+actions = ["action.use_axe"]
+effects = ["effect.two_handed"]
+
+[character.hero]
+actions = ["action.example", "action.rest", "action.check_object"]
+
+[[character.hero.inventory]]
+id = "axe"
+object = "object.greataxe"
+equipped = true
+stock.uses = 3
+
+[character.other]
+name = "Цель"

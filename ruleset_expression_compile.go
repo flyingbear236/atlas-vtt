@@ -32,7 +32,7 @@ func (c *expressionCompiler) addFields(kind, owner string, path []string, raw an
 	site := expressionSite{kind: kind, owner: owner, field: key, expected: exprDynamic}
 	switch v := raw.(type) {
 	case map[string]any:
-		if formula, ok := v["formula"].(string); ok && len(v) == 1 {
+		if formula, ok := v["formula"].(string); kind == "stat" && ok && len(v) == 1 {
 			c.recordField(kind, key, exprDynamic)
 			site.source = formula
 			c.sites[address] = site

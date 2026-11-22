@@ -1,0 +1,243 @@
+[stat.basic.strength]
+name = "Сила"
+type = "integer"
+default = 16
+bonus = { formula = "floor((value - 10) / 2)" }
+description = "Физическая сила персонажа"
+
+[stat.basic.intelligence]
+name = "Интеллект"
+default = 14
+bonus = { formula = "floor((value - 10) / 2)" }
+
+[stat.basic.level]
+name = "Уровень"
+default = 6
+
+[stat.basic.proficiency]
+name = "Бонус мастерства"
+default = { formula = "2 + floor((stat.basic.level - 1) / 4)" }
+
+[stat.basic.athletics]
+name = "Атлетика"
+default = { formula = "stat.basic.strength.bonus" }
+
+[stat.basic.investigation]
+name = "Расследование"
+default = { formula = "stat.basic.intelligence.bonus" }
+
+[stat.hp]
+name = "Здоровье"
+default = 100
+resource = true
+
+[stat.ac]
+name = "Класс доспеха"
+default = 15
+
+[stat.motto]
+default = "Мы все умрём"
+
+[stat.flags]
+name = "Флаги"
+default = 0
+door_open = false
+
+[stat.color]
+name = "Цвет"
+default = 0
+r = 10
+g = 20
+b = 30
+
+[effect.ring_strength]
+name = "Кольцо силы"
+target = "stat.basic.strength"
+formula = "target + 2"
+
+[effect.strength_bonus]
+name = "Дополнительный бонус Силы"
+target = "stat.basic.strength.bonus"
+formula = "target + 1"
+
+[effect.make_redder]
+target = "stat.color.r"
+formula = "target + 5"
+priority = 1
+
+[effect.reduce_red]
+target = "stat.color.r"
+formula = "floor(target / 2)"
+priority = 2
+
+[effect.athletics_training]
+target = "stat.basic.athletics"
+formula = "target + 2"
+
+[effect.proficiency.athletics]
+name = "Владение Атлетикой"
+target = "action.check.athletics.roll"
+formula = "target + stat.basic.proficiency"
+stack = "unique"
+
+[effect.proficiency.investigation]
+name = "Владение Расследованием"
+target = "action.check.investigation.roll"
+formula = "target + stat.basic.proficiency"
+stack = "unique"
+
+[effect.proficiency.martial_weapon]
+name = "Владение воинским оружием"
+target = "action.weapon.attack.hit.roll"
+when = "source.weapon_group == 'martial'"
+formula = "target + stat.basic.proficiency"
+stack = "unique"
+
+[effect.proficiency.save_strength]
+name = "Владение спасброском Силы"
+target = "action.save.strength.roll"
+formula = "target + stat.basic.proficiency"
+stack = "unique"
+
+[effect.runic_accuracy]
+name = "Магическая точность"
+target = "action.weapon.attack.hit.roll"
+formula = "target + 1"
+scope = "source" # Только при атаке экземпляром предмета, предоставившим эффект
+
+[effect.shared_bonus]
+name = "Бонус к двум броскам"
+target = [
+    "action.check.athletics.roll",
+    "action.save.strength.roll"
+]
+formula = "target + 2"
+
+[action.check.athletics]
+name = "Проверка Атлетики"
+roll = "1d20 + stat.basic.athletics"
+
+[action.check.investigation]
+name = "Расследование"
+roll = "1d20 + stat.basic.investigation"
+
+
+[action.save.strength]
+name = "Спасбросок Силы"
+roll = "1d20 + stat.basic.strength.bonus"
+
+[action.roll.d20]
+name = "Бросить d20"
+roll = "1d20"
+
+[action.inspect]
+name = "Осмотреть"
+target = "select(object)"
+message = "Вы осматриваете {target.name}"
+
+[action.weapon.attack]
+name = "Атаковать оружием"
+
+[action.weapon.attack.hit]
+name = "Попадание"
+target = "select(character)"
+roll = "1d20 + stat.basic.strength.bonus"
+success = "roll >= target.stat.ac"
+
+[action.weapon.attack.hit.on.success]
+message = "Попадание!"
+
+[action.weapon.attack.hit.on.fail]
+message = "Промах!"
+
+[action.weapon.attack.damage]
+name = "Урон"
+target = "select(character)"
+roll = "dice(source.damage) + stat.basic.strength.bonus"
+apply = { path = "target.stat.hp.current", formula = "value - roll" } # Разовая запись HP, не реактивный эффект
+message = "Бросок урона: {roll}"
+
+[action.spell.shock]
+name = "Магический удар"
+
+[action.spell.shock.hit]
+name = "Попадание"
+target = "select(character)"
+roll = "1d20 + stat.basic.intelligence.bonus"
+var.dc = "8 + stat.basic.proficiency + stat.basic.intelligence.bonus" # Доступно в hit и вложенных hit.on.*, но не в damage
+success = "roll >= target.stat.ac"
+
+[action.spell.shock.hit.on.success]
+message = "Попадание! Цели нужен спасбросок Силы, DC {var.dc}"
+
+[action.spell.shock.hit.on.fail]
+message = "Заклинание не попало"
+
+[action.spell.shock.damage]
+name = "Урон"
+target = "select(character)"
+roll = "2d4"
+apply = { path = "target.stat.hp.current", formula = "value - roll" }
+
+
+[object.sword]
+name = "Длинный меч"
+damage = "1d8"
+weapon_group = "martial"
+actions = ["action.weapon.attack"]
+
+[object.dagger]
+name = "Кинжал"
+damage = "1d4"
+weapon_group = "simple"
+actions = ["action.weapon.attack"]
+
+[object.greataxe]
+name = "Секира"
+damage = "1d12"
+weapon_group = "martial"
+two_handed = true
+actions = ["action.weapon.attack"]
+
+[object.runic_sword]
+name = "Рунический меч"
+damage = "1d8"
+weapon_group = "martial"
+actions = ["action.weapon.attack"]
+effects = ["effect.runic_accuracy"]
+
+[object.ring]
+name = "Кольцо силы"
+effects = ["effect.ring_strength"]
+
+[character.hero]
+name = "Герой"
+
+effects = [
+    "effect.proficiency.athletics",
+    "effect.proficiency.martial_weapon",
+    "effect.proficiency.save_strength"
+]
+
+actions = [
+    "action.check.athletics",
+    "action.save.strength",
+    "action.spell.shock",
+    "action.roll.d20"
+]
+
+[character.hero.stat.basic.strength]
+base = 16
+
+[character.hero.stat.hp]
+current = 85
+
+[[character.hero.inventory]]
+id = "item-001"
+object = "object.ring"
+equipped = true
+
+[[character.hero.inventory]]
+id = "item-002"
+object = "object.runic_sword"
+equipped = true # Действие меча получит source = этот экземпляр

@@ -198,7 +198,7 @@ export class LibraryBrowser {
   }
   showDialog(kind,body){this.dialogKind=kind;this.dialog.querySelector('[data-lb-dialog-body]').replaceChildren();this.dialog.querySelector('[data-lb-dialog-body]').append(body);if(!this.dialog.open)this.dialog.showModal();}
   openExport(){const body=element('section','lb-dialog-content');body.append(element('h3','','Экспорт библиотеки ZIP'));const label=element('label','lb-check'),check=element('input');check.type='checkbox';check.checked=true;label.append(check,document.createTextNode(' Включить медиа'));body.append(label);body.append(button('Скачать ZIP',async()=>{if(this.pending)return;this.pending=true;try{await this.api.exportPackage(check.checked);this.dialog.close();this.message('ZIP экспортирован');}catch(e){this.message(e.message,true);}finally{this.pending=false;}},'primary'));this.showDialog('export',body);}
-  openImport(file=null,presetFiles=null){
+  openImport(file=null,presetFiles=null,{expectedRegistryRevision=null,onApplied=null}={}){
     this.zip=file;this.zipPreview=null;this.choices={characters:{},media:{},unknown:{}};this.importSelection=presetFiles;
     let importMode='selected';
     const body=element('section','lb-dialog-content');body.append(element('h3','','Импорт ZIP'));
@@ -208,7 +208,7 @@ export class LibraryBrowser {
     const advanced=element('details','lb-import-advanced');const summary=element('summary','','Дополнительные действия');advanced.append(summary);
     const replaceButton=button('Заменить все определения',()=>switchMode('replace'),'subtle');
     advanced.append(element('p','muted','Полная замена удалит TOML правил, которых нет в архиве. Персонажи и изображения останутся.'));
-    advanced.append(replaceButton);body.append(advanced);
+    advanced.append(replaceButton);if(expectedRegistryRevision===null)body.append(advanced);
     const listing=element('div','lb-import-files'),conflicts=element('div','lb-import-conflicts'),report=element('pre','lb-import-report');
     const issues=element('div','lb-import-issues');body.append(listing,report,issues,conflicts);
     const row=element('div','lb-dialog-actions'),preview=button('Проверить',()=>runPreview()),apply=button('Применить',()=>runApply(),'primary');apply.disabled=true;row.append(preview,apply);body.append(row);
@@ -222,7 +222,9 @@ export class LibraryBrowser {
     };
     const runPreview=async()=>{const source=this.zip||input.files[0];if(!source){this.message('Выберите архив',true);return;}preview.disabled=true;invalidate();report.textContent='Проверка…';issues.replaceChildren();conflicts.replaceChildren();try{
       if(importMode==='selected'&&!listing.querySelector('input')){const inventory=await this.api.inventoryImport(source);renderSelections(inventory.availableFiles||[]);}
-      const result=await this.api.previewImport(source,options());this.zip=source;renderSelections(result.availableFiles||[]);renderIssues(result);
+      const result=await this.api.previewImport(source,options());
+      if(expectedRegistryRevision!==null&&result.registryRevision!==expectedRegistryRevision)throw Error('Исходные правила изменились. Откройте актуальный TOML и повторите правку.');
+      this.zip=source;renderSelections(result.availableFiles||[]);renderIssues(result);
       if((result.errors||[]).length){report.textContent=`Найдено ${result.errors.length} ошибок и ${(result.warnings||[]).length} предупреждений. Применение заблокировано.`;return;}
       this.zipPreview=result;
       const diff=result.rulesetDiff||{};const changes=kind=>[...(diff[kind]?.added||[]).map(id=>'+'+id),...(diff[kind]?.changed||[]).map(id=>'~'+id),...(diff[kind]?.removed||[]).map(id=>'−'+id)].join(', ')||'нет';
@@ -235,7 +237,7 @@ export class LibraryBrowser {
     }catch(e){report.textContent=e.message;this.message(e.message,true);}finally{preview.disabled=false;}};
     const runApply=async()=>{if(!this.zipPreview||this.pending)return;
       if(importMode==='replace'){const diff=this.zipPreview.rulesetDiff||{},removed=(this.zipPreview.removedFiles||[]).map(x=>'Файл: '+x);for(const kind of ['stats','actions','presets'])for(const id of diff[kind]?.removed||[])removed.push(kind+': '+id);if(!confirm('Заменить ВСЕ определения? Отсутствующие в ZIP будут удалены.\n'+(removed.length?removed.join('\n'):'Удаляемых определений нет.')))return;}
-      this.pending=true;apply.disabled=true;try{await this.api.applyImport(this.zip,options(),this.zipPreview);this.dialog.close();await this.refresh();await this.api.reloadRegistry();this.message('Импорт завершён');}catch(e){this.zipPreview=null;this.message(e.message,true);report.textContent+='\n'+e.message;}finally{this.pending=false;}};
+      this.pending=true;apply.disabled=true;try{await this.api.applyImport(this.zip,options(),this.zipPreview);this.dialog.close();onApplied?.();await this.refresh();await this.api.reloadRegistry();this.message('Импорт завершён');}catch(e){this.zipPreview=null;this.message(e.message,true);report.textContent+='\n'+e.message;}finally{this.pending=false;}};
     input.onchange=()=>{this.zip=null;invalidate();listing.replaceChildren();report.textContent='';issues.replaceChildren();conflicts.replaceChildren();};
     this.showDialog('import',body);if(file)runPreview();
   }

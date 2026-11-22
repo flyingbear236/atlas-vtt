@@ -550,6 +550,9 @@ func (s RulesetSnapshot) validateV04Effect(f map[string]any) error {
 		if err != nil {
 			return err
 		}
+		if f["scope"] == "source" && len(parts) > 0 && parts[0] == "stat" {
+			return fmt.Errorf("scope source requires an action roll target")
+		}
 		if !s.hasV04EffectTarget(parts) {
 			return fmt.Errorf("unknown or non-effectable target %q", target)
 		}
@@ -632,6 +635,11 @@ func (s RulesetSnapshot) validateV04Apply(raw any, selector string) error {
 	fields, ok := raw.(map[string]any)
 	if !ok {
 		return fmt.Errorf("apply must be a table")
+	}
+	for _, key := range sortedDefinitionIDs(fields) {
+		if key != "path" && key != "formula" {
+			return fmt.Errorf("unknown apply field %q", key)
+		}
 	}
 	path, err := rulesetString(fields, "path", true)
 	if err != nil {
@@ -722,7 +730,10 @@ func (s RulesetSnapshot) validateV04Action(action *RulesetFields, hasExecutableC
 		if !ok {
 			return fmt.Errorf("on must be a table")
 		}
-		for _, outcome := range []string{"success", "fail"} {
+		for _, outcome := range sortedDefinitionIDs(outcomes) {
+			if outcome != "success" && outcome != "fail" {
+				return fmt.Errorf("unknown action outcome on.%s", outcome)
+			}
 			raw, exists := outcomes[outcome]
 			if !exists {
 				continue
@@ -730,6 +741,11 @@ func (s RulesetSnapshot) validateV04Action(action *RulesetFields, hasExecutableC
 			fields, ok := raw.(map[string]any)
 			if !ok || (fields["message"] == nil && fields["apply"] == nil) {
 				return fmt.Errorf("on.%s requires message or apply", outcome)
+			}
+			for _, key := range sortedDefinitionIDs(fields) {
+				if key != "message" && key != "apply" {
+					return fmt.Errorf("unknown on.%s field %q", outcome, key)
+				}
 			}
 			if f["success"] == nil {
 				return fmt.Errorf("on.%s requires a parent success condition", outcome)
