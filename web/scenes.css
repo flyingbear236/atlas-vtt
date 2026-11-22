@@ -816,3 +816,18 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 #characterPanel .character-action-section-tabs>button[aria-selected=true]{background:#375240;color:#f0f5e5;border-color:#83a17d;box-shadow:inset 0 -2px #c4e0a5}
 #characterPanel .character-action-section-tabs>button:hover{border-color:#a0b98f}
 #characterPanel .sheet-section.as-action-tab{margin-top:0}
+
+/* Character identity is edited directly in the header; the footer holds Save/Cancel. */
+#characterPanel .character-edit-header{padding:0;background:transparent;border:0;margin:0 0 10px}
+#characterPanel .character-edit-identity{display:none}
+#characterPanel .character-head-text #characterRenameRow{display:block;margin:0}
+#characterPanel .character-head-text #characterRenameRow[hidden]{display:none}
+#characterPanel .character-head-text #characterRenameRow{font-size:0}
+#characterPanel #characterRename{width:100%;min-width:0;max-width:100%;font-size:16px;font-weight:700;line-height:1.25;padding:6px 8px;color:#e9f4e7;background:#12231f;border:1px solid #78947b;border-radius:7px}
+#characterPanel .character-avatar-wrap{position:relative;flex:0 0 56px;align-self:flex-start;min-width:0}
+#characterPanel .character-avatar-wrap .character-avatar{width:56px;height:56px;margin:0}
+#characterPanel .character-avatar-wrap.editing .character-avatar{cursor:pointer}
+#characterPanel .character-avatar-wrap.editing .character-avatar:hover{outline:2px solid #9bc8b3}
+#characterPanel .character-avatar-clear{position:absolute;top:-7px;right:-7px;width:22px;height:22px;display:grid;place-items:center;padding:0;border:1px solid #8dada0;border-radius:50%;font-size:17px;line-height:1;background:#223a34;color:#f2f6e7;z-index:1}
+#characterPanel .character-avatar-restore{width:100%;margin-top:4px;padding:3px 2px;border:1px solid #668876;border-radius:5px;background:#2a4438;color:#d9edd5;font-size:10px;line-height:1.3}
+#characterPanel .character-avatar-clear[hidden],#characterPanel .character-avatar-restore[hidden]{display:none}

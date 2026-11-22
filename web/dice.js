@@ -209,8 +209,8 @@ export function numericRollFormula(event,preview=null){
 
 
 export class DiceRuntime {
-  constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},animator=null,storage=localStorage}={}){
-    this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.animator=animator;this.storage=storage;
+  constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},onActionPresented=()=>{},animator=null,storage=localStorage}={}){
+    this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.onActionPresented=onActionPresented;this.animator=animator;this.storage=storage;
     this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.actionPreviews=new Map();this.liveActionRolls=new Set();this.liveActionNotices=new Set();this.overlayActionID='';this.groups=[{count:1,sides:20}];this.modifier=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
     this.lastAction=root.querySelector('[data-action-last]');
     this.expression=root.querySelector('[data-dice-expression]');this.error=root.querySelector('[data-dice-error]');this.submit=root.querySelector('[data-dice-submit]');this.entries=root.diceUI.journal.querySelector('[data-roll-entries]');this.journalCount=root.diceUI.journal.querySelector('[data-roll-count]');this.animation=root.querySelector('[data-roll-animation]');this.last=root.querySelector('[data-dice-last]');this.overlay=root.diceUI.overlay;
@@ -317,6 +317,7 @@ export class DiceRuntime {
     this.lastAction.hidden=true;
     if(event.userId===this.userId)this.last.hidden=true;
     if(this.overlayActionID===event.id&&!this.overlay.hidden)this.#updateOverlayMessage(event);
+    if(event.id&&event.userId!==this.userId&&!this.#shouldAnimate(event))this.onActionPresented(event.id);
     // An action may emit messages without ever rolling. Show its first
     // announcement once; subsequent streamed messages update the same notice.
     const hasMessages=(event.messages||[]).some(Boolean);
@@ -415,6 +416,7 @@ export class DiceRuntime {
     }
     const text=(event.messages||[]).filter(Boolean).join(' · ');
     const duration=Math.min(7000,Math.max(3000,1800+text.length*35));
+    this.onActionPresented(event.id);
     this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;this.overlayActionID='';},duration);
   }
   showTotal(event,animated=true){
@@ -432,6 +434,7 @@ export class DiceRuntime {
     this.overlay.append(total,formula);
     this.overlay.classList.remove('dice-total-animate');
     if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}
+    if(current.actionExecution)this.onActionPresented(current.id);
     this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;this.overlayActionID='';},animated?1900:1300);
   }
   #adjustDice(sides,delta){

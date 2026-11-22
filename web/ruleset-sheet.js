@@ -24,7 +24,7 @@ export function appendStatFields(card,fields,description,baseInput){
 // which characters / items may actually be selected.
 export class ActionTargetPicker {
   constructor(send,execute){
-    this.send=send;this.execute=execute;this.seq=0;this.request=null;
+    this.send=send;this.execute=execute;this.seq=0;this.request=null;this.onChange=null;
     this.targets=[];this.ready=false;this.pendingCharacter='';
     this.banner=document.createElement('section');
     this.banner.className='character-action-target-prompt';this.banner.hidden=true;
@@ -41,7 +41,7 @@ export class ActionTargetPicker {
     this.request={type:'actionTargets',sceneId,action,seq:++this.seq};
     this.targets=[];this.ready=false;this.pendingCharacter='';
     this.status.textContent='Кликните по персонажу-цели или по карте, если не хотите выбирать цель. Esc — отмена.';
-    this.banner.hidden=false;
+    this.banner.hidden=false;this.onChange?.();
     if(!this.send(this.request)){
       this.close();return false;
     }
@@ -76,5 +76,5 @@ export class ActionTargetPicker {
     return true;
   }
 
-  close(){this.request=null;this.targets=[];this.ready=false;this.pendingCharacter='';this.banner.hidden=true;}
+  close(){this.request=null;this.targets=[];this.ready=false;this.pendingCharacter='';this.banner.hidden=true;this.onChange?.();}
 }

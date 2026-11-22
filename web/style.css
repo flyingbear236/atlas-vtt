@@ -131,3 +131,7 @@
 .dice-adjust:disabled{opacity:.35;cursor:default}
 .dice-manual .dice-error{color:#f2a4a4}
 .dice-expression-label input:invalid{border-color:#bd6565}
+
+.asset-picker-upload-zone{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;padding:15px;margin-bottom:12px;border:1px dashed #6b967e;border-radius:9px;background:#233b33;color:#d0e3d2;font-size:13px}
+.asset-picker-upload-zone.drag-over{background:#345b44;border-color:#bce3a6}
+.asset-picker-upload-zone[hidden]{display:none}

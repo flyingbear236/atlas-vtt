@@ -77,22 +77,31 @@ export function filterLibraryImages(tree, query='') {
 // campaign library. Callers only decide what selecting an asset means.
 export class LibraryAssetPicker {
   constructor(api){
-    this.api=api;this.tree=null;this.onSelect=null;this.previewLoader=null;this.generation=0;this.pending=false;this.previousFocus=null;this.searchTimer=null;
+    this.api=api;this.tree=null;this.onSelect=null;this.onUpload=null;this.previewLoader=null;this.generation=0;this.pending=false;this.previousFocus=null;this.searchTimer=null;
     this.backdrop=element('div','asset-picker-backdrop');this.backdrop.hidden=true;
     this.panel=element('section','asset-picker-panel');this.panel.setAttribute('role','dialog');this.panel.setAttribute('aria-modal','true');
     const header=element('header'),heading=element('div'),eyebrow=element('small','','БИБЛИОТЕКА'),title=element('h2','','Выбор изображения');title.id=`asset-picker-title-${Math.random().toString(36).slice(2)}`;this.panel.setAttribute('aria-labelledby',title.id);heading.append(eyebrow,title);
     const close=button('Закрыть',()=>this.close());header.append(heading,close);
     const toolbar=element('div','asset-picker-toolbar'),label=element('label','','Поиск по названию или папке');this.search=element('input');this.search.type='search';this.search.placeholder='Например: barrel, token, portrait';label.append(this.search);this.count=element('small','muted');toolbar.append(label,this.count);
     this.message=element('div','lb-message');this.message.hidden=true;this.gallery=element('div','asset-picker-gallery lb-left');
-    this.panel.append(header,toolbar,this.message,this.gallery);this.backdrop.append(this.panel);document.body.append(this.backdrop);
+    this.uploadZone=element('div','asset-picker-upload-zone');
+    const uploadText=element('span','', 'Перетащите изображение сюда или');
+    this.uploadInput=element('input');this.uploadInput.type='file';this.uploadInput.accept='image/png,image/jpeg,image/webp';this.uploadInput.hidden=true;
+    const uploadButton=button('Загрузить',()=>this.uploadInput.click(),'subtle');
+    this.uploadZone.append(uploadText,uploadButton,this.uploadInput);
+    this.panel.append(header,toolbar,this.uploadZone,this.message,this.gallery);
+    this.uploadInput.addEventListener('change',()=>{const file=this.uploadInput.files?.[0];this.uploadInput.value='';if(file)this.uploadFile(file);});
+    this.uploadZone.addEventListener('dragover',event=>{if(!this.onUpload||!event.dataTransfer?.types.includes('Files'))return;event.preventDefault();this.uploadZone.classList.add('drag-over');});
+    this.uploadZone.addEventListener('dragleave',event=>{if(!this.uploadZone.contains(event.relatedTarget))this.uploadZone.classList.remove('drag-over');});
+    this.uploadZone.addEventListener('drop',event=>{this.uploadZone.classList.remove('drag-over');if(!this.onUpload)return;event.preventDefault();const file=event.dataTransfer?.files?.[0];if(file)this.uploadFile(file);});this.backdrop.append(this.panel);document.body.append(this.backdrop);
     this.title=title;this.closeButton=close;
     this.search.addEventListener('input',()=>{clearTimeout(this.searchTimer);this.searchTimer=setTimeout(()=>this.render(),80);});
     this.backdrop.addEventListener('pointerdown',event=>{if(event.target===this.backdrop)this.close();});
     this.onKeyDown=event=>{if(event.key==='Escape'&&!this.backdrop.hidden){event.preventDefault();this.close();}};document.addEventListener('keydown',this.onKeyDown);
   }
-  async open({title='Выберите изображение',actionLabel='Выбрать',onSelect}={}){
+  async open({title='Выберите изображение',actionLabel='Выбрать',onSelect,onUpload=null}={}){
     if(typeof onSelect!=='function')throw Error('Для выбора изображения нужен обработчик');
-    this.close(false);this.onSelect=onSelect;this.actionLabel=actionLabel;this.title.textContent=title;this.previousFocus=document.activeElement;this.search.value='';this.tree=null;this.backdrop.hidden=false;this.gallery.textContent='Загрузка библиотеки…';this.setMessage('');this.search.focus();
+    this.close(false);this.onSelect=onSelect;this.onUpload=onUpload;this.uploadZone.hidden=typeof onUpload!=='function';this.actionLabel=actionLabel;this.title.textContent=title;this.previousFocus=document.activeElement;this.search.value='';this.tree=null;this.backdrop.hidden=false;this.gallery.textContent='Загрузка библиотеки…';this.setMessage('');this.search.focus();
     const generation=++this.generation;
     try{const tree=await this.api.list();if(generation!==this.generation||this.backdrop.hidden)return;this.tree=tree;this.render();}
     catch(error){if(generation===this.generation&&!this.backdrop.hidden){this.gallery.replaceChildren();this.setMessage(error.message,true);}}
@@ -106,6 +115,13 @@ export class LibraryAssetPicker {
       section.append(grid);container.append(section);}
     if(!groups.length)container.append(element('p','muted',this.search.value.trim()?'По запросу ничего не найдено.':'В библиотеке пока нет изображений.'));
   }
+  async uploadFile(file){
+    if(this.pending||!this.onUpload)return;
+    this.pending=true;
+    try{await this.onUpload(file);this.close();}
+    catch(error){this.setMessage(error.message,true);}
+    finally{this.pending=false;}
+  }
   async choose(file,control){
     if(this.pending)return;this.pending=true;control.disabled=true;this.setMessage('Выбираем изображение…');
     try{await this.onSelect(file);this.close();}
@@ -114,7 +130,7 @@ export class LibraryAssetPicker {
   }
   setMessage(message,error=false){this.message.textContent=message||'';this.message.hidden=!message;this.message.classList.toggle('error',error);}
   close(restoreFocus=true){
-    clearTimeout(this.searchTimer);this.searchTimer=null;this.generation++;this.previewLoader?.destroy();this.previewLoader=null;this.tree=null;this.onSelect=null;this.pending=false;this.backdrop.hidden=true;this.gallery.replaceChildren();this.setMessage('');
+    clearTimeout(this.searchTimer);this.searchTimer=null;this.generation++;this.previewLoader?.destroy();this.previewLoader=null;this.tree=null;this.onSelect=null;this.onUpload=null;this.pending=false;this.backdrop.hidden=true;this.gallery.replaceChildren();this.setMessage('');
     if(restoreFocus&&this.previousFocus?.isConnected)this.previousFocus.focus();this.previousFocus=null;
   }
   destroy(){this.close(false);document.removeEventListener('keydown',this.onKeyDown);this.backdrop.remove();}

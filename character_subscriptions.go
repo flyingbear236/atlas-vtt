@@ -140,6 +140,7 @@ type characterSnapshot struct {
 	RegistryRevision      uint64                          `json:"registryRevision"`
 	Instance              CharacterInstance               `json:"instance"`
 	Preset                *CharacterPresetDefinition      `json:"preset,omitempty"`
+	PresetArtwork         ArtworkResolution               `json:"presetArtwork,omitempty"`
 	Effective             EffectiveCharacter              `json:"effective"`
 	StatDefinitions       map[string]StatDefinition       `json:"statDefinitions"`
 	Actions               map[string]ActionDefinition     `json:"actions"`
@@ -164,6 +165,7 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	if err != nil {
 		return characterSnapshot{}, err
 	}
+	presetArtwork := resolvePresetArtwork(preset, session.Ruleset, session.Assets)
 	effective.Artwork = resolveCharacterArtwork(session, instance, preset, session.Ruleset)
 	effective.AvatarAssetID = effective.Artwork.AssetID
 	effective.HasAvatar = effective.Artwork.AssetID != ""
@@ -245,7 +247,7 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 		InactiveActionSources: inactiveSources,
 		StatFields:            statFieldsForSheet(registry, effective),
 		Type:                  "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
-		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, Effective: effective,
+		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, PresetArtwork: presetArtwork, Effective: effective,
 		StatDefinitions: stats, Actions: actions,
 		Permissions: characterPermissions{Edit: true, Manage: memberIsGM(member)},
 	}, nil
