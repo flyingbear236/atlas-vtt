@@ -13,7 +13,7 @@ import (
 	"github.com/pelletier/go-toml/v2/unstable"
 )
 
-const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 expressions and effects are compiled. Gameplay requires character and inventory effect sources and action execution."
+const rulesetV04ExecutionDiagnostic = "Ruleset v0.4 character mechanics are available. Gameplay requires the v0.4 action executor."
 
 var rulesetV04Kinds = [...]string{"stat", "action", "effect", "object", "character"}
 
@@ -780,6 +780,10 @@ func (s RulesetSnapshot) validateV04Character(f map[string]any) error {
 }
 
 func (s RulesetSnapshot) validateV04CharacterStats(parts []string, table map[string]any) error {
+	return s.walkV04CharacterStats(parts, table, nil)
+}
+
+func (s RulesetSnapshot) walkV04CharacterStats(parts []string, table map[string]any, store func(string, string, StatDefinition, StatValue)) error {
 	if len(parts) != 0 && len(table) == 0 && s.Registry.Stats[rulesetPath(parts)].V04 == nil {
 		return fmt.Errorf("unknown stat %q", rulesetPath(parts))
 	}
@@ -787,7 +791,7 @@ func (s RulesetSnapshot) validateV04CharacterStats(parts []string, table map[str
 		raw := table[key]
 		nested, isTable := raw.(map[string]any)
 		if isTable && key != "base" && key != "current" {
-			if err := s.validateV04CharacterStats(append(parts, key), nested); err != nil {
+			if err := s.walkV04CharacterStats(append(parts, key), nested, store); err != nil {
 				return err
 			}
 			continue
@@ -795,7 +799,7 @@ func (s RulesetSnapshot) validateV04CharacterStats(parts []string, table map[str
 		id := rulesetPath(parts)
 		def := s.Registry.Stats[id]
 		if isTable && def.V04 == nil {
-			if err := s.validateV04CharacterStats(append(parts, key), nested); err != nil {
+			if err := s.walkV04CharacterStats(append(parts, key), nested, store); err != nil {
 				return err
 			}
 			continue
@@ -823,8 +827,12 @@ func (s RulesetSnapshot) validateV04CharacterStats(parts []string, table map[str
 		if typ == "" || (expected != "" && expected != typ) {
 			return fmt.Errorf("stat %q %s has incompatible type", id, key)
 		}
-		if _, err := tomlStatValue(raw, typ); err != nil {
+		value, err := tomlStatValue(raw, typ)
+		if err != nil {
 			return fmt.Errorf("stat %q %s: %w", id, key, err)
+		}
+		if store != nil {
+			store(id, key, def, value)
 		}
 	}
 	return nil

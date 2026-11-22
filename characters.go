@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -238,6 +239,9 @@ type CharacterInstance struct {
 	ArtworkPath     string                    `json:"artworkPath,omitempty"`
 	Materialized    *CharacterMechanicalState `json:"materialized,omitempty"`
 	ResourceCurrent map[string]StatValue      `json:"resourceCurrent,omitempty"`
+	Inventory       []InventoryItem           `json:"inventory,omitempty"`
+	EffectIDs       []string                  `json:"effectIds,omitempty"`
+	V04             *RulesetFields            `json:"v04,omitempty"` // custom fields of a v0.4 instance
 	// Legacy fields are read only during saved-session migration.
 	StatOverrides    map[string]StatValue `json:"statOverrides,omitempty"`
 	AddedActionIDs   []string             `json:"addedActionIds,omitempty"`
@@ -246,12 +250,13 @@ type CharacterInstance struct {
 }
 
 type RulesetRegistry struct {
-	statPlan *statPlan
-	Stats    map[string]StatDefinition            `json:"stats,omitempty"`
-	Actions  map[string]ActionDefinition          `json:"actions,omitempty"`
-	Presets  map[string]CharacterPresetDefinition `json:"presets,omitempty"`
-	Effects  map[string]*RulesetFields            `json:"effects,omitempty"`
-	Objects  map[string]*RulesetFields            `json:"objects,omitempty"`
+	statPlan  *statPlan
+	mechanics *rulesetMechanics
+	Stats     map[string]StatDefinition            `json:"stats,omitempty"`
+	Actions   map[string]ActionDefinition          `json:"actions,omitempty"`
+	Presets   map[string]CharacterPresetDefinition `json:"presets,omitempty"`
+	Effects   map[string]*RulesetFields            `json:"effects,omitempty"`
+	Objects   map[string]*RulesetFields            `json:"objects,omitempty"`
 }
 
 type CampaignRegistry struct {
@@ -266,12 +271,13 @@ type DefinitionRegistries struct {
 }
 
 type EffectiveRegistry struct {
-	statPlan *statPlan
-	Stats    map[string]StatDefinition            `json:"stats"`
-	Actions  map[string]ActionDefinition          `json:"actions"`
-	Presets  map[string]CharacterPresetDefinition `json:"presets"`
-	Effects  map[string]*RulesetFields            `json:"effects,omitempty"`
-	Objects  map[string]*RulesetFields            `json:"objects,omitempty"`
+	statPlan  *statPlan
+	mechanics *rulesetMechanics
+	Stats     map[string]StatDefinition            `json:"stats"`
+	Actions   map[string]ActionDefinition          `json:"actions"`
+	Presets   map[string]CharacterPresetDefinition `json:"presets"`
+	Effects   map[string]*RulesetFields            `json:"effects,omitempty"`
+	Objects   map[string]*RulesetFields            `json:"objects,omitempty"`
 }
 
 type EffectiveResource struct {
@@ -290,7 +296,9 @@ type EffectiveCharacter struct {
 	Stats         map[string]StatValue         `json:"stats"`
 	Resources     map[string]EffectiveResource `json:"resources"`
 	ActionIDs     []string                     `json:"actionIds"`
-	Persistent    bool                         `json:"persistent"`
+	ActionSources []ActionSource               `json:"actionSources,omitempty"`
+	activeEffects *ActiveEffects
+	Persistent    bool `json:"persistent"`
 }
 
 func NewCharacterInstance(instanceID string, preset *CharacterPresetDefinition) CharacterInstance {
@@ -306,12 +314,13 @@ func NewCharacterInstance(instanceID string, preset *CharacterPresetDefinition) 
 
 func MergeDefinitionRegistries(registries DefinitionRegistries) (EffectiveRegistry, error) {
 	merged := EffectiveRegistry{
-		statPlan: registries.Ruleset.statPlan,
-		Stats:    make(map[string]StatDefinition, len(registries.Ruleset.Stats)+len(registries.Campaign.Stats)),
-		Actions:  make(map[string]ActionDefinition, len(registries.Ruleset.Actions)+len(registries.Campaign.Actions)),
-		Presets:  make(map[string]CharacterPresetDefinition, len(registries.Ruleset.Presets)+len(registries.Campaign.Presets)),
-		Effects:  maps.Clone(registries.Ruleset.Effects),
-		Objects:  maps.Clone(registries.Ruleset.Objects),
+		statPlan:  registries.Ruleset.statPlan,
+		mechanics: registries.Ruleset.mechanics,
+		Stats:     make(map[string]StatDefinition, len(registries.Ruleset.Stats)+len(registries.Campaign.Stats)),
+		Actions:   make(map[string]ActionDefinition, len(registries.Ruleset.Actions)+len(registries.Campaign.Actions)),
+		Presets:   make(map[string]CharacterPresetDefinition, len(registries.Ruleset.Presets)+len(registries.Campaign.Presets)),
+		Effects:   maps.Clone(registries.Ruleset.Effects),
+		Objects:   maps.Clone(registries.Ruleset.Objects),
 	}
 	for id, definition := range registries.Ruleset.Stats {
 		if definition.Type == "" && merged.statPlan != nil {
@@ -641,6 +650,9 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 	if err := validateText("character name", instance.Name, MaxDefinitionNameRunes, true); err != nil {
 		return err
 	}
+	if err := validateCharacterGrants(instance, registry); err != nil {
+		return err
+	}
 	var linkedPreset *CharacterPresetDefinition
 	if instance.PresetID != "" {
 		if err := validateID(instance.PresetID); err != nil {
@@ -952,6 +964,8 @@ func clonePresetDefinition(definition CharacterPresetDefinition) CharacterPreset
 }
 
 func cloneCharacterInstance(instance CharacterInstance) CharacterInstance {
+	instance.Inventory = slices.Clone(instance.Inventory)
+	instance.EffectIDs = slices.Clone(instance.EffectIDs)
 	if instance.Materialized != nil {
 		snapshot := *instance.Materialized
 		snapshot.Stats = cloneStatValues(snapshot.Stats)

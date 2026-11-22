@@ -507,6 +507,17 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		Ruleset:            cloneRulesetSnapshot(s.defaultRuleset),
 		CharacterInstances: map[string]CharacterInstance{}, characterReferences: map[string]map[CharacterTokenReference]struct{}{},
 	}
+	if len(ss.Ruleset.Characters) != 0 {
+		registry, err := MergeDefinitionRegistries(sessionRegistries(ss))
+		if err == nil {
+			ss.CharacterInstances, err = seedRulesetCharacters(nil, nil, ss.Ruleset, registry)
+		}
+		if err != nil {
+			s.mu.Unlock()
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	if ss.Name == "" {
 		ss.Name = "Новая история"
 	}

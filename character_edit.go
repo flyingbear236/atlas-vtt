@@ -167,15 +167,20 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 			}
 			submitted := stats
 			shown := displayed.Stats[id]
-			_, hasSource := originalState.Stats[id]
+			source, hasSource := originalState.Stats[id]
 			if def.IsResource() {
 				submitted = initial
 				shown = displayed.Resources[id].Initial
-				_, hasSource = originalState.Resources[id]
+				resource, exists := originalState.Resources[id]
+				source, hasSource = resource.Initial, exists
 			}
 			if v, ok := submitted[id]; ok {
-				if v == shown && !hasSource {
-					delete(submitted, id)
+				if v == shown {
+					if hasSource {
+						submitted[id] = source
+					} else {
+						delete(submitted, id)
+					}
 				} else if err := validateStatBase(def, v); err != nil {
 					return err
 				}

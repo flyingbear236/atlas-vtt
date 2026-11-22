@@ -174,21 +174,38 @@ func diagnosePortableImport(base *Session, archive portableImportArchive, opts p
 	characters := map[string]string{}
 	validCharacters := make([]string, 0, len(characterNames))
 	for _, name := range characterNames {
-		var doc characterTOMLDocument
-		if err := toml.NewDecoder(bytes.NewReader(archive.Characters[name])).DisallowUnknownFields().Decode(&doc); err != nil {
-			issues = appendImportIssue(issues, name, err.Error())
-			continue
-		}
-		if doc.SchemaVersion != 1 {
-			issues = appendImportIssue(issues, name, fmt.Sprintf("Неизвестная версия TOML персонажа: %d", doc.SchemaVersion))
-		}
-		if !doc.Character.Persistent {
-			issues = appendImportIssue(issues, name, "TOML персонажа требует persistent = true")
-		}
-		if first := characters[doc.Character.ID]; first != "" {
-			issues = appendImportIssue(issues, name, fmt.Sprintf("Повтор ID персонажа %q в %q и %q", doc.Character.ID, first, name))
+		data := archive.Characters[name]
+		var id string
+		if isNestedCharacterSave(data) {
+			var root map[string]any
+			if err := toml.Unmarshal(data, &root); err != nil {
+				issues = appendImportIssue(issues, name, err.Error())
+				continue
+			}
+			var err error
+			id, _, err = nestedCharacterDocument(data, root)
+			if err != nil {
+				issues = appendImportIssue(issues, name, err.Error())
+				continue
+			}
 		} else {
-			characters[doc.Character.ID] = name
+			var doc characterTOMLDocument
+			if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&doc); err != nil {
+				issues = appendImportIssue(issues, name, err.Error())
+				continue
+			}
+			if doc.SchemaVersion != 1 {
+				issues = appendImportIssue(issues, name, fmt.Sprintf("Неизвестная версия TOML персонажа: %d", doc.SchemaVersion))
+			}
+			if !doc.Character.Persistent {
+				issues = appendImportIssue(issues, name, "TOML персонажа требует persistent = true")
+			}
+			id = doc.Character.ID
+		}
+		if first := characters[id]; first != "" {
+			issues = appendImportIssue(issues, name, fmt.Sprintf("Повтор ID персонажа %q в %q и %q", id, first, name))
+		} else {
+			characters[id] = name
 		}
 		validCharacters = append(validCharacters, name)
 	}

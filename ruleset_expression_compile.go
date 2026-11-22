@@ -74,7 +74,7 @@ func (c *expressionCompiler) recordField(kind, key string, typ exprType) {
 
 func (s *RulesetSnapshot) compileExpressions() error {
 	s.expressions = nil
-	s.effects = nil
+	s.Registry.mechanics = nil
 	s.Registry.statPlan = nil
 	if s.ExecutionReady() {
 		return nil
@@ -165,7 +165,7 @@ func (s *RulesetSnapshot) compileExpressions() error {
 		}
 	}
 	s.expressions = c.programs
-	s.compileEffects()
+	s.compileMechanics()
 	if len(c.stats.steps) != 0 {
 		plan := c.stats
 		plan.index(s.Registry.Stats)

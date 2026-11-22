@@ -105,7 +105,13 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 	if err := validateRulesetMediaAssets(session, ruleset); err != nil {
 		return nil, err
 	}
-	updates := map[string]CharacterInstance{}
+	updates, err := seedRulesetCharacters(session.CharacterInstances, session.Ruleset.Characters, ruleset, next)
+	if err != nil {
+		return nil, err
+	}
+	if len(session.CharacterInstances)+len(updates) > MaxCharacterInstances {
+		return nil, fmt.Errorf("character instances exceed limit %d", MaxCharacterInstances)
+	}
 	for id, original := range session.CharacterInstances {
 		instance := original
 		if instance.PresetID != "" {
@@ -126,7 +132,7 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 				updates[id] = instance
 			}
 		}
-		if current.statPlan != next.statPlan {
+		if current.statPlan != next.statPlan || current.mechanics != next.mechanics {
 			projected, changed, err := preserveResourceCurrents(original, current, instance, next, "")
 			if err != nil {
 				return nil, fmt.Errorf("character instance %q: %w", id, err)
@@ -547,7 +553,11 @@ func (s *Server) definitionCommand(session *Session, peer *peer, command Command
 		if changed {
 			session.Ruleset = oldRuleset
 			for characterID, original := range oldCharacters {
-				session.CharacterInstances[characterID] = original
+				if original.ID == "" {
+					delete(session.CharacterInstances, characterID)
+				} else {
+					session.CharacterInstances[characterID] = original
+				}
 			}
 		}
 		if oldAssets != nil {
@@ -1115,7 +1125,11 @@ func (s *Server) applyDefinitionDocument(w http.ResponseWriter, request *http.Re
 		session.Ruleset = oldRuleset
 		session.DefinitionOperations = oldOperations
 		for characterID, original := range oldCharacters {
-			session.CharacterInstances[characterID] = original
+			if original.ID == "" {
+				delete(session.CharacterInstances, characterID)
+			} else {
+				session.CharacterInstances[characterID] = original
+			}
 		}
 		if oldAssets != nil {
 			session.Assets = oldAssets

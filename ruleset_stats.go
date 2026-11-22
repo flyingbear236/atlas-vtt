@@ -62,6 +62,20 @@ type statPass struct {
 
 func projectCharacterStats(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, effects *ActiveEffects, actorFields map[string]any, resourcesOnly bool) (EffectiveCharacter, error) {
 	state := characterSourceState(instance, preset, registry)
+	if registry.mechanics != nil {
+		actions, active, err := registry.characterGrants(instance, state.ActionIDs, resourcesOnly)
+		if err != nil {
+			return EffectiveCharacter{}, err
+		}
+		state.ActionSources = actions
+		if effects == nil {
+			effects = active
+		}
+		state.activeEffects = effects
+	}
+	if actorFields == nil && instance.V04 != nil {
+		actorFields = instance.V04.values
+	}
 	plan := registry.statPlan
 	if plan == nil {
 		return state, nil

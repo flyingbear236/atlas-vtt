@@ -22,8 +22,8 @@ type compiledEffect struct {
 	formula, when                                 *Expression
 }
 
-func (s *RulesetSnapshot) compileEffects() {
-	s.effects = make(map[string]*compiledEffect, len(s.Registry.Effects))
+func (s *RulesetSnapshot) compileEffects() map[string]*compiledEffect {
+	effects := make(map[string]*compiledEffect, len(s.Registry.Effects))
 	for id, fields := range s.Registry.Effects {
 		f := fields.values
 		prefix := "effect." + id + "."
@@ -47,8 +47,9 @@ func (s *RulesetSnapshot) compileEffects() {
 				}
 			}
 		}
-		s.effects[id] = e
+		effects[id] = e
 	}
+	return effects
 }
 
 type activeDefinition struct {
@@ -77,10 +78,20 @@ type ActiveEffects struct {
 }
 
 func (s RulesetSnapshot) ActiveEffects(grants []EffectGrant) (*ActiveEffects, error) {
+	return indexActiveEffects(s.Registry.mechanics, grants)
+}
+
+func indexActiveEffects(mechanics *rulesetMechanics, grants []EffectGrant) (*ActiveEffects, error) {
+	if len(grants) == 0 {
+		return nil, nil
+	}
 	active := &ActiveEffects{byTarget: map[string][]*activeDefinition{}}
 	groups := map[string]*activeDefinition{}
 	for _, grant := range grants {
-		def := s.effects[grant.EffectID]
+		var def *compiledEffect
+		if mechanics != nil {
+			def = mechanics.effects[grant.EffectID]
+		}
 		if def == nil || grant.SourceID == "" {
 			return nil, fmt.Errorf("invalid effect grant %q from %q", grant.EffectID, grant.SourceID)
 		}

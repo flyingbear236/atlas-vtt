@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"slices"
 	"time"
 )
 
@@ -15,7 +15,7 @@ func characterCommandType(commandType string) bool {
 	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
 		"characterStatSet", "characterStatReset", "characterResourceCurrentSet", "characterResourceCurrentReset",
 		"characterResourceInitialSet", "characterResourceAdd", "characterParameterAdd", "characterParameterRemove", "characterAvatarSet", "characterAvatarReset",
-		"characterActionAdd", "characterActionRemove", "characterEdit":
+		"characterActionAdd", "characterActionRemove", "characterEdit", "characterItemEquip":
 		return true
 	default:
 		return false
@@ -233,22 +233,11 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if err != nil {
 			return err
 		}
-		var preset *CharacterPresetDefinition
-		if command.PresetID != "" {
-			definition, exists := registry.Presets[command.PresetID]
-			if !exists {
-				return fmt.Errorf("unknown preset %q", command.PresetID)
-			}
-			definition = clonePresetDefinition(definition)
-			preset = &definition
+		instance, err := createCharacterInstance(session, command, registry)
+		if err != nil {
+			return err
 		}
-		characterID := nextCharacterID(session)
-		instance := NewCharacterInstance(characterID, preset)
-		if preset == nil {
-			if name := strings.TrimSpace(command.CharacterName); name != "" {
-				instance.Name = name
-			}
-		}
+		characterID := instance.ID
 		mutation.setInstance(instance)
 		old := cloneToken(token)
 		oldCharacterID := token.CharacterInstanceID
@@ -256,6 +245,24 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		mutation.setToken(sceneID, scene, old, token)
 		mutation.gcCharacter(oldCharacterID)
 		mutation.resultCharacterID = characterID
+	case "characterItemEquip":
+		if !memberCanAccessCharacter(session, member, command.CharacterID) {
+			return errors.New("character access denied")
+		}
+		if command.Equipped == nil {
+			return errors.New("equipped value is required")
+		}
+		instance := session.CharacterInstances[command.CharacterID]
+		index := slices.IndexFunc(instance.Inventory, func(item InventoryItem) bool { return item.ID == command.ItemID })
+		if index < 0 {
+			return fmt.Errorf("inventory item %q not found", command.ItemID)
+		}
+		if instance.Inventory[index].Equipped != *command.Equipped {
+			instance.Inventory = slices.Clone(instance.Inventory)
+			instance.Inventory[index].Equipped = *command.Equipped
+			mutation.setInstance(instance)
+		}
+		mutation.resultCharacterID = instance.ID
 	case "characterLink":
 		if session.CharacterInstances[command.CharacterID].ID == "" {
 			return errors.New("character not found")
@@ -644,7 +651,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 	}
 
 	switch command.Type {
-	case "characterCreate", "characterEdit", "characterNameSet", "characterStatSet", "characterStatReset",
+	case "characterCreate", "characterEdit", "characterNameSet", "characterStatSet", "characterStatReset", "characterItemEquip",
 		"characterResourceInitialSet", "characterResourceCurrentSet", "characterResourceCurrentReset":
 		if registry.statPlan == nil {
 			break
@@ -747,7 +754,7 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" || command.Type == "characterEdit" {
 			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
-		derivedResourcesChanged := session.Ruleset.Registry.statPlan != nil && (command.Type == "characterStatSet" || command.Type == "characterStatReset" || command.Type == "characterNameSet")
+		derivedResourcesChanged := session.Ruleset.Registry.statPlan != nil && (command.Type == "characterStatSet" || command.Type == "characterStatReset" || command.Type == "characterNameSet" || command.Type == "characterItemEquip")
 		if derivedResourcesChanged || command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" || command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" || command.Type == "characterEdit" {
 			s.publishCharacterDisplayChanged(session, mutation.changedCharacters)
 		}

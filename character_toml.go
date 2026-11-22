@@ -27,17 +27,20 @@ type characterTOMLDocument struct {
 	Character     characterTOMLBody `toml:"character"`
 }
 type characterTOMLBody struct {
-	ID              string         `toml:"id"`
-	Name            string         `toml:"name"`
-	PresetID        string         `toml:"preset_id,omitempty"`
-	Persistent      bool           `toml:"persistent"`
-	Materialized    bool           `toml:"materialized"`
-	Artwork         string         `toml:"artwork,omitempty"`
-	ArtworkMode     string         `toml:"artwork_mode,omitempty"` // "placeholder" is distinct from inheritance.
-	Actions         []string       `toml:"actions,omitempty"`
-	Stats           map[string]any `toml:"stats,omitempty"`
-	ResourceInitial map[string]any `toml:"resource_initial,omitempty"`
-	ResourceCurrent map[string]any `toml:"resource_current,omitempty"`
+	ID              string          `toml:"id"`
+	Name            string          `toml:"name"`
+	PresetID        string          `toml:"preset_id,omitempty"`
+	Persistent      bool            `toml:"persistent"`
+	Materialized    bool            `toml:"materialized"`
+	Artwork         string          `toml:"artwork,omitempty"`
+	ArtworkMode     string          `toml:"artwork_mode,omitempty"` // "placeholder" is distinct from inheritance.
+	Actions         []string        `toml:"actions,omitempty"`
+	Stats           map[string]any  `toml:"stats,omitempty"`
+	ResourceInitial map[string]any  `toml:"resource_initial,omitempty"`
+	ResourceCurrent map[string]any  `toml:"resource_current,omitempty"`
+	Inventory       []any           `toml:"inventory,omitempty"`
+	EffectIDs       []string        `toml:"effect_ids,omitempty"`
+	V04             *map[string]any `toml:"ruleset_v04,omitempty"`
 }
 
 // A saved ATLAS instance has a flat, versioned [character] record.
@@ -119,7 +122,10 @@ func buildCharacterTOMLDocument(instance CharacterInstance, media map[string]str
 	}
 	body := characterTOMLBody{ID: instance.ID, Name: instance.Name, PresetID: instance.PresetID, Persistent: true,
 		Materialized: instance.Materialized != nil, Artwork: artwork, ArtworkMode: mode,
-		ResourceCurrent: characterTOMLValues(instance.ResourceCurrent)}
+		ResourceCurrent: characterTOMLValues(instance.ResourceCurrent), Inventory: inventoryTOML(instance.Inventory), EffectIDs: instance.EffectIDs}
+	if instance.V04 != nil {
+		body.V04 = &instance.V04.values
+	}
 	if instance.Materialized != nil {
 		body.Stats = characterTOMLValues(instance.Materialized.Stats)
 		body.ResourceInitial = characterTOMLValues(instance.Materialized.ResourceInitial)
@@ -131,6 +137,12 @@ func buildCharacterTOMLDocument(instance CharacterInstance, media map[string]str
 // EncodeCharacterTOML is intentionally pure: writing a character's current HP does
 // not rewrite the originating TOML or mutate the session at runtime.
 func EncodeCharacterTOML(instance CharacterInstance, media map[string]string, registry EffectiveRegistry) ([]byte, error) {
+	if instance.Persistent && canEncodeNestedCharacter(instance, registry) {
+		if err := ValidateCharacterInstance(instance, registry); err != nil {
+			return nil, err
+		}
+		return encodeNestedCharacter(instance)
+	}
 	doc, err := buildCharacterTOMLDocument(instance, media, registry)
 	if err != nil {
 		return nil, err
@@ -143,6 +155,17 @@ func EncodeCharacterTOML(instance CharacterInstance, media map[string]string, re
 func DecodeCharacterTOML(data []byte, media map[string]string, registry EffectiveRegistry) (CharacterInstance, error) {
 	if len(data) > MaxDefinitionDocumentBytes {
 		return CharacterInstance{}, fmt.Errorf("character TOML exceeds size limit")
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return CharacterInstance{}, err
+	}
+	if !isSavedCharacterTOML(root) && root["character"] != nil && root["schema_version"] == nil {
+		id, fields, err := nestedCharacterDocument(data, root)
+		if err != nil {
+			return CharacterInstance{}, err
+		}
+		return decodeNestedCharacter(id, fields, registry)
 	}
 	var doc characterTOMLDocument
 	if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&doc); err != nil {
@@ -190,6 +213,21 @@ func DecodeCharacterTOML(data []byte, media map[string]string, registry Effectiv
 		return CharacterInstance{}, err
 	}
 	instance.ResourceCurrent = current
+	instance.Inventory, err = decodeInventory(b.Inventory)
+	if err != nil {
+		return CharacterInstance{}, err
+	}
+	instance.EffectIDs = b.EffectIDs
+	if b.V04 != nil {
+		instance.V04, err = newRulesetFields(*b.V04)
+		if err != nil {
+			return CharacterInstance{}, err
+		}
+	}
+	return validateDecodedCharacter(instance, registry)
+}
+
+func validateDecodedCharacter(instance CharacterInstance, registry EffectiveRegistry) (CharacterInstance, error) {
 	if err := ValidateCharacterInstance(instance, registry); err != nil {
 		return CharacterInstance{}, err
 	}
@@ -198,7 +236,6 @@ func DecodeCharacterTOML(data []byte, media map[string]string, registry Effectiv
 			return CharacterInstance{}, err
 		}
 	}
-	_ = media // logical path is retained even when a matching asset is unavailable
 	return instance, nil
 }
 
@@ -245,6 +282,26 @@ func CurrentCharacterTOML(session *Session, id string) ([]byte, error) {
 	}
 	origin, ok := session.CharacterSources[id]
 	if !ok || origin.Source == "" {
+		return canonical, nil
+	}
+	if instance.V04 != nil || len(instance.Inventory) > 0 || len(instance.EffectIDs) > 0 {
+		source := []byte(origin.Source)
+		matches := func(data []byte) bool {
+			original, err := DecodeCharacterTOML(data, session.Ruleset.Media, registry)
+			if err != nil {
+				return false
+			}
+			normalized, err := EncodeCharacterTOML(original, session.Ruleset.Media, registry)
+			return err == nil && bytes.Equal(normalized, canonical)
+		}
+		if matches(source) {
+			return source, nil
+		}
+		if isNestedCharacterSave(source) && isNestedCharacterSave(canonical) {
+			if edited := rewriteNestedEquipment(source, instance); edited != nil && matches(edited) {
+				return edited, nil
+			}
+		}
 		return canonical, nil
 	}
 	var original characterTOMLDocument

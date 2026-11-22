@@ -54,6 +54,9 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 		}
 	}
 	actions := make(map[string]ActionDefinition, len(effective.ActionIDs))
+	for _, option := range effective.ActionSources {
+		actions[option.ActionID] = cloneActionDefinition(registry.Actions[option.ActionID])
+	}
 	for _, actionID := range effective.ActionIDs {
 		if definition, ok := registry.Actions[actionID]; ok {
 			actions[actionID] = cloneActionDefinition(definition)

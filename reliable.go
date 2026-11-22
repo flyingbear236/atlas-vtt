@@ -167,9 +167,12 @@ type Command struct {
 	PresetDefinition         *CharacterPresetDefinition `json:"presetDefinition,omitempty"`
 	ExpectedRegistryRevision *uint64                    `json:"expectedRegistryRevision,omitempty"`
 	CharacterID              string                     `json:"characterId,omitempty"`
+	CharacterDefinitionID    string                     `json:"characterDefinitionId,omitempty"`
 	CharacterEdit            *CharacterEditPayload      `json:"characterEdit,omitempty"`
 	CharacterWatch           uint64                     `json:"characterWatch,omitempty"`
 	CharacterName            string                     `json:"characterName,omitempty"`
+	ItemID                   string                     `json:"itemId,omitempty"`
+	Equipped                 *bool                      `json:"equipped,omitempty"`
 	PresetID                 string                     `json:"presetId,omitempty"`
 	TokenID                  string                     `json:"tokenId,omitempty"`
 	StatID                   string                     `json:"statId,omitempty"`

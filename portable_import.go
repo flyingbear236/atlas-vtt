@@ -175,7 +175,7 @@ func readPortableImportArchiveWithDiagnostics(reader *zip.Reader, collectDiagnos
 					}
 				}
 			}
-			character := isSavedCharacterTOML(root)
+			character := isSavedCharacterTOML(root) || (root["character"] != nil && isNestedCharacterSave(data))
 			v04 := !character && hasRulesetV04Roots(root)
 			known := false
 			for _, field := range []string{"stats", "actions", "presets", "ruleset"} {
@@ -524,6 +524,19 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 		next.CharacterInstances[instance.ID] = instance
 		next.CharacterSources[instance.ID] = candidate.Sources[instance.ID]
 	}
+	// Explicit saves take precedence over initial declarations.
+	var previousDeclarations map[string]*RulesetFields
+	if opts.Mode == "selected" {
+		previousDeclarations = base.Ruleset.Characters
+	}
+	created, e := seedRulesetCharacters(next.CharacterInstances, previousDeclarations, ruleset, registry)
+	if e != nil {
+		return candidate, e
+	}
+	for id, instance := range created {
+		next.CharacterInstances[id] = instance
+		info.AddedCharacters = append(info.AddedCharacters, id)
+	}
 	slices.Sort(info.AddedCharacters)
 	slices.Sort(info.ConflictingCharacters)
 	// prepareDefinitionCharacters enforces references for ALL existing characters,
@@ -542,7 +555,7 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 				return candidate, fmt.Errorf("existing linked character %q would lose preset %q", id, inst.PresetID)
 			}
 		}
-		if previousRegistry.statPlan != registry.statPlan {
+		if previousRegistry.statPlan != registry.statPlan || previousRegistry.mechanics != registry.mechanics {
 			projected, changed, err := preserveResourceCurrents(inst, previousRegistry, inst, registry, "")
 			if err != nil {
 				return candidate, fmt.Errorf("character %q: %w", id, err)
