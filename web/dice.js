@@ -170,11 +170,43 @@ export function diceNotation(event){return diceGroups(event).map(group=>`${group
 
 function numberText(value){return Number.isInteger(value)?String(value):String(Number(value));}
 function modifierText(value){return value>0?` + ${numberText(value)}`:value<0?` − ${numberText(-value)}`:'';}
+// Prefer the verified numeric components of the preview; effects depending on
+// a chosen target may change the total, so fall back to the executed result.
+export function numericRollFormula(event,preview=null){
+ const groups=diceGroups(event).filter(group=>Array.isArray(group.results));
+ const dice=groups.map(group=>`${group.count===1?'':group.count}d${group.sides}`);
+ const diceTotal=groups.reduce((sum,group)=>sum+group.results.reduce((n,result)=>n+Number(result),0),0);
+ if(event.actionExecution&&preview?.parts?.length&&!preview.notes?.length){
+  const pieces=[],previewDice=[];let expected=0,valid=true;
+  for(const part of preview.parts){
+   const sign=part.sign==='-'?-1:1;
+   if(part.value===''||part.value==null){
+    if(!/^\d+d\d+$/i.test(part.label)||sign<0){valid=false;break;}
+    previewDice.push(part.label.replace(/^1d/i,'d'));pieces.push({text:part.label.replace(/^1d/i,'d'),sign:1});
+   }else{
+    const number=Number(part.value);
+    if(!Number.isFinite(number)){valid=false;break;}
+    expected+=sign*number;pieces.push({text:numberText(Math.abs(number)),sign:sign*Math.sign(number)});
+   }
+  }
+  if(valid&&previewDice.join(',')===dice.join(',')&&Number(event.total)===diceTotal+expected){
+   let formula='';
+   for(const part of pieces){if(part.sign===0)continue;formula+=!formula?(part.sign<0?'− ':'')+part.text:part.sign<0?` − ${part.text}`:` + ${part.text}`;}
+   if(formula)return formula;
+  }
+ }
+ const base=dice.join(' + ');
+ const difference=Number(event.total)-diceTotal;
+ if(!event.actionExecution)return `${base}${modifierText(Number(event.modifier)||0)}`;
+ // The executed total is authoritative, even for context-dependent modifiers.
+ return `${base}${Number.isFinite(difference)?modifierText(difference):''}`||numberText(event.total);
+}
+
 
 export class DiceRuntime {
   constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},animator=null,storage=localStorage}={}){
     this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.animator=animator;this.storage=storage;
-    this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.groups=[{count:1,sides:20}];this.modifier=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
+    this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.actionPreviews=new Map();this.liveActionRolls=new Set();this.overlayActionID='';this.groups=[{count:1,sides:20}];this.modifier=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
     this.lastAction=root.querySelector('[data-action-last]');
     this.expression=root.querySelector('[data-dice-expression]');this.error=root.querySelector('[data-dice-error]');this.submit=root.querySelector('[data-dice-submit]');this.entries=root.diceUI.journal.querySelector('[data-roll-entries]');this.journalCount=root.diceUI.journal.querySelector('[data-roll-count]');this.animation=root.querySelector('[data-roll-animation]');this.last=root.querySelector('[data-dice-last]');this.overlay=root.diceUI.overlay;
     try{const saved=JSON.parse(this.storage.getItem('atlas-dice-choice')||'null'),expression=saved?.expression||(saved?.count&&saved?.sides?`${saved.count}d${saved.sides}`:'');if(expression&&!parseDiceFormula(expression).error)this.expression.value=expression;}catch{}
@@ -188,11 +220,18 @@ export class DiceRuntime {
 
   setScene(sceneId,userId=''){
     sceneId=String(sceneId||'');
-    if(sceneId!==this.sceneId){this.sceneId=sceneId;this.events=[];this.eventIds.clear();this.entries.replaceChildren();this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);this.last.hidden=true;this.lastAction.hidden=true;this.#updateCount();clearTimeout(this.overlayTimer);this.overlay.hidden=true;this.root.diceUI.setJournal(false);}
+    if(sceneId!==this.sceneId){this.sceneId=sceneId;this.events=[];this.eventIds.clear();this.actionPreviews.clear();this.liveActionRolls.clear();this.overlayActionID='';this.entries.replaceChildren();this.awaitingManual=false;this.awaitingRoll=false;this.#setSending(false);this.last.hidden=true;this.lastAction.hidden=true;this.#updateCount();clearTimeout(this.overlayTimer);this.overlay.hidden=true;this.root.diceUI.setJournal(false);}
     this.userId=String(userId||'');this.animator?.setContext(sceneId,this.userId);this.root.hidden=!sceneId;this.root.diceUI.toggle.hidden=!sceneId;if(sceneId&&this.animation.value!=='off')this.animator?.warmup();
   }
 
   disconnect(){return this.animator?.cancel();}
+
+  noteActionPreview(characterId,actionId,sourceId,preview){
+    if(!preview)return;
+    const key=[characterId,actionId,sourceId].join('\0');
+    this.actionPreviews.delete(key);this.actionPreviews.set(key,preview);
+    if(this.actionPreviews.size>32)this.actionPreviews.delete(this.actionPreviews.keys().next().value);
+  }
 
   rollManual(){
     if(!this.sceneId||this.awaitingRoll)return false;
@@ -257,9 +296,10 @@ export class DiceRuntime {
     const index=this.events.findIndex(item=>item.id===event.id);
     const previous=this.events[index];
     if(message?.type==='actionMessage'){
+      if(previous)Object.assign(event,previous);
       event.messages=[...(previous?.messages||[])];
       event.messages[message.index]=message.message;
-    }
+    }else if(previous?.messages?.length&&!event.messages?.length)event.messages=previous.messages;
     event.changes=changes||previous?.changes;
     if(this.#remember(event))this.#append(event);
     else if(previous){
@@ -267,15 +307,16 @@ export class DiceRuntime {
       const row=this.entries.querySelector(`[data-event-id="${CSS.escape(event.id)}"]`);
       if(row)row.replaceWith(this.#row(event));
     }
-    if(event.userId===this.userId){
-      this.lastAction.hidden=false;
-      this.lastAction.replaceChildren(...this.#actionLines(event));
-    }
-    if(liveRoll&&!previous&&event.roll){
+    // Roll results are shown by the shared overlay and remain in the journal.
+    // Do not duplicate them underneath the quick-roll panel.
+    this.lastAction.hidden=true;
+    if(event.userId===this.userId)this.last.hidden=true;
+    if(this.overlayActionID===event.id&&!this.overlay.hidden)this.#updateOverlayMessage(event);
+    if(liveRoll&&event.roll&&!this.liveActionRolls.has(event.id)){this.liveActionRolls.add(event.id);if(this.liveActionRolls.size>128)this.liveActionRolls.delete(this.liveActionRolls.values().next().value);
       const supported=event.groups.length>0&&event.groups.every(group=>DICE_SIDES.includes(group.sides));
       if(supported&&this.#shouldAnimate(event)&&this.animator?.enqueue(event))return;
       if(event.userId===this.userId)this.#lastResult(event);
-      if(supported)this.showTotal(event,false);
+      this.showTotal(event,false);
     }
   }
 
@@ -331,8 +372,30 @@ export class DiceRuntime {
 
   #setSending(sending){this.submit.disabled=!!sending||!!parseDiceFormula(this.expression.value).error;this.submit.textContent=sending?'Ожидание результата…':'Бросить';}
   #saveChoice(){try{this.storage.setItem('atlas-dice-choice',JSON.stringify({expression:this.expression.value}));}catch{}}
-  #lastResult(event){if(event.userId!==this.userId)return;this.last.hidden=false;this.last.querySelector('[data-dice-total]').textContent=event.rollTotalText??numberText(event.total);const groups=event.actionExecution?event.groups:diceGroups(event),shown=groups.map(group=>`d${group.sides}: ${(group.results||[]).join(' + ')}`).join(' · ');this.last.querySelector('[data-dice-values]').textContent=`${shown}${modifierText(Number(event.modifier)||0)}`;}
-  showTotal(event,animated=true){if(!this.sceneId||event.sceneId!==this.sceneId)return;if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();const info=document.createElement('small');info.textContent=`${event.authorName} · ${diceNotation(event)}${modifierText(Number(event.modifier)||0)}`;const total=document.createElement('strong');total.textContent=event.rollTotalText??numberText(event.total);this.overlay.append(info,total);this.overlay.classList.remove('dice-total-animate');if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;},animated?1900:1300);}
+  #lastResult(event){if(event.actionExecution||event.userId!==this.userId)return;this.last.hidden=false;this.last.querySelector('[data-dice-total]').textContent=event.rollTotalText??numberText(event.total);const groups=event.actionExecution?event.groups:diceGroups(event),shown=groups.map(group=>`d${group.sides}: ${(group.results||[]).join(' + ')}`).join(' · ');this.last.querySelector('[data-dice-values]').textContent=`${shown}${modifierText(Number(event.modifier)||0)}`;}
+  #updateOverlayMessage(event){
+    const text=(event.messages||[]).filter(Boolean).join(' · ');
+    let message=this.overlay.querySelector('.dice-overlay-message');
+    if(!text){message?.remove();return;}
+    if(!message){message=document.createElement('div');message.className='dice-overlay-message';this.overlay.prepend(message);}
+    message.textContent=text;
+  }
+  showTotal(event,animated=true){
+    if(!this.sceneId||event.sceneId!==this.sceneId)return;
+    if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;
+    const current=event.actionExecution?this.events.find(row=>row.id===event.id)||event:event;
+    const key=[current.actor?.characterId||'',current.actionId||'',current.source?.itemId||''].join('\0');
+    const preview=current.actionExecution?this.actionPreviews.get(key):null;
+    clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();
+    this.overlayActionID=current.actionExecution?current.id:'';
+    if(current.actionExecution)this.#updateOverlayMessage(current);
+    const total=document.createElement('strong');total.textContent=current.rollTotalText??numberText(current.total);
+    const formula=document.createElement('small');formula.className='dice-overlay-formula';formula.textContent=numericRollFormula(current,preview);
+    this.overlay.append(total,formula);
+    this.overlay.classList.remove('dice-total-animate');
+    if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}
+    this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;this.overlayActionID='';},animated?1900:1300);
+  }
   #adjustDice(sides,delta){
     const parsed=this.expression.value.trim()?parseDiceFormula(this.expression.value):{groups:[],modifier:0},next=changeDiceCount(parsed,sides,delta);
     if(!next)return;

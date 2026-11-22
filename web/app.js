@@ -1,4 +1,5 @@
 import {loadLayout,saveLayout,buildSheet,moveEntry,normalizeLayout} from './character-sheet-layout.js';
+import {groupSheetActionSources,shortActionFormula} from './action-groups.js';
 import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
 import {drawTokens,shortCharacterID} from './token-renderer.js';
 import {Outbox, Drafts, CacheWriteBudget,blockedMoveCorrection,sameValue} from './reliability.js';
@@ -189,7 +190,9 @@ let actionGeneration=null;
 function enqueueAction(sceneId,action){
  if(state?.scene.id!==sceneId||state.playerPreview||previewSwitchPending||actionGeneration===null)return false;
  if(outbox.data.queue.some(command=>command.type==='actionExecute'&&command.sceneId===sceneId&&sameValue(command.action,action)))return true;
- return queueCommand('actionExecute',{sceneId,actionGeneration,action});
+ const ok=queueCommand('actionExecute',{sceneId,actionGeneration,action});
+ if(ok){const preview=(characterWatch.snapshot?.actionPreviews||[]).find(p=>p.actionId===action.actionId&&(p.sourceId||'')===(action.sourceId||''));dice.noteActionPreview(action.characterId,action.actionId,action.sourceId||'',preview);}
+ return ok;
 }
 const actionTargetPicker=new ActionTargetPicker(send,enqueueAction);
 function refreshCharacterCatalog(){if(!credentials||!isGM(state?.you||campaign?.you))return Promise.resolve();return characterCatalog.reload().catch(error=>toast(error.message));}
@@ -891,7 +894,7 @@ function renderActionFormula(preview,compact=false){
  for(const [index,part] of (preview.parts||[]).entries()){
   if(index||part.sign==='-'){const sign=document.createElement('span');sign.className='character-formula-sign';sign.textContent=part.sign==='-'?'−':'+';row.append(sign);}
   const chip=document.createElement('span');chip.className='character-formula-part';
-  const name=document.createElement('span');name.textContent=part.label;chip.append(name);
+  const name=document.createElement('span');const derived=part.label.includes(' · ');name.textContent=derived?part.label.split(' · ')[0]:part.label;if(derived){const tip=part.label.replace(/ · bonus$/i,' · бонус');chip.title=tip;chip.setAttribute('aria-label',tip);}if(/^\d*d\d+$/i.test(part.label))chip.classList.add('character-formula-die');chip.append(name);
   if(part.value){const value=document.createElement('strong');value.textContent=part.value;chip.append(value);}
   row.append(chip);
  }
@@ -919,6 +922,16 @@ function characterSelectAction(snapshot,id,open=true){
  }
  else if(action.v04){const note=document.createElement('p');note.className='muted';note.textContent='Для выполнения действия нет доступного источника.';detail.append(note);}
 }
+function executeRulesetActionChoice(snapshot,choice){
+ const source=choice.sourceId,actionName=snapshot.actions[choice.actionId]?.name||choice.actionId;
+ const title=source?`${actionName} · ${snapshot.itemNames?.[source]||source}`:actionName;
+ const sceneId=state?.scene.id;
+ if(!sceneId||actionGeneration===null){toast('Дождитесь подключения к сцене');return;}
+ const action={characterId:snapshot.characterId,actionId:choice.actionId,...(source?{sourceId:source}:{})};
+ const selector=snapshot.actionSelectors[choice.actionId];
+ if(selector==='select(character)'||selector==='select(object)')actionTargetPicker.open(sceneId,action,title);
+ else if(!enqueueAction(sceneId,action))toast('Действие недоступно');
+}
 function renderRulesetActionChoice(row,snapshot,choice){
  const button=document.createElement('button');
  button.type='button';button.className='subtle character-roll';
@@ -930,18 +943,49 @@ function renderRulesetActionChoice(row,snapshot,choice){
  button.setAttribute('aria-label',title);
  const selector=snapshot.actionSelectors[choice.actionId];
  button.disabled=!snapshot.permissions?.edit||state?.playerPreview||!!characterEditSession;
- button.onclick=()=>{
-  const sceneId=state?.scene.id;
-  if(!sceneId||actionGeneration===null){toast('Дождитесь подключения к сцене');return;}
-  const action={characterId:snapshot.characterId,actionId:choice.actionId,...(source?{sourceId:source}:{})};
-  if(selector==='select(character)'||selector==='select(object)')actionTargetPicker.open(sceneId,action,title);
-  else if(!enqueueAction(sceneId,action))toast('Действие недоступно');
- };
+ button.onclick=()=>executeRulesetActionChoice(snapshot,choice);
  row.append(button);
+}
+// The browser groups by the inventory item instance, not the action's name or ID.
+// A hit and a damage action sharing the same sourceId become two real buttons
+// inside one item card; the existing action executor remains unchanged.
+const expandedActionSources=new Map();
+const actionItemSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3 21 10 11 20 4 21l1-7L15 4m-9 10 4 4"/></svg>';
+const actionDiceSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8" cy="8" r="1"/><circle cx="16" cy="16" r="1"/><circle cx="12" cy="12" r="1"/></svg>';
+function renderSourceActionGroup(snapshot,group){
+ const item=group.sourceId?(snapshot.instance?.inventory||[]).find(row=>row.id===group.sourceId):null;
+ const first=group.choices[0];
+ const label=item?snapshot.itemNames?.[item.id]||item.objectId:snapshot.actions?.[first.actionId]?.name||first.actionId;
+ const key=`${snapshot.characterId}:${group.sourceId||first.actionId}`;
+ const open=expandedActionSources.get(key)!==false;
+ const root=document.createElement('section');root.className='character-source-item';
+ const head=document.createElement('div');head.className='character-source-heading';
+ const toggle=document.createElement('button');toggle.type='button';toggle.className='character-source-toggle';toggle.setAttribute('aria-expanded',String(open));toggle.setAttribute('aria-label',`${label}: ${open?'свернуть':'развернуть'}`);
+ const icon=document.createElement('span');icon.className='character-source-icon';icon.innerHTML=actionItemSvg;
+ const title=document.createElement('strong');title.className='character-source-name';title.textContent=label;
+ const chevron=document.createElement('span');chevron.className='character-source-chevron';chevron.textContent='⌄';toggle.append(icon,title,chevron);
+ const body=document.createElement('div');body.className='character-source-body';body.hidden=!open;
+ toggle.onclick=()=>{const expanded=body.hidden;body.hidden=!expanded;toggle.setAttribute('aria-expanded',String(expanded));toggle.setAttribute('aria-label',`${label}: ${expanded?'свернуть':'развернуть'}`);expandedActionSources.set(key,expanded);};
+ head.append(toggle);
+ if(item){const badge=document.createElement('span');badge.className='character-source-equipped'+(item.equipped?'':' off');badge.textContent=item.equipped?'Экипирован':'Не экипирован';head.append(badge);}
+ root.append(head);
+ for(const choice of group.choices){
+  const action=snapshot.actions?.[choice.actionId],preview=(snapshot.actionPreviews||[]).find(row=>row.actionId===choice.actionId&&(row.sourceId||'')===(choice.sourceId||''));
+  const button=document.createElement('button');button.type='button';button.className='character-source-roll'+(choice.actionId.endsWith('.damage')?' damage':'');
+  button.disabled=!!item&&!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||!!characterEditSession;
+  button.setAttribute('aria-label',`${label}: ${action?.name||choice.actionId}`);
+  const title=document.createElement('strong');title.className='character-source-roll-name';title.innerHTML=actionDiceSvg;title.append(document.createTextNode(action?.name||choice.actionId));button.append(title);
+  const formula=renderActionFormula(preview,true);if(item&&!item.equipped&&!preview)formula.textContent='Доступно после экипировки';button.append(formula);
+  const summary=shortActionFormula(preview);
+  if(summary){const output=document.createElement('strong');output.className='character-source-roll-total';output.textContent=summary;button.append(output);}
+  button.onclick=()=>executeRulesetActionChoice(snapshot,choice);
+  body.append(button);
+ }
+ root.append(body);return root;
 }
 function sheetActionIDs(snapshot){
  const direct=snapshot.effective?.actionIds||[];
- const choices=snapshot.effective?.actionSources||[];
+ const choices=[...(snapshot.effective?.actionSources||[]),...(snapshot.inactiveActionSources||[])];
  return [...new Set([...(characterEditSession?direct:[]),...choices.filter(option=>Object.hasOwn(snapshot.actionSelectors||{},option.actionId)).map(option=>option.actionId)])];
 }
 function renderCharacterActions(snapshot){
@@ -1213,7 +1257,9 @@ function renderSheetLayout(snapshot){
  const selected=full.tabs.find(t=>t.id===characterActiveTab);
  if(!selected)return;
   const actionInTab=selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')));
-  const useBrowser=!sheetEdit&&(selected.id==='inventory'||actionInTab);
+  const legacyActionInTab=actionInTab&&selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')&&!snapshot.actions?.[key.slice(7)]?.v04));
+  const sourceGroups=!sheetEdit&&!characterEditSession?groupSheetActionSources(snapshot,selected.sections):null;
+  const useBrowser=!sheetEdit&&(selected.id==='inventory'||legacyActionInTab);
   const browser=useBrowser?document.createElement('div'):null;
   const sheetMain=useBrowser?document.createElement('div'):body;
   if(browser){browser.className='character-table-browser';sheetMain.className='character-table-main';browser.append(sheetMain);const detail=document.createElement('aside');detail.className='character-table-detail';detail.id='characterTableInspector';browser.append(detail);body.append(browser);}
@@ -1227,16 +1273,19 @@ function renderSheetLayout(snapshot){
   const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
   const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
   if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
-  wrapper.append(heading);const listing=document.createElement('div');const tableActions=!sheetEdit&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
+  wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
   if(sheetEdit){
    listing.ondragover=event=>previewSheetDrop(event,listing);
    listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
   }
-  for(const key of section.items){const item=elements.get(key);if(!item)continue;const frame=document.createElement('div');frame.className='sheet-entry';frame.dataset.sheetItem=key;
+  for(const key of section.items){
+   if(sourceGroups?.handled.has(key)){for(const group of sourceGroups.byEntry.get(key)||[])listing.append(renderSourceActionGroup(snapshot,group));continue;}
+   const item=elements.get(key);if(!item)continue;const frame=document.createElement('div');frame.className='sheet-entry';frame.dataset.sheetItem=key;
    if(sheetEdit){const drag=document.createElement('button');drag.type='button';drag.className='subtle sheet-handle';drag.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20m0-20-4 4m4-4 4 4m-4 16-4-4m4 4 4-4M2 12h20m-20 0 4-4m-4 4 4 4m16-4-4-4m4 4-4 4"/></svg>';drag.setAttribute('aria-label','Переместить карточку');drag.draggable=true;drag.title='Перетащить';drag.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'item',key};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',key);frame.classList.add('sheet-entry-moving');};drag.ondragend=clearSheetDrag;const hide=document.createElement('button');hide.type='button';hide.className='subtle sheet-entry-hide';hide.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3 21 21M10.6 6.2A10.5 10.5 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-3 3.4M6.4 6.4C3.8 8 3 12 3 12s3 6 9 6a10 10 0 0 0 3.6-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';hide.title='Скрыть элемент';hide.setAttribute('aria-label','Скрыть элемент');hide.onclick=()=>sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});const controls=document.createElement('div');controls.className='sheet-entry-controls';controls.append(drag,hide);frame.append(item,controls);frame.ondragover=event=>previewSheetDrop(event,listing);frame.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};}
    frame.append(item);listing.append(frame);
   }
-  wrapper.append(listing);sheetMain.append(wrapper);
+  wrapper.append(listing);
+  if(!(hasGroups&&!sheetEdit&&!listing.children.length))sheetMain.append(wrapper);
  }
  if(useBrowser&&actionInTab&&selected.id!=='inventory'){const ids=selected.sections.flatMap(section=>section.items.filter(key=>key.startsWith('action:')).map(key=>key.slice(7)));if(!ids.includes(characterBrowseAction))characterBrowseAction=ids[0]||'';characterSelectAction(snapshot,characterBrowseAction,characterBrowseOpen);}
 }
@@ -1514,7 +1563,14 @@ function elementAlphaAt(element,x,y){const asset=state?.assets?.[element.assetId
  const TRANSITION_DEFAULT_RADIUS=48;
  function placeTransitionPoint(x,y){if(!transitionDraft||transitionDraft.phase==='awaitingCreate')return;const endpoint={floorId:currentFloorID,position:{x,y},radius:TRANSITION_DEFAULT_RADIUS};if(transitionDraft.phase==='placingA'){transitionDraft={...transitionDraft,endpointA:endpoint,phase:'placingB'};transitionCursor={x,y};toast('Поставьте точку B перехода');}else if(transitionDraft.phase==='placingB'){const completed={...transitionDraft,endpointB:endpoint},payload={name:'',endpointA:cloneTransitionEndpoint(completed.endpointA),endpointB:cloneTransitionEndpoint(endpoint),direction:'bidirectional',showToPlayers:false,showName:false};transitionDraft=completed;if(queueCommand('transitionCreate',{transition:payload}))transitionDraft={...completed,phase:'awaitingCreate',priorIds:Object.keys(state?.transitions||{})};}fillTransitionProperties();dirty=true;}
 canvas.onwheel=e=>{e.preventDefault();const p=point(e);zoom(Math.exp(-e.deltaY*.001),p.x,p.y);};
-canvas.onpointerdown=e=>{if(!state||previewSwitchPending)return;canvas.focus();try{canvas.setPointerCapture(e.pointerId);}catch{}const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,gm=isEditorView();
+canvas.onpointerdown=e=>{if(!state||previewSwitchPending)return;
+ if(actionTargetPicker.request&&e.button===0){
+  e.preventDefault();const p=point(e),x=camera.x+p.x/camera.scale,y=camera.y+p.y/camera.scale;
+  const visible=pointInRenderBounds(state,currentFloorID,x,y);
+  const token=visible?tokenIndex.query(x,y,x,y).reverse().find(t=>t.floorId===currentFloorID&&Math.hypot(x-t.x,y-t.y)<=t.size/2):null;
+  actionTargetPicker.choose(token?.characterInstanceId||'');return;
+ }
+ canvas.focus();try{canvas.setPointerCapture(e.pointerId);}catch{}const p=point(e),wx=camera.x+p.x/camera.scale,wy=camera.y+p.y/camera.scale,gm=isEditorView();
  if(e.button===1){e.preventDefault();drag={type:'pan',px:p.x,py:p.y,x:camera.x,y:camera.y};return;}
  if(gm&&renderBoundsTool&&e.button===0&&!e.altKey){const floor=state.floors?.[currentFloorID];if(!floor)return;if(renderBoundsTool==='rect')drag={type:'renderBoundsRect',floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},current:{x:wx,y:wy},moved:false};else if(renderBoundsTool==='polygon'){const closeRadius=10/camera.scale;if(!renderBoundsDraft)renderBoundsDraft={floorId:currentFloorID,geometryRevision:floor.geometryRevision,points:[{x:wx,y:wy}],cursor:{x:wx,y:wy},invalid:false};else if(renderBoundsDraft.points.length>=3&&Math.hypot(wx-renderBoundsDraft.points[0].x,wy-renderBoundsDraft.points[0].y)<=closeRadius)finishRenderBoundsDraft();else{const last=renderBoundsDraft.points.at(-1);if(Math.hypot(wx-last.x,wy-last.y)>.0005)renderBoundsDraft.points.push({x:wx,y:wy});const polygon=renderBoundsPolygon(renderBoundsDraft.points),n=polygon.outer.length;renderBoundsDraft.invalid=n>=3&&!validRenderBoundsChange(polygon,[n-2,n-1]);}}else if(renderBoundsTool==='edit'&&floor.renderBounds){const hit=renderBoundsHit(floor.renderBounds,wx,wy,camera.scale),original=cloneRenderBounds(floor.renderBounds);if(hit?.part==='vertex'){selectedRenderBoundsVertex=hit.index;drag={type:'renderBoundsEdit',mode:'vertex',vertexIndex:hit.index,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},original,preview:cloneRenderBounds(original),invalid:false,moved:false};}else if(hit?.part==='edge'){selectedRenderBoundsVertex=hit.index+1;original.outer.splice(selectedRenderBoundsVertex,0,{x:wx,y:wy});drag={type:'renderBoundsEdit',mode:'insert',vertexIndex:selectedRenderBoundsVertex,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},original,preview:cloneRenderBounds(original),invalid:false,moved:true};}else if(hit?.part==='polygon'){selectedRenderBoundsVertex=-1;drag={type:'renderBoundsEdit',mode:'move',vertexIndex:-1,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},original,preview:cloneRenderBounds(original),invalid:false,moved:false};}else selectedRenderBoundsVertex=-1;}dirty=true;return;}
  if(gm&&walkableTool&&e.button===0&&!e.altKey){const floor=state.floors?.[currentFloorID];if(!floor)return;if(walkableTool==='add'||walkableTool==='subtract')drag={type:'walkableRect',operation:walkableTool==='add'?'addWalkableRect':'subtractWalkableRect',floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},current:{x:wx,y:wy},moved:false};else{const component=walkableComponentAt(state,currentFloorID,wx,wy);selectedWalkableComponent=component?.id||'';drag=component?{type:'walkableComponent',componentId:component.id,floorId:currentFloorID,geometryRevision:floor.geometryRevision,start:{x:wx,y:wy},dx:0,dy:0,moved:false}:null;}dirty=true;return;}

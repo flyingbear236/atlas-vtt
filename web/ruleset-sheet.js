@@ -20,57 +20,61 @@ export function appendStatFields(card,fields,description,baseInput){
   card.append(list);
 }
 
+// Target selection lives on the scene. The server remains authoritative about
+// which characters / items may actually be selected.
 export class ActionTargetPicker {
   constructor(send,execute){
-    this.send=send;
-    this.execute=execute;
-    this.seq=0;
-    this.dialog=document.createElement('dialog');
-    this.dialog.className='character-action-target';
-    this.dialog.innerHTML='<form><h3></h3><label>Цель<select aria-label="Цель"></select></label><p class="muted" role="status"></p><div class="character-resource-controls"><button type="button" class="subtle">Отмена</button><button type="submit" class="primary">Выполнить</button></div></form>';
-    this.title=this.dialog.querySelector('h3');
-    this.select=this.dialog.querySelector('select');
-    this.status=this.dialog.querySelector('p');
-    this.submit=this.dialog.querySelector('[type=submit]');
-    this.dialog.querySelector('[type=button]').onclick=()=>this.close();
-    this.dialog.addEventListener('close',()=>{
-      if(!this.dialog.open){this.request=null;this.targets=[];}
-    });
-    this.dialog.querySelector('form').onsubmit=event=>{
-      event.preventDefault();
-      if(!this.request||this.submit.disabled)return;
-      const target=this.targets[Number(this.select.value)-1];
-      const action={...this.request.action};
-      if(target)action.target={characterId:target.characterId,...(target.itemId?{itemId:target.itemId}:{})};
-      if(this.execute(this.request.sceneId,action))this.close();
-    };
-    document.body.append(this.dialog);
+    this.send=send;this.execute=execute;this.seq=0;this.request=null;
+    this.targets=[];this.ready=false;this.pendingCharacter='';
+    this.banner=document.createElement('section');
+    this.banner.className='character-action-target-prompt';this.banner.hidden=true;
+    this.banner.setAttribute('role','status');
+    const title=document.createElement('strong');title.textContent='Выберите цель';
+    this.status=document.createElement('small');this.status.textContent='Кликните по персонажу-цели или по карте, если не хотите выбирать цель. Esc — отмена.';
+    this.banner.append(title,this.status);
+    (document.getElementById('stage')||document.body).append(this.banner);
+    document.addEventListener('keydown',event=>{if(event.key==='Escape'&&this.request){event.preventDefault();this.close();}});
   }
 
   open(sceneId,action,title){
-    if(this.dialog.open)return;
+    this.close();
     this.request={type:'actionTargets',sceneId,action,seq:++this.seq};
-    this.targets=[];
-    this.title.textContent=title;
-    this.select.replaceChildren(new Option('Без цели','0'));
-    this.status.textContent='Загрузка целей…';
-    this.submit.disabled=true;
-    this.dialog.showModal();
-    if(!this.send(this.request))this.status.textContent='Нет связи с сервером';
+    this.targets=[];this.ready=false;this.pendingCharacter='';
+    this.status.textContent='Кликните по персонажу-цели или по карте, если не хотите выбирать цель. Esc — отмена.';
+    this.banner.hidden=false;
+    if(!this.send(this.request)){
+      this.close();return false;
+    }
+    return true;
   }
 
   handle(message){
     if(message.type!=='actionTargets')return false;
-    if(!this.dialog.open||message.seq!==this.request?.seq||message.sceneId!==this.request.sceneId)return true;
-    this.targets=message.targets||[];
-    this.targets.forEach((target,index)=>{
-      const suffix=target.itemId?` · ${target.itemId}`:` · #${target.characterId.slice(0,8)}`;
-      this.select.add(new Option(target.name+suffix,String(index+1)));
-    });
-    this.status.textContent=message.error||(this.targets.length?'':'Нет доступных целей');
-    this.submit.disabled=!!message.error;
+    if(!this.request||message.seq!==this.request.seq||message.sceneId!==this.request.sceneId)return true;
+    if(message.error){this.status.textContent=message.error;this.targets=[];return true;}
+    this.ready=true;this.targets=message.targets||[];
+    if(this.pendingCharacter){const character=this.pendingCharacter;this.pendingCharacter='';this.choose(character);}
     return true;
   }
 
-  close(){if(this.dialog.open)this.dialog.close();}
+  // A click on empty map space executes with the optional target omitted.
+  choose(characterId=''){
+    if(!this.request)return false;
+    if(!characterId){
+      if(this.execute(this.request.sceneId,{...this.request.action}))this.close();
+      return true;
+    }
+    if(!this.ready){this.pendingCharacter=characterId;this.status.textContent='Проверяем доступность выбранной цели…';return true;}
+    const matches=this.targets.filter(target=>target.characterId===characterId);
+    if(matches.length!==1){
+      this.status.textContent=matches.length?'У персонажа несколько доступных предметов. Выберите другую цель или пустое место карты.':'Этот персонаж недоступен как цель. Выберите другую цель или пустое место карты.';
+      return true;
+    }
+    const target=matches[0];
+    const action={...this.request.action,target:{characterId:target.characterId,...(target.itemId?{itemId:target.itemId}:{})}};
+    if(this.execute(this.request.sceneId,action))this.close();
+    return true;
+  }
+
+  close(){this.request=null;this.targets=[];this.ready=false;this.pendingCharacter='';this.banner.hidden=true;}
 }

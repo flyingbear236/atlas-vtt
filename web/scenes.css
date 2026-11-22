@@ -711,3 +711,42 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 }
 
 .character-formula-original{display:block;white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0 13px;padding:8px;border:1px solid #496451;border-radius:6px;background:#14211d;color:#c9dec9;font-size:10px}
+
+/* Player actions: one collapsible card per inventory item instance. */
+.sheet-source-actions{display:grid;gap:7px;min-width:0}
+.character-source-item{min-width:0;overflow:hidden;border:1px solid #405950;border-radius:9px;background:#1c2b2d}
+.character-source-heading{display:flex;align-items:center;gap:8px;min-height:48px;background:#263b36;padding:5px 9px}
+#characterPanel .character-source-toggle{min-width:0;flex:1;display:flex;align-items:center;gap:9px;padding:3px 0;border:0;background:none;text-align:left}
+.character-source-icon{flex:0 0 31px;width:31px;height:31px;display:grid;place-items:center;background:#345044;border:1px solid #66836d;border-radius:7px;color:#dbe8c5}
+.character-source-icon svg,.character-source-roll-name svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
+.character-source-name{min-width:0;flex:1;color:#edf3e9;font-size:17px;font-weight:750;line-height:1.24;overflow-wrap:normal;word-break:normal;hyphens:none}
+.character-source-chevron{flex:none;color:#bdd1c2;font-size:19px;line-height:1;transition:transform .15s}
+.character-source-toggle[aria-expanded=false] .character-source-chevron{transform:rotate(-90deg)}
+.character-source-equipped{flex:none;border:1px solid #5c8065;border-radius:6px;background:#365443;color:#daf0ce;font-size:11px;padding:4px 7px;white-space:nowrap}
+.character-source-equipped.off{border-color:#52625a;background:#2a3433;color:#b0c0ba}
+.character-source-body{display:grid;gap:5px;padding:6px}
+#characterPanel .character-source-roll{display:grid;grid-template-columns:minmax(93px,auto) minmax(0,1fr) auto;align-items:center;gap:7px;width:100%;padding:9px;border-radius:7px;border:1px solid #547461;background:#213a33;text-align:left;min-width:0;min-height:48px}
+#characterPanel .character-source-roll:hover{background:#2a4b3b;border-color:#a3c88d}
+#characterPanel .character-source-roll.damage{background:#2b3a30;border-color:#61735b}
+#characterPanel .character-source-roll.damage:hover{background:#3a4c36;border-color:#becb9e}
+.character-source-roll-name{display:flex;align-items:center;gap:5px;min-width:0;color:#e9f2e4;font-size:14px;font-weight:750;overflow-wrap:normal;word-break:normal;hyphens:none}
+.character-source-roll-name svg{width:17px;height:17px;flex:none;color:#b9d9ae}
+.character-source-roll .character-formula{display:flex;flex-wrap:wrap;gap:4px;min-width:0;margin:0}
+.character-source-roll .character-formula-part{min-width:0;max-width:100%;padding:4px 5px;font-size:12px;border-color:#4a695d;background:#152c28;color:#cde2d3;white-space:normal;word-break:normal;overflow-wrap:normal;hyphens:none}
+.character-source-roll .character-formula-part span{min-width:0;white-space:normal;word-break:normal;overflow-wrap:normal;hyphens:none}
+.character-source-roll .character-formula-part strong{font-size:13px;white-space:nowrap}
+.character-source-roll .character-formula-die,.character-source-roll .character-formula-die span{white-space:nowrap;flex-shrink:0}
+.character-source-roll-total{color:#eff5db;font-size:15px;font-weight:800;white-space:nowrap;text-align:right}
+@container (max-width: 420px){
+ #characterPanel .character-source-roll{grid-template-columns:minmax(0,1fr) auto;gap:6px}
+ .character-source-roll .character-formula{grid-column:1 / -1;grid-row:2}
+ .character-source-roll-total{grid-column:2;grid-row:1}
+}
+@container (max-width: 285px){.character-source-equipped{font-size:9px;padding:3px 4px}}
+/* The target prompt is placed over the scene; the canvas remains clickable. */
+#stage .character-action-target-prompt{position:absolute;z-index:19;top:14px;left:50%;transform:translateX(-50%);width:min(440px,calc(100% - 24px));padding:10px 16px;background:#192822f3;border:1px solid #b3c68f;border-radius:12px;box-shadow:0 10px 35px #06120d9c;text-align:center;pointer-events:none}
+#stage .character-action-target-prompt strong{display:block;color:#eff4e7;font-size:18px;font-weight:750}
+#stage .character-action-target-prompt small{display:block;margin-top:4px;color:#bfd1be;font-size:12px;line-height:1.4}
+#stage:has(.character-action-target-prompt:not([hidden])) canvas{cursor:crosshair}
+.dice-total-overlay .dice-overlay-message{font-size:15px;font-weight:650;color:#e9efd8;margin-bottom:5px;white-space:normal;overflow-wrap:normal;word-break:normal}
+.dice-total-overlay .dice-overlay-formula{font-size:18px;line-height:1.45;color:#c5d7c4;white-space:normal;overflow-wrap:normal;word-break:normal}

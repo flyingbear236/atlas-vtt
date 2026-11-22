@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import {strict as assert} from 'node:assert';
-import {DiceAnimator,normalizeDiceCount,normalizeDiceGroups,cycleDiceSides,diceNotation} from './dice.js';
+import {DiceAnimator,normalizeDiceCount,normalizeDiceGroups,cycleDiceSides,diceNotation,numericRollFormula} from './dice.js';
 
 test('manual selector retains supported sides and count boundaries',()=>{
   assert.deepEqual([4,6,8,10,12,20].map(side=>cycleDiceSides(side)),[6,8,10,12,20,4]);
@@ -56,4 +56,13 @@ test('invalid and incomplete manual formulas are rejected without evaluation',as
   }
   assert.equal(parseDiceFormula('3d6 + 2').modifier,2);
   assert.equal(parseDiceFormula('100d20 + 0').groups[0].count,100);
+});
+
+test('action overlay uses named-free numeric roll components when they match the executed outcome',()=>{
+ const event={actionExecution:true,groups:[{count:1,sides:20,results:[12]}],total:26};
+ const preview={parts:[{label:'1d20',sign:'+'},{label:'Ловкость · бонус',value:'7',sign:'+'},{label:'Кольцо воды',value:'7',sign:'+'}]};
+ assert.equal(numericRollFormula(event,preview),'d20 + 7 + 7');
+ assert.equal(numericRollFormula({...event,total:27},preview),'d20 + 15');
+ assert.equal(numericRollFormula(event,{...preview,notes:['Цель не выбрана']}),'d20 + 14');
+ assert.equal(numericRollFormula({groups:[{count:1,sides:20,results:[12]}],total:15,modifier:3}),'d20 + 3');
 });
