@@ -1,5 +1,6 @@
 import {loadLayout,saveLayout,buildSheet,moveEntry,normalizeLayout} from './character-sheet-layout.js';
 import {groupSheetActionSources,shortActionFormula} from './action-groups.js';
+import {itemActionsForInventory,nestInventoryFields} from './inventory-presentation.js';
 import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
 import {drawTokens,shortCharacterID} from './token-renderer.js';
 import {Outbox, Drafts, CacheWriteBudget,blockedMoveCorrection,sameValue} from './reliability.js';
@@ -830,22 +831,117 @@ function characterInspectorFrame(title,subtitle){
  close.onclick=()=>{characterBrowseOpen=false;detail.closest('.character-table-browser')?.classList.remove('detail-open');};
  head.append(label,close);detail.append(head);return detail;
 }
+const inventoryDrawer=document.createElement('aside');
+inventoryDrawer.className='character-item-drawer';inventoryDrawer.hidden=true;
+inventoryDrawer.setAttribute('aria-label','Просмотр предмета');
+document.body.append(inventoryDrawer);
+function closeInventoryDrawer(){
+ characterBrowseOpen=false;inventoryDrawer.hidden=true;inventoryDrawer.style.transform='';
+}
+function positionInventoryDrawer(){
+ const panel=characterPanel.closest('.inspector')||characterPanel,rect=panel.getBoundingClientRect();
+ const left=Math.max(8,rect.left+6);
+ const width=Math.max(0,Math.min(rect.width-12,window.innerWidth-left-8));
+ if(!width){closeInventoryDrawer();return;}
+ inventoryDrawer.style.left=`${left}px`;inventoryDrawer.style.width=`${width}px`;
+ inventoryDrawer.style.bottom=`${Math.max(8,window.innerHeight-Math.min(rect.bottom,window.innerHeight)+8)}px`;
+ inventoryDrawer.style.maxHeight=`${Math.max(180,Math.min(570,rect.height*0.74,window.innerHeight-24))}px`;
+}
+window.addEventListener('resize',()=>{if(!inventoryDrawer.hidden)positionInventoryDrawer();});
+ if(typeof ResizeObserver==='function')new ResizeObserver(()=>{if(!inventoryDrawer.hidden)positionInventoryDrawer();}).observe(characterPanel.closest('.inspector')||characterPanel);
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inventoryDrawer.hidden)closeInventoryDrawer();});
+document.addEventListener('pointerdown',event=>{
+ if(!inventoryDrawer.hidden&&!inventoryDrawer.contains(event.target)&&!event.target.closest('#characterInventoryBrowse'))closeInventoryDrawer();
+});
+function inventoryFieldLabel(name){
+ const aliases={state:'Состояние',notes:'Заметки'};
+ const text=aliases[name]||String(name).replaceAll('_',' ');
+ return text.charAt(0).toLocaleUpperCase('ru')+text.slice(1);
+}
+function renderInventoryFieldTree(container,tree){
+ for(const field of tree.fields){
+  const row=document.createElement('div');row.className='character-item-field';
+  const label=document.createElement('span');label.textContent=inventoryFieldLabel(field.name);
+  const value=document.createElement('strong');value.textContent=field.value;
+  row.append(label,value);container.append(row);
+ }
+ for(const group of tree.groups.values()){
+  const fold=document.createElement('details');fold.className='character-item-field-group';fold.open=true;
+  const head=document.createElement('summary');head.textContent=inventoryFieldLabel(group.name);fold.append(head);
+  const content=document.createElement('div');content.className='character-item-field-contents';
+  renderInventoryFieldTree(content,group);fold.append(content);container.append(fold);
+ }
+}
+function bindInventoryDrawerSwipe(surface){
+ let startY=null,dragId=null;
+ surface.addEventListener('pointerdown',event=>{
+  if(event.button!==0||startY!==null||event.target.closest('button'))return;
+  startY=event.clientY;dragId=event.pointerId;surface.setPointerCapture(event.pointerId);
+  inventoryDrawer.classList.add('dragging');
+ });
+ surface.addEventListener('pointermove',event=>{
+  if(event.pointerId!==dragId||startY===null)return;
+  inventoryDrawer.style.transform=`translateY(${Math.max(0,event.clientY-startY)}px)`;
+ });
+ const finish=event=>{
+  if(event.pointerId!==dragId||startY===null)return;
+  const distance=Math.max(0,event.clientY-startY);startY=null;dragId=null;
+  inventoryDrawer.classList.remove('dragging');
+  if(distance>=85)closeInventoryDrawer();else inventoryDrawer.style.transform='';
+ };
+ surface.addEventListener('pointerup',finish);surface.addEventListener('pointercancel',finish);
+}
+function makeInventoryDrawerHandle(){
+ const handle=document.createElement('div');handle.className='character-item-drawer-handle';
+ handle.setAttribute('aria-label','Потяните вниз, чтобы закрыть карточку');
+ const bar=document.createElement('span');handle.append(bar);bindInventoryDrawerSwipe(handle);
+ return handle;
+}
+
 function characterSelectInventory(snapshot,id,open=true){
  characterBrowseItem=id;characterBrowseOpen=open;
- const item=(snapshot.instance.inventory||[]).find(item=>item.id===id),detail=characterInspectorFrame(item?snapshot.itemNames?.[item.id]||item.objectId:'Предмет','Инвентарь');
- if(!detail)return;
- detail.closest('.character-table-browser')?.classList.toggle('detail-open',open);
  for(const row of $('characterInventoryBrowse')?.querySelectorAll('.character-table-row[data-inventory-id]')||[])row.setAttribute('aria-selected',String(row.dataset.inventoryId===id));
- if(!item){detail.append(document.createTextNode('Выберите предмет в таблице.'));return;}
- const picture=document.createElement('div');picture.className='character-table-art';picture.append(characterBrowserIcon());
- const noArt=document.createElement('small');noArt.textContent='Изображение предмета не задано';picture.append(noArt);detail.append(picture);
- const info=document.createElement('dl');info.className='character-table-properties';
- for(const [key,value] of [['Тип объекта',item.objectId],['Экземпляр',item.id],['Экипировка',item.equipped?'Экипирован':'Не экипирован']]){
-  const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=key;dd.textContent=value;info.append(dt,dd);
+ if(!open){closeInventoryDrawer();return;}
+ const item=(snapshot.instance.inventory||[]).find(item=>item.id===id);
+ if(!item){closeInventoryDrawer();return;}
+ const lastScroll=inventoryDrawer.hidden?0:inventoryDrawer.scrollTop;
+ inventoryDrawer.replaceChildren(makeInventoryDrawerHandle());
+ const top=document.createElement('div');top.className='character-item-drawer-top';
+ const title=document.createElement('strong');title.textContent=snapshot.itemNames?.[item.id]||item.objectId;
+ const close=document.createElement('button');close.type='button';close.className='subtle character-item-drawer-close';close.textContent='×';close.setAttribute('aria-label','Закрыть карточку');close.onclick=closeInventoryDrawer;
+ top.append(title,close);bindInventoryDrawerSwipe(top);inventoryDrawer.append(top);
+ const intro=document.createElement('div');intro.className='character-item-intro';
+ const art=document.createElement('div');art.className='character-item-square-art';art.append(characterBrowserIcon());
+ const noArt=document.createElement('small');noArt.textContent='Нет артворка';art.append(noArt);
+ const about=document.createElement('div');about.className='character-item-about';
+ const equipped=document.createElement('button');equipped.type='button';equipped.className='character-source-equipped'+(item.equipped?'':' off');equipped.textContent=item.equipped?'Экипирован':'Не экипирован';equipped.title='Изменить экипировку';
+ const pending=outbox?.data.queue.some(cmd=>cmd.type==='characterItemEquip'&&cmd.characterId===snapshot.characterId&&cmd.itemId===item.id);
+ equipped.disabled=!!pending||!snapshot.permissions?.edit||!!characterEditSession||state?.playerPreview;
+ equipped.onclick=()=>{if(queueCommand('characterItemEquip',{characterId:snapshot.characterId,itemId:item.id,equipped:!item.equipped}))equipped.disabled=true;};about.append(equipped);
+ const description=document.createElement('p');description.textContent=snapshot.itemDetails?.[item.id]?.description||'Описание предмета не задано.';about.append(description);
+ intro.append(art,about);inventoryDrawer.append(intro);
+ const fields=snapshot.itemDetails?.[item.id]?.fields||[];
+ if(fields.length){const heading=document.createElement('h3');heading.textContent='Свойства';inventoryDrawer.append(heading);
+  const group=document.createElement('div');group.className='character-item-properties';renderInventoryFieldTree(group,nestInventoryFields(fields));inventoryDrawer.append(group);}
+ const choices=itemActionsForInventory(snapshot,item.id);
+ if(choices.length){
+  const heading=document.createElement('h3');heading.textContent='Действия предмета';inventoryDrawer.append(heading);
+  const actions=document.createElement('div');actions.className='character-item-actions';
+  for(const choice of choices){
+   const action=snapshot.actions?.[choice.actionId],preview=(snapshot.actionPreviews||[]).find(p=>p.actionId===choice.actionId&&(p.sourceId||'')===item.id);
+   const button=document.createElement('button');button.type='button';button.className='character-source-roll'+(choice.actionId.endsWith('.damage')?' damage':'');
+   button.disabled=!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||!!characterEditSession;
+   const name=document.createElement('strong');name.className='character-source-roll-name';name.innerHTML=actionDiceSvg;name.append(document.createTextNode(action?.name||choice.actionId));button.append(name);
+   const formula=renderActionFormula(preview,true);if(!item.equipped&&!preview)formula.textContent='Доступно после экипировки';button.append(formula);
+   const total=shortActionFormula(preview);if(total){const sum=document.createElement('strong');sum.className='character-source-roll-total';sum.textContent=total;button.append(sum);}
+   button.onclick=()=>executeRulesetActionChoice(snapshot,choice);actions.append(button);
+  }
+  inventoryDrawer.append(actions);
+  if(!item.equipped){const note=document.createElement('p');note.className='character-item-hint';note.textContent='Экипируйте предмет, чтобы использовать его действия.';inventoryDrawer.append(note);}
  }
- detail.append(info);
- const tip=document.createElement('p');tip.className='muted';tip.textContent='Описание и артворк появятся здесь после подключения публичных данных определения предмета.';detail.append(tip);
+ inventoryDrawer.hidden=false;inventoryDrawer.style.transform='';positionInventoryDrawer();inventoryDrawer.scrollTop=lastScroll;
 }
+
 function updateInventoryVisibility(){
  const host=$('characterInventoryBrowse');if(!host)return;
  let matches=0;
@@ -1178,6 +1274,44 @@ $('characterAddToggle').onclick=()=>{if(!characterEditSession)return;$('characte
 window.addEventListener('beforeunload',event=>{if(characterEditSession&&!characterEditSession.saving){event.preventDefault();event.returnValue='';}});
 
 let sheetEdit=false,sheetScope='',sheetLayout=null,sheetDrag=null,sheetDropMarker=null;
+let selectedActionSectionID='',sheetTabScroll=0,actionSectionScroll=0;
+const registeredSheetTabs=new WeakSet();
+// Wheel and mouse-drag scrolling for overflowing sheet tabs. Native touch
+// scrolling remains available; editing mode preserves HTML drag-and-drop.
+function horizontalSheetTabs(host,kind,allowDrag){
+ const current=()=>kind==='main'?sheetTabScroll:actionSectionScroll;
+ const remember=()=>{if(kind==='main')sheetTabScroll=host.scrollLeft;else actionSectionScroll=host.scrollLeft;};
+ host.scrollLeft=current();
+ if(registeredSheetTabs.has(host))return;
+ registeredSheetTabs.add(host);host.addEventListener('scroll',remember,{passive:true});
+ host.addEventListener('wheel',event=>{
+  if(host.scrollWidth<=host.clientWidth||Math.abs(event.deltaY)<Math.abs(event.deltaX))return;
+  const before=host.scrollLeft;host.scrollLeft+=event.deltaY;
+  if(host.scrollLeft!==before){event.preventDefault();remember();}
+ },{passive:false});
+ let drag=null,suppressClick=false;
+ host.addEventListener('pointerdown',event=>{
+  if(!allowDrag&&kind!=='main'||kind==='main'&&sheetEdit||event.pointerType!=='mouse'||event.button!==0||host.scrollWidth<=host.clientWidth)return;
+  drag={id:event.pointerId,startX:event.clientX,initial:host.scrollLeft,moved:false};
+  const target=event.target.closest('button')||host;target.setPointerCapture?.(event.pointerId);
+ });
+ host.addEventListener('pointermove',event=>{
+  if(!drag||event.pointerId!==drag.id)return;
+  const distance=event.clientX-drag.startX;
+  if(!drag.moved&&Math.abs(distance)>5){drag.moved=true;host.classList.add('is-dragging');}
+  if(drag.moved){host.scrollLeft=drag.initial-distance;remember();event.preventDefault();}
+ });
+ const end=event=>{
+  if(!drag||event.pointerId!==drag.id)return;
+  if(drag.moved){suppressClick=true;setTimeout(()=>{suppressClick=false;},0);}
+  drag=null;host.classList.remove('is-dragging');
+ };
+ host.addEventListener('pointerup',end);host.addEventListener('pointercancel',end);
+ host.addEventListener('click',event=>{
+  if(suppressClick){event.preventDefault();event.stopImmediatePropagation();suppressClick=false;}
+ },true);
+}
+
 const sheetSessionFingerprint=value=>{let hash=2166136261;for(const char of String(value||'')){hash=Math.imul(hash^char.charCodeAt(0),16777619);}return (hash>>>0).toString(16);};
 const sheetSavedScope=()=>{
  // The browser profile owns these preferences; campaign scope is a safe fallback.
@@ -1239,8 +1373,8 @@ function finishSheetDrop(tab,section){
  sheetMutate(layout=>{ensureSheetSection(layout,tab,section);return moveEntry(layout,key,tab.id,section.id,before);});
 }
 function renderSheetLayout(snapshot){
- if(characterBrowseID!==snapshot.characterId){characterBrowseID=snapshot.characterId;characterBrowseAction='';characterBrowseItem='';characterBrowseOpen=false;characterInventoryQuery='';characterInventoryFilter='all';}
- const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';}
+ if(characterBrowseID!==snapshot.characterId){characterBrowseID=snapshot.characterId;characterBrowseAction='';characterBrowseItem='';closeInventoryDrawer();characterInventoryQuery='';characterInventoryFilter='all';selectedActionSectionID='';actionSectionScroll=0;}
+ const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';selectedActionSectionID='';sheetTabScroll=0;actionSectionScroll=0;}
  const entries=sheetEntryList(snapshot);
  const full=buildSheet(sheetLayout,entries);
  if(characterEditSession){for(const {key,tab} of characterEditSession.places){for(const t of full.tabs)for(const section of t.sections)section.items=section.items.filter(x=>x!==key);let target=full.tabs.find(t=>t.id===tab);if(!target)continue;let group=target.sections.find(x=>x.id===`user:added:${tab}`);if(!group){group={id:`user:added:${tab}`,name:'Добавлено',view:'grid',collapsed:false,items:[]};target.sections.push(group);}group.items.push(key);}}
@@ -1249,17 +1383,19 @@ function renderSheetLayout(snapshot){
  tabs.replaceChildren();body.replaceChildren();
  if(!full.tabs.some(tab=>tab.id===characterActiveTab))characterActiveTab='stats';
  for(const tab of full.tabs){
-  const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;characterBrowseOpen=false;renderCharacterPanel();};
+  const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;closeInventoryDrawer();renderCharacterPanel();};
   if(sheetEdit){button.draggable=true;button.ondragend=clearSheetDrag;button.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};button.ondragover=event=>event.preventDefault();button.ondrop=event=>{event.preventDefault();sheetDropMarker?.remove();sheetDropMarker=null;if(sheetDrag?.kind==='item')sheetMutate(layout=>{const t=layout.tabs.find(t=>t.id===tab.id);let bucket=t.sections.find(s=>s.id===`user:drop:${tab.id}`);if(!bucket){bucket={id:`user:drop:${tab.id}`,name:'Перемещённые',view:'list',collapsed:false,items:[]};t.sections.push(bucket);}characterActiveTab=tab.id;return moveEntry(layout,sheetDrag.key,tab.id,bucket.id);});else if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===sheetDrag.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});else if(sheetDrag?.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===sheetDrag.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});};button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions','inventory'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
   tabs.append(button);
  }
+ horizontalSheetTabs(tabs,'main',!sheetEdit);
  if(sheetEdit){const add=document.createElement('button');add.type='button';add.textContent='+';add.title='Новая вкладка';add.onclick=()=>{const name=prompt('Название новой вкладки');if(name?.trim())sheetMutate(layout=>{const id=`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;layout.tabs.push({id,name:name.trim().slice(0,120),sections:[]});characterActiveTab=id;return layout;});};tabs.append(add);}
  const selected=full.tabs.find(t=>t.id===characterActiveTab);
  if(!selected)return;
+ if(selected.id!=='inventory'&&!inventoryDrawer.hidden)closeInventoryDrawer();
   const actionInTab=selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')));
   const legacyActionInTab=actionInTab&&selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')&&!snapshot.actions?.[key.slice(7)]?.v04));
   const sourceGroups=!sheetEdit&&!characterEditSession?groupSheetActionSources(snapshot,selected.sections):null;
-  const useBrowser=!sheetEdit&&(selected.id==='inventory'||legacyActionInTab);
+  const useBrowser=!sheetEdit&&legacyActionInTab;
   const browser=useBrowser?document.createElement('div'):null;
   const sheetMain=useBrowser?document.createElement('div'):body;
   if(browser){browser.className='character-table-browser';sheetMain.className='character-table-main';browser.append(sheetMain);const detail=document.createElement('aside');detail.className='character-table-detail';detail.id='characterTableInspector';browser.append(detail);body.append(browser);}
@@ -1268,12 +1404,26 @@ function renderSheetLayout(snapshot){
    const title=document.createElement('h3');title.textContent='Инвентарь';section.append(title);
    const browse=document.createElement('div');browse.id='characterInventoryBrowse';section.append(browse);sheetMain.append(section);
   }
+ // In normal play action sections become a separate horizontal tab strip.
+ const sectionTabsActive=selected.id==='actions'&&!sheetEdit;
+ let visibleSections=selected.sections;
+ if(sectionTabsActive){
+  visibleSections=selected.sections.filter(section=>section.items.some(key=>!sourceGroups?.handled.has(key)||sourceGroups.byEntry.has(key)));
+  if(!visibleSections.some(section=>section.id===selectedActionSectionID))selectedActionSectionID=visibleSections[0]?.id||'';
+  const nav=document.createElement('nav');nav.className='character-action-section-tabs';nav.setAttribute('role','tablist');nav.setAttribute('aria-label','Группы действий');
+  for(const section of visibleSections){
+   const button=document.createElement('button');button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(section.id===selectedActionSectionID));button.textContent=section.name;
+   button.onclick=()=>{selectedActionSectionID=section.id;renderCharacterPanel();};nav.append(button);
+  }
+  body.prepend(nav);horizontalSheetTabs(nav,'sections',true);
+  visibleSections=visibleSections.filter(section=>section.id===selectedActionSectionID);
+ }
  if(sheetEdit){const toolbar=document.createElement('div');toolbar.className='sheet-edit-toolbar';const add=document.createElement('button');add.type='button';add.textContent='+ Раздел';add.onclick=()=>{const name=prompt('Название раздела');if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===selected.id).sections.push({id:`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`,name:name.trim().slice(0,120),view:'list',collapsed:false,items:[]});return layout;});};toolbar.append(add);const hidden=entries.filter(entry=>sheetLayout.hidden.includes(entry.key));if(hidden.length){const restore=document.createElement('button');restore.type='button';restore.textContent=`Скрытые (${hidden.length})`;restore.onclick=()=>{const answer=prompt(hidden.map((entry,i)=>`${i+1}. ${entry.name}`).join('\n'));const entry=hidden[Number(answer)-1];if(entry)sheetMutate(layout=>{layout.hidden=layout.hidden.filter(item=>item!==entry.key);return layout;});};toolbar.append(restore);}body.append(toolbar);}
- for(const section of selected.sections){
+ for(const section of visibleSections){
   const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
   const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
   if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
-  wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
+  if(!sectionTabsActive)wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=sectionTabsActive?false:section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
   if(sheetEdit){
    listing.ondragover=event=>previewSheetDrop(event,listing);
    listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
@@ -1307,7 +1457,7 @@ function renderCharacterPanel(){
  const loading=!!linkedID&&!ready&&(characterWatchReason==='pending'||characterWatchReason==='replaced'),retainDisplayed=!!token&&loading&&!!characterDisplayedID&&!$('characterSummary').hidden,deferInitial=!!token&&loading&&!characterDisplayedID;
  characterPanel.hidden=!token||deferInitial;
  characterPanel.inert=retainDisplayed;if(retainDisplayed)characterPanel.setAttribute('aria-busy','true');else characterPanel.removeAttribute('aria-busy');
- if(!token){if(characterEditSession)releaseEditSession();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
+ if(!token){closeInventoryDrawer();if(characterEditSession)releaseEditSession();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
  if(retainDisplayed||deferInitial)return;
  if(characterDisplayedID!==linkedID){if(characterEditSession)releaseEditSession();characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';sheetEdit=false;$('characterMechanicsSection').open=false;}
  characterPanel.dataset.characterId=linkedID;

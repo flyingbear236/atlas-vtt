@@ -1,6 +1,11 @@
 package main
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+)
 
 type statFieldsView struct {
 	Description string          `json:"description,omitempty"`
@@ -48,30 +53,97 @@ func statFieldsForSheet(registry EffectiveRegistry, character EffectiveCharacter
 	return fields
 }
 
+// Inventory properties are flattened for the sheet. Only the owning character
+// receives this snapshot; rule mechanics and source IDs remain unchanged.
+type inventorySheetField struct {
+	Path  []string `json:"path"`
+	Value string   `json:"value"`
+}
+type inventorySheetDetail struct {
+	Description string                `json:"description,omitempty"`
+	Fields      []inventorySheetField `json:"fields,omitempty"`
+}
+
+func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem) map[string]inventorySheetDetail {
+	if len(items) == 0 {
+		return nil
+	}
+	result := make(map[string]inventorySheetDetail, len(items))
+	for _, item := range items {
+		object := registry.Objects[item.ObjectID]
+		if object == nil {
+			continue
+		}
+		detail := inventorySheetDetail{}
+		detail.Description, _ = object.values["description"].(string)
+		if len(detail.Description) > 2048 {
+			detail.Description = strings.ToValidUTF8(detail.Description[:2048], "�")
+		}
+		fields := registry.itemBindings(item)
+		for _, key := range []string{"id", "object", "equipped", "name", "description", "actions", "effects"} {
+			delete(fields, key)
+		}
+		var walk func(map[string]any, []string)
+		walk = func(m map[string]any, path []string) {
+			if len(detail.Fields) >= 96 || len(path) > 5 {
+				return
+			}
+			keys := make([]string, 0, len(m))
+			for key := range m {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				if len(detail.Fields) >= 96 {
+					break
+				}
+				next := append(append([]string(nil), path...), key)
+				if child, ok := m[key].(map[string]any); ok {
+					if len(next) <= 5 {
+						walk(child, next)
+					}
+					continue
+				}
+				value := fmt.Sprint(m[key])
+				value = strings.ToValidUTF8(value, "�")
+				if len(value) > 240 {
+					value = value[:240]
+					value = strings.ToValidUTF8(value, "�")
+				}
+				detail.Fields = append(detail.Fields, inventorySheetField{Path: next, Value: value})
+			}
+		}
+		walk(fields, nil)
+		result[item.ID] = detail
+	}
+	return result
+}
+
 type characterPermissions struct {
 	Edit   bool `json:"edit"`
 	Manage bool `json:"manage"`
 }
 
 type characterSnapshot struct {
-	ActionSelectors       map[string]string           `json:"actionSelectors,omitempty"`
-	ActionGroups          map[string]string           `json:"actionGroups,omitempty"`
-	ActionPreviews        []ActionPreview             `json:"actionPreviews,omitempty"`
-	InactiveActionSources []ActionSource              `json:"inactiveActionSources,omitempty"`
-	ItemNames             map[string]string           `json:"itemNames,omitempty"`
-	StatFields            map[string]statFieldsView   `json:"statFields,omitempty"`
-	ExecutionID           string                      `json:"executionId,omitempty"`
-	Type                  string                      `json:"type"`
-	CharacterWatch        uint64                      `json:"characterWatch"`
-	CharacterID           string                      `json:"characterId"`
-	Revision              uint64                      `json:"revision"`
-	RegistryRevision      uint64                      `json:"registryRevision"`
-	Instance              CharacterInstance           `json:"instance"`
-	Preset                *CharacterPresetDefinition  `json:"preset,omitempty"`
-	Effective             EffectiveCharacter          `json:"effective"`
-	StatDefinitions       map[string]StatDefinition   `json:"statDefinitions"`
-	Actions               map[string]ActionDefinition `json:"actions"`
-	Permissions           characterPermissions        `json:"permissions"`
+	ActionSelectors       map[string]string               `json:"actionSelectors,omitempty"`
+	ActionGroups          map[string]string               `json:"actionGroups,omitempty"`
+	ActionPreviews        []ActionPreview                 `json:"actionPreviews,omitempty"`
+	InactiveActionSources []ActionSource                  `json:"inactiveActionSources,omitempty"`
+	ItemNames             map[string]string               `json:"itemNames,omitempty"`
+	ItemDetails           map[string]inventorySheetDetail `json:"itemDetails,omitempty"`
+	StatFields            map[string]statFieldsView       `json:"statFields,omitempty"`
+	ExecutionID           string                          `json:"executionId,omitempty"`
+	Type                  string                          `json:"type"`
+	CharacterWatch        uint64                          `json:"characterWatch"`
+	CharacterID           string                          `json:"characterId"`
+	Revision              uint64                          `json:"revision"`
+	RegistryRevision      uint64                          `json:"registryRevision"`
+	Instance              CharacterInstance               `json:"instance"`
+	Preset                *CharacterPresetDefinition      `json:"preset,omitempty"`
+	Effective             EffectiveCharacter              `json:"effective"`
+	StatDefinitions       map[string]StatDefinition       `json:"statDefinitions"`
+	Actions               map[string]ActionDefinition     `json:"actions"`
+	Permissions           characterPermissions            `json:"permissions"`
 }
 
 func characterSnapshotForMember(session *Session, member *Member, characterID string, watch uint64) (characterSnapshot, error) {
@@ -168,6 +240,7 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	}
 	return characterSnapshot{
 		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
+		ItemDetails:           inventoryDetailsForSheet(registry, instance.Inventory),
 		ActionPreviews:        actionPreviewsForSheet(session.Ruleset, instance, effective, registry),
 		InactiveActionSources: inactiveSources,
 		StatFields:            statFieldsForSheet(registry, effective),
