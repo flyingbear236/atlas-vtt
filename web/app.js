@@ -11,6 +11,7 @@ import {constrainTokenMovement} from './movement-geometry.js';
 import {CharacterCatalog,CharacterWatch,statInputValue,statValueFromInput,actionDependencies} from './characters.js';
 import {DefinitionsEditor} from './definitions.js';
 import {ActionTargetPicker,displayRulesetValue} from './ruleset-sheet.js';
+import {collectStatDependencies,catalogDefinitionFields,catalogDerivedFields,catalogActionRules,catalogActionEntries,catalogActionSource,catalogFullPath,catalogParentPath} from './stat-catalog.js';
 import {ActionVisualGate} from './action-visual-gate.js';
 import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
@@ -32,16 +33,17 @@ characterPanel.innerHTML=`
       <div class="character-avatar"><img id="characterAvatar" alt="" hidden><span id="characterAvatarEmpty">◇</span></div>
       <div class="character-head-text"><h2 id="characterName"></h2><p id="characterSubtitle" class="muted"></p></div>
       <div class="character-head-tools">
-        <button id="characterLayoutToggle" type="button" class="subtle character-tool" title="Настроить раскладку" aria-label="Настроить раскладку">☷</button>
-        <button id="characterMechanicsToggle" type="button" class="subtle character-tool" title="Редактировать персонажа" aria-label="Редактировать персонажа" aria-expanded="false">✎</button>
-        <button id="characterSettingsToggle" type="button" class="subtle character-tool" title="Настройки персонажа" aria-label="Настройки персонажа" aria-expanded="false">⚙</button>
+        <button id="characterLayoutToggle" type="button" class="subtle character-tool" hidden aria-hidden="true" tabindex="-1">☷</button>
+        <button id="characterMechanicsToggle" type="button" class="subtle character-tool" title="Настроить персонажа" aria-label="Настроить персонажа" aria-expanded="false">✎</button>
+        <button id="characterSettingsToggle" type="button" class="subtle character-tool" hidden title="Настройки персонажа" aria-label="Настройки персонажа" aria-expanded="false">⚙</button>
       </div>
     </div>
+    <p id="characterLayoutHint" class="character-layout-hint" hidden></p>
     <div id="characterEditHeader" class="character-edit-header" hidden>
       <div id="characterEditIdentity" class="character-edit-identity"></div>
-      <div class="character-edit-footer"><span id="characterEditFeedback" role="status" class="muted"></span><button type="button" id="characterEditCancel" class="subtle">Отмена</button><button type="button" id="characterEditSave" class="primary">Сохранить</button></div>
+      <div class="character-edit-footer"><span id="characterEditFeedback" role="status" class="muted"></span><button type="button" id="characterTokenOptions" class="subtle" hidden>Токен</button><button type="button" id="characterEditCancel" class="subtle">Выход</button><button type="button" id="characterEditSave" class="primary">Сохранить</button></div>
     </div>
-    <div id="characterAddToolbar" class="character-add-toolbar" hidden><button id="characterAddToggle" type="button" class="subtle">＋ Добавить</button><span class="muted">В текущую вкладку</span></div>
+    <div id="characterAddToolbar" class="character-add-toolbar" hidden><button id="characterAddToggle" type="button" class="subtle">＋ Добавить</button><span class="muted">Статы и действия</span></div>
     <section id="characterAddPopover" class="character-add-popover" hidden><div id="characterAddActionRow"></div></section>
     <div id="characterLayoutTabs" class="character-tabs character-layout-tabs" role="tablist"></div>
     <div id="characterLayoutContent"></div>
@@ -102,6 +104,20 @@ $('characterSettingsPanel').prepend($('properties'));
 $('characterHeadNameSlot')?.remove();
 const characterNameRow=$('characterRenameRow');
 $('characterName').after(characterNameRow);
+const sheetHint=$('characterLayoutHint');
+const sheetHintPanel=document.createElement('aside');sheetHintPanel.className='character-sheet-hint-panel';sheetHintPanel.hidden=true;
+const sheetHintHead=document.createElement('div');sheetHintHead.className='character-sheet-hint-head';
+const sheetHintTitle=document.createElement('strong');sheetHintTitle.textContent='Настройка чарлиста';
+const sheetHintClose=document.createElement('button');sheetHintClose.type='button';sheetHintClose.className='character-sheet-hint-close';sheetHintClose.textContent='×';sheetHintClose.title='Закрыть подсказку';sheetHintClose.setAttribute('aria-label','Закрыть подсказку');
+sheetHintHead.append(sheetHintTitle,sheetHintClose);
+const sheetHintDismiss=document.createElement('button');sheetHintDismiss.type='button';sheetHintDismiss.className='character-sheet-hint-dismiss';sheetHintDismiss.textContent='Больше не показывать';
+sheetHintPanel.append(sheetHintHead,sheetHint,sheetHintDismiss);$('stage').append(sheetHintPanel);
+const SHEET_HINT_KEY='atlas-character-edit-hint-hidden:v1';
+let sheetHintDismissed=false;
+try{sheetHintDismissed=localStorage.getItem(SHEET_HINT_KEY)==='1';}catch{}
+let sheetHintClosed=false;
+sheetHintClose.onclick=()=>{sheetHintClosed=true;sheetHintPanel.hidden=true;};
+sheetHintDismiss.onclick=()=>{sheetHintDismissed=true;sheetHintPanel.hidden=true;try{localStorage.setItem(SHEET_HINT_KEY,'1');}catch{}};
 const characterAvatarFrame=$('characterAvatar').closest('.character-avatar');
 const characterAvatarWrap=document.createElement('div');characterAvatarWrap.className='character-avatar-wrap';
 characterAvatarFrame.before(characterAvatarWrap);characterAvatarWrap.append(characterAvatarFrame);
@@ -109,8 +125,8 @@ const characterAvatarClear=document.createElement('button');characterAvatarClear
 const characterAvatarRestore=document.createElement('button');characterAvatarRestore.type='button';characterAvatarRestore.className='character-avatar-restore';characterAvatarRestore.textContent='Сбросить';characterAvatarRestore.title='Вернуть аватар из пресета персонажа';
 characterAvatarWrap.append(characterAvatarClear,characterAvatarRestore);
 characterAvatarFrame.tabIndex=0;characterAvatarFrame.title='Нажмите, чтобы выбрать аватар в галерее';
-characterAvatarFrame.onclick=()=>{if(characterEditSession)openCharacterAvatarGallery();};
-characterAvatarFrame.onkeydown=e=>{if(characterEditSession&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openCharacterAvatarGallery();}};
+characterAvatarFrame.onclick=()=>{if(characterEditSession||playerCharacterDraft)openCharacterAvatarGallery();};
+characterAvatarFrame.onkeydown=e=>{if((characterEditSession||playerCharacterDraft)&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openCharacterAvatarGallery();}};
 characterAvatarClear.onclick=()=>{$('characterAvatarPlaceholder').click();};
 characterAvatarRestore.onclick=()=>{$('characterAvatarReset').click();};
 $('characterEditIdentity').hidden=true;
@@ -173,7 +189,7 @@ function initOutbox(){
       else if(cmd.type==='elementUpdate'){elementDrafts.confirm(cmd.element.id,cmd.elementProperties);if(cmd.sceneId===state?.scene?.id)fillElementProperties();}
       else if(cmd.type==='elementTransform'){elementDrafts.confirm(cmd.element.id,cmd.element.transform);if(cmd.sceneId===state?.scene?.id)fillElementProperties();}
       else if(cmd.type==='transitionUpdate'){transitionPropertyDrafts.confirm(cmd.transition.id,{name:cmd.transition.name});if(cmd.sceneId===state?.scene?.id)fillTransitionProperties();}
-      else if(cmd.type==='characterEdit'){const d=characterEditSession;if(d?.characterId===cmd.characterId){releaseEditSession();applyEditPlacements(d);renderCharacterPanel();}}
+      else if(cmd.type==='characterEdit'){const d=characterEditSession;if(d?.characterId===cmd.characterId){releaseEditSession();sheetEdit=false;applyEditPlacements(d);renderCharacterPanel();}}
       else if(cmd.type==='characterStatSet'){
         characterDrafts.confirm(cmd.characterId,{[cmd.statId]:cmd.statValue});
         const key=`${cmd.characterId}/${cmd.statId}`;if(pendingNewStats.delete(key))toast(`Создана характеристика ${cmd.statId} в кампании`);
@@ -743,7 +759,7 @@ function onCharacterWatchChange(snapshot,reason,characterID){if(snapshot&&charac
 function avatarPath(assetID){const query=new URLSearchParams({session:credentials.session});return `/api/asset/${encodeURIComponent(assetID)}/avatar.png?${query}`;}
 async function showCharacterAvatar(assetID,characterID){
  if(assetID===characterAvatarAsset)return;if(characterAvatarDisplayController)characterAvatarDisplayController.abort();characterAvatarDisplayController=null;if(characterAvatarURL)URL.revokeObjectURL(characterAvatarURL);characterAvatarURL='';characterAvatarAsset=assetID||'';$('characterAvatar').hidden=true;$('characterAvatarEmpty').hidden=false;characterAvatarClear.hidden=true;if(!assetID)return;
- const controller=new AbortController();characterAvatarDisplayController=controller;try{const response=await fetch(avatarPath(assetID),{headers:{Authorization:`Bearer ${credentials.key}`},signal:controller.signal});if(!response.ok)throw new Error(`Avatar: HTTP ${response.status}`);const blob=await response.blob();if(controller.signal.aborted||characterWatch.snapshot?.characterId!==characterID||characterAvatarAsset!==assetID)return;characterAvatarURL=URL.createObjectURL(blob);$('characterAvatar').src=characterAvatarURL;$('characterAvatar').hidden=false;$('characterAvatarEmpty').hidden=true;characterAvatarClear.hidden=!characterEditSession;}catch(error){if(error.name!=='AbortError')toast(error.message);}finally{if(characterAvatarDisplayController===controller)characterAvatarDisplayController=null;}
+ const controller=new AbortController();characterAvatarDisplayController=controller;try{const response=await fetch(avatarPath(assetID),{headers:{Authorization:`Bearer ${credentials.key}`},signal:controller.signal});if(!response.ok)throw new Error(`Avatar: HTTP ${response.status}`);const blob=await response.blob();if(controller.signal.aborted||characterWatch.snapshot?.characterId!==characterID||characterAvatarAsset!==assetID)return;characterAvatarURL=URL.createObjectURL(blob);$('characterAvatar').src=characterAvatarURL;$('characterAvatar').hidden=false;$('characterAvatarEmpty').hidden=true;characterAvatarClear.hidden=!(characterEditSession||playerCharacterDraft);}catch(error){if(error.name!=='AbortError')toast(error.message);}finally{if(characterAvatarDisplayController===controller)characterAvatarDisplayController=null;}
 }
 function confirmMechanicalEdit(snapshot){if(!snapshot?.permissions?.manage)return false;const instance=snapshot.instance;if(!instance?.presetId||instance.materialized||confirmedMechanicalEdits.has(instance.id))return true;if(!confirm('Изменение механики создаст самостоятельный снимок персонажа. Дальнейшие изменения механики шаблона перестанут применяться. Продолжить?'))return false;confirmedMechanicalEdits.add(instance.id);return true;}
 function queueCharacterStat(characterID,statID,value,isNew=false){if(!confirmMechanicalEdit(characterWatch.snapshot))return false;if(!characterWatch.snapshot?.permissions?.edit||characterWatch.characterId!==characterID)return false;if(outbox?.data.queue.some(command=>command.type==='characterStatSet'&&command.characterId===characterID&&command.statId===statID&&sameValue(command.statValue,value)))return true;if(isNew)pendingNewStats.add(`${characterID}/${statID}`);return queueCommand('characterStatSet',{characterId:characterID,statId:statID,statValue:value});}
@@ -759,17 +775,37 @@ function makeCharacterStatInput(snapshot,statID,definition,value){
  input.addEventListener('blur',()=>{if(input.checkValidity()&&Object.hasOwn(characterDrafts.get(snapshot.characterId),statID))queueCharacterStat(snapshot.characterId,statID,characterDrafts.get(snapshot.characterId)[statID]);});
  return input;
 }
-function createStatDerivedFields(fields){
+function createStatDerivedFields(fields,statID,inspectable=false){
  const derived=fields?.derived||[];
  if(!derived.length)return null;
  const list=document.createElement('div');list.className='character-stat-derived';
  for(const field of derived){
   const item=document.createElement('span');item.className='character-stat-derived-item';
   const label=document.createElement('span');label.className='character-stat-derived-label';label.textContent=field.name;
-  const value=document.createElement('strong');value.className='character-stat-derived-value';value.textContent=displayRulesetValue(field.value);
-  item.append(label,value);list.append(item);
+  const value=document.createElement('strong');value.className='character-stat-derived-value'+(inspectable?' character-stat-inspect-source':'');value.textContent=displayRulesetValue(field.value);
+  item.title=`stat.${statID}.${field.name}`;item.append(value,label);list.append(item);
  }
  return list;
+}
+function playerStatInput(statID,definition,value,fields){
+ const d=playerCharacterDraft,input=document.createElement('input');
+ input.className='character-inline-input';input.type=definition.type==='boolean'?'checkbox':definition.type==='string'?'text':'number';
+ if(input.type==='number')input.step=definition.type==='number'?'any':'1';
+ if(input.type==='checkbox')input.checked=!!value.value;else input.value=statInputValue(value);
+ input.setAttribute('aria-label',`${definition.name||statID}: значение персонажа`);
+ const original=fields?.base!==undefined?{type:definition.type,value:fields.base}:characterWatch.snapshot?.effective?.stats?.[statID];
+ const update=()=>{
+  if(playerCharacterDraft!==d)return;
+  try{
+   const next=statValueFromInput(definition.type,input.value,input.checked);
+   if(JSON.stringify(next)===JSON.stringify(original))delete d.stats[statID];else d.stats[statID]=next;
+   d.invalid.delete(statID);input.classList.remove('character-edit-invalid');
+  }catch(error){d.invalid.add(statID);input.classList.add('character-edit-invalid');input.title=error.message;}
+  updateEditButtons();
+ };
+ input.oninput=update;input.onchange=update;input.onblur=update;
+ input.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}if(event.key==='Escape'){event.preventDefault();if(input.type==='checkbox')input.checked=!!original?.value;else input.value=statInputValue(original);update();input.blur();}};
+ return input;
 }
 function renderCharacterStats(snapshot){
  const container=$('characterStats'),editor=$('characterStatEditor');container.replaceChildren();editor.replaceChildren();
@@ -778,17 +814,36 @@ function renderCharacterStats(snapshot){
   const definition=snapshot.statDefinitions?.[statID]||{id:statID,name:statID,type:effective[statID].type},server=effective[statID],value=characterEditSession?server:(Object.hasOwn(drafts,statID)?drafts[statID]:server);
   const card=document.createElement('div');card.className='character-stat-card';card.dataset.sheetItem=`stat:${statID}`;
   const title=definition.name||statID,fields=snapshot.statFields?.[statID];
-  card.title=fields?.description||title;
+  if(!isEditorView())card.title=fields?.description||title;
   const main=document.createElement('div');main.className='character-stat-main';
-  const name=document.createElement('span');name.className='character-stat-name';name.textContent=title;main.append(name);
-  if(characterEditSession&&!definition.v04){const input=editInput(statID,'stat',definition,value);input.classList.add('character-stat-inline-input');main.append(input);}else{
-   const output=document.createElement('strong');output.className='character-stat-value'+(definition.type==='string'?' character-stat-text-value':'');output.textContent=definition.type==='boolean'?(value.value?'Да':'Нет'):displayRulesetValue(value.value);
-   main.append(output);
+  const name=document.createElement('span');name.className='character-stat-name';name.textContent=title;
+  const original=characterWatch.snapshot?.effective?.stats?.[statID];
+  const shown=characterEditSession&&original?original:value;
+  const editable=sheetEdit&&snapshot.permissions?.edit&&!state?.playerPreview;
+  const slot=document.createElement('span');slot.className='character-stat-value-slot';
+  const output=document.createElement('strong');output.className='character-stat-value'+(definition.type==='string'?' character-stat-text-value':'');
+  output.textContent=definition.type==='boolean'?(shown.value?'Да':'Нет'):displayRulesetValue(shown.value);
+  output.title=`stat.${statID} · эффективное значение`;if(isEditorView()&&snapshot.permissions?.manage)output.classList.add('character-stat-inspect-source');
+  slot.append(output);
+  if(editable){
+   const gmDraft=characterEditSession,playerDraft=playerCharacterDraft;
+   const changed=gmDraft&&original&&JSON.stringify(gmDraft.stats[statID])!==JSON.stringify(original);
+   const base=playerDraft?.stats?.[statID]||changed? (playerDraft?.stats?.[statID]||gmDraft.stats[statID])
+    :fields?.base!==undefined?{type:definition.type,value:fields.base}:value;
+   const input=gmDraft?editInput(statID,'stat',definition,base):playerStatInput(statID,definition,base,fields);
+   input.classList.add('character-stat-inline-input');input.hidden=true;
+   input.title=`stat.${statID}.default · значение этого персонажа`;
+   output.classList.add('character-stat-clickable');output.tabIndex=0;output.setAttribute('role','button');output.setAttribute('aria-label',`Изменить ${title}`);
+   const activate=()=>{output.hidden=true;input.hidden=false;slot.classList.add('active');updateEditButtons();input.focus();if(input.type!=='checkbox')input.select();};
+   output.onclick=activate;output.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}};
+   input.addEventListener('blur',()=>{input.hidden=true;output.hidden=false;slot.classList.remove('active');updateEditButtons();});
+   slot.append(input);
   }
+  main.append(slot,name);
   card.append(main);
-  const derived=createStatDerivedFields(fields);
+  const derived=createStatDerivedFields(fields,statID,isEditorView()&&snapshot.permissions?.manage);
   if(derived)card.append(derived);
-  if(characterEditSession&&!definition.v04)card.append(editRemoveButton(statID,'stat'));
+  addStatInspection(card,snapshot,statID);
   container.append(card);
   if(definition.v04||characterEditSession||!snapshot.permissions?.manage||!isEditorView())continue;
   const row=document.createElement('div');row.className='character-stat-edit';const label=document.createElement('label');label.textContent=title;label.append(makeCharacterStatInput(snapshot,statID,definition,value));row.append(label);
@@ -815,20 +870,32 @@ function renderCharacterResources(snapshot){
   const row=document.createElement('section');row.className='character-resource-card';
   const head=document.createElement('div');head.className='character-stat-main character-resource-head';
   const title=document.createElement('strong');title.className='character-stat-name';title.textContent=definition.name||statID;
-  head.append(title);row.append(head);
   const edit=document.createElement('div');edit.className='character-resource-controls';
-  const input=createCharacterResourceInput(snapshot,statID,definition,resource,'current');
+  const input=characterEditSession&&snapshot.permissions?.manage
+   ?editInput(statID,'resource',definition,resource.current,'current')
+   :createCharacterResourceInput(snapshot,statID,definition,resource,'current');
+  input.classList.add('character-resource-value-input');if(isEditorView()&&snapshot.permissions?.manage)input.classList.add('character-stat-inspect-source');
   if(input.type==='number'){
    const decrement=document.createElement('button'),increment=document.createElement('button');
-   for(const [button,delta,text] of [[decrement,-1,'−'],[increment,1,'+']]){button.type='button';button.className='subtle character-resource-step';button.textContent=text;button.disabled=input.disabled;button.setAttribute('aria-label',`${definition.name||statID}: ${delta>0?'увеличить':'уменьшить'} на 1`);button.onclick=()=>{const next=Number(input.value)+delta;if(!Number.isFinite(next)||(definition.type==='integer'&&!Number.isSafeInteger(next)))return;input.value=String(next);input.onchange();};}
+   for(const [button,delta,label] of [[decrement,-1,'−'],[increment,1,'+']]){
+    button.type='button';button.className='subtle character-resource-step';button.textContent=label;
+    button.disabled=input.disabled;button.setAttribute('aria-label',`${definition.name||statID}: ${delta>0?'увеличить':'уменьшить'} на 1`);
+    button.onclick=()=>{const next=Number(input.value)+delta;if(!Number.isFinite(next)||(definition.type==='integer'&&!Number.isSafeInteger(next)))return;input.value=String(next);input.onchange();};
+   }
    edit.append(decrement,input,increment);
   }else edit.append(input);
-  if(characterEditSession&&definition.v04)edit.replaceChildren(editInput(statID,'resource',definition,resource.current,'current'));
-  if(characterEditSession&&!definition.v04){edit.replaceChildren();const currentLabel=document.createElement('label');currentLabel.textContent='Текущее';currentLabel.append(editInput(statID,'resource',definition,resource.current,'current'));const initialLabel=document.createElement('label');initialLabel.textContent='Исходное';initialLabel.append(editInput(statID,'resource',definition,resource.initial,'initial'));edit.append(currentLabel,initialLabel);edit.classList.add('character-resource-inline');row.append(editRemoveButton(statID,'stat'));}row.append(edit);row.dataset.sheetItem=`stat:${statID}`;
-  if(!characterEditSession&&Object.hasOwn(snapshot.instance?.resourceCurrent||{},statID)&&snapshot.permissions?.edit){const reset=document.createElement('button');reset.type='button';reset.className='subtle character-resource-reset';reset.textContent='Восстановить начальное';reset.onclick=()=>queueCommand('characterResourceCurrentReset',{characterId:snapshot.characterId,statId:statID});row.append(reset);}
-  const fields=snapshot.statFields?.[statID];
-  row.title=fields?.description||definition.name||statID;
-  const derived=createStatDerivedFields(fields);if(derived)row.append(derived);
+  head.append(edit,title);row.append(head);
+  if(definition.type==='integer'||definition.type==='number'){
+   const maximum=Number(resource.initial?.value),current=Number(resource.current?.value);
+   if(Number.isFinite(maximum)&&maximum>0&&Number.isFinite(current)){
+    const meter=document.createElement('div');meter.className='character-resource-meter';meter.setAttribute('role','progressbar');meter.setAttribute('aria-label',`${definition.name||statID}: заполнение`);meter.setAttribute('aria-valuenow',String(current));meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(maximum));
+    const fill=document.createElement('div');fill.className='character-resource-meter-fill';fill.style.width=`${Math.max(0,Math.min(100,current/maximum*100))}%`;meter.append(fill);row.append(meter);
+   }
+  }
+  row.dataset.sheetItem=`stat:${statID}`;
+  const fields=snapshot.statFields?.[statID];if(!isEditorView())row.title=fields?.description||`stat.${statID}.current`;
+  const derived=createStatDerivedFields(fields,statID,isEditorView()&&snapshot.permissions?.manage);if(derived)row.append(derived);
+  addStatInspection(row,snapshot,statID);
   container.append(row);
   if(!definition.v04&&!characterEditSession&&snapshot.permissions?.manage&&isEditorView()){
    const row=document.createElement('div');row.className='character-resource-initial';const label=document.createElement('label');label.textContent=definition.name||statID;label.append(createCharacterResourceInput(snapshot,statID,definition,resource,'initial'));const remove=document.createElement('button');remove.type='button';remove.className='subtle character-parameter-remove';remove.textContent='Убрать';remove.onclick=()=>removeCharacterParameter(snapshot,statID,definition.name||statID);row.append(label,remove);editor.append(row);
@@ -956,7 +1023,7 @@ function characterSelectInventory(snapshot,id,open=true){
   for(const choice of choices){
    const action=snapshot.actions?.[choice.actionId],preview=(snapshot.actionPreviews||[]).find(p=>p.actionId===choice.actionId&&(p.sourceId||'')===item.id);
    const button=document.createElement('button');button.type='button';button.className='character-source-roll'+(choice.actionId.endsWith('.damage')?' damage':'');
-   button.disabled=!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||!!characterEditSession;
+   button.disabled=!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||sheetEdit;
    const name=document.createElement('strong');name.className='character-source-roll-name';name.innerHTML=actionDiceSvg;name.append(document.createTextNode(action?.name||choice.actionId));button.append(name);
    const formula=renderActionFormula(preview,true);if(!item.equipped&&!preview)formula.textContent='Доступно после экипировки';button.append(formula);
    const total=shortActionFormula(preview);if(total){const sum=document.createElement('strong');sum.className='character-source-roll-total';sum.textContent=total;button.append(sum);}
@@ -1064,7 +1131,7 @@ function renderRulesetActionChoice(row,snapshot,choice){
  button.textContent=source?`${snapshot.itemNames?.[source]||source} · ${source}`:'Выполнить';
  button.setAttribute('aria-label',title);
  const selector=snapshot.actionSelectors[choice.actionId];
- button.disabled=!snapshot.permissions?.edit||state?.playerPreview||!!characterEditSession;
+ button.disabled=!snapshot.permissions?.edit||state?.playerPreview||sheetEdit;
  button.onclick=()=>executeRulesetActionChoice(snapshot,choice);
  row.append(button);
 }
@@ -1094,7 +1161,7 @@ function renderSourceActionGroup(snapshot,group){
  for(const choice of group.choices){
   const action=snapshot.actions?.[choice.actionId],preview=(snapshot.actionPreviews||[]).find(row=>row.actionId===choice.actionId&&(row.sourceId||'')===(choice.sourceId||''));
   const button=document.createElement('button');button.type='button';button.className='character-source-roll'+(choice.actionId.endsWith('.damage')?' damage':'');
-  button.disabled=!!item&&!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||!!characterEditSession;
+  button.disabled=!!item&&!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||sheetEdit;
   button.setAttribute('aria-label',`${label}: ${action?.name||choice.actionId}`);
   const title=document.createElement('strong');title.className='character-source-roll-name';title.innerHTML=actionDiceSvg;title.append(document.createTextNode(action?.name||choice.actionId));button.append(title);
   const formula=renderActionFormula(preview,true);if(item&&!item.equipped&&!preview)formula.textContent='Доступно после экипировки';button.append(formula);
@@ -1150,11 +1217,234 @@ function renderCharacterActions(snapshot){
  const effective=new Set(ids),available=characterCatalog.actions.filter(action=>!effective.has(action.id));fillCatalogSelect($('characterActionAdd'),available,characterCatalog.loading.has('actions')?'Загрузка…':'Выберите действие');const manage=snapshot.permissions?.manage&&isEditorView();$('characterActionManage').hidden=true;$('characterActionAddButton').disabled=!$('characterActionAdd').value;$('characterActionMore').hidden=!manage||!characterCatalog.next.actions;$('characterActionMore').disabled=characterCatalog.loading.has('actions');
 }
 let characterActiveTab='stats',characterSettingsOpen=false,characterMechanicsOpen=false,characterDisplayedID='';
-let characterEditSession=null;
+let characterEditSession=null,playerCharacterDraft=null;
 const actionDependenciesDialog=document.createElement('dialog');actionDependenciesDialog.className='action-dependencies-dialog';
 actionDependenciesDialog.innerHTML='<form method="dialog"><h3>Настройка действия</h3><p data-dependencies-intro></p><div data-dependencies-fields></div><p class="muted" data-dependencies-errors hidden></p><div class="action-dependencies-buttons"><button type="button" class="subtle" data-dependencies-skip>Пропустить</button><button type="submit" class="primary" data-dependencies-confirm>Добавить характеристики</button></div></form>';
 document.body.append(actionDependenciesDialog);
 actionDependenciesDialog.querySelector('[data-dependencies-skip]').onclick=()=>actionDependenciesDialog.close();
+const statCatalogDialog=document.createElement('dialog');statCatalogDialog.className='character-stat-catalog-dialog';
+statCatalogDialog.innerHTML=`
+ <div class="character-stat-catalog-head"><h2>Добавить персонажу</h2><button type="button" class="character-stat-catalog-close" aria-label="Закрыть каталог" title="Закрыть">×</button></div>
+ <div class="character-stat-catalog-tabs" role="tablist"><button type="button" data-catalog-tab="existing" class="active">Существующие</button><button type="button" data-catalog-tab="new">Новый</button></div>
+ <div data-catalog-existing class="character-stat-catalog-layout">
+  <div class="character-stat-catalog-left"><div class="character-stat-catalog-types"><button type="button" data-catalog-kind="stat" class="active">Статы</button><button type="button" data-catalog-kind="action">Действия</button></div>
+   <input data-catalog-query type="search" placeholder="Поиск по названию или ID" aria-label="Поиск по каталогу" autocomplete="off"><div data-catalog-list class="character-stat-catalog-list" role="listbox"></div></div>
+  <div data-catalog-detail class="character-stat-catalog-detail"></div>
+ </div>
+ <div data-catalog-new class="character-stat-catalog-unavailable" hidden><h3>Новый стат</h3><p>Создание нового определения будет добавлено в следующем этапе. Пока можно назначать существующие статы и действия.</p></div>`;
+document.body.append(statCatalogDialog);
+const catalogState={kind:'stat',selected:'',tab:'existing'};
+let catalogCache=null,catalogLimit=90,catalogSearchTimer=null,catalogLastQuery='',catalogLastListKey='';
+const catalogEl=selector=>statCatalogDialog.querySelector(selector);
+function catalogDefinitions(){return {...(resourceDefinitionRegistry||{}),...(characterWatch.snapshot?.statDefinitions||{}),...Object.fromEntries((characterEditSession?.definitions||[]).map(d=>[d.id,d]))};}
+function catalogAssigned(){const d=characterEditSession;return new Set([...(Object.keys(d?.stats||{})),...(Object.keys(d?.resourceInitial||{}))]);}
+// Show source paths and value references inline, with friendly names on hover.
+function appendCatalogFormula(target,formula,definitions,owner){
+ const expression=String(formula),pattern=/stat\.[\p{L}\p{N}_]+(?:\.[\p{L}\p{N}_]+)*|\bvalue\b/gu;
+ let from=0,match;
+ while((match=pattern.exec(expression))){
+  if(match.index>from)target.append(document.createTextNode(expression.slice(from,match.index)));
+  const ref=document.createElement('span');ref.className='character-stat-catalog-reference';ref.textContent=match[0];
+  if(match[0]==='value')ref.title=`${owner?.name||owner?.id||'Характеристика'} · значение текущего стата`;
+  else{
+   const id=match[0].slice(5),ownerId=Object.keys(definitions||{}).filter(key=>id===key||id.startsWith(key+'.')).sort((a,b)=>b.length-a.length)[0];
+   const linked=definitions?.[ownerId];ref.title=linked?`${linked.name||ownerId} (${catalogFullPath(ownerId)})${id!==ownerId?' · '+id.slice(ownerId.length+1):''}`:match[0];
+  }
+  target.append(ref);from=pattern.lastIndex;
+ }
+ if(from<expression.length)target.append(document.createTextNode(expression.slice(from)));
+}
+// GM-only read-only stat inspection, including outside the editing mode.
+const statInspectTip=document.createElement('aside');
+statInspectTip.className='character-stat-inspection';statInspectTip.hidden=true;
+statInspectTip.setAttribute('role','tooltip');document.body.append(statInspectTip);
+function hideStatInspection(){statInspectTip.hidden=true;}
+function showStatInspection(event,snapshot,id){
+ if(!isEditorView()||!snapshot.permissions?.manage||statCatalogDialog.open)return;
+ const definition=snapshot.statDefinitions?.[id]||resourceDefinitionRegistry?.[id];if(!definition)return;
+ const v04=catalogDefinitionFields(definition),fields=snapshot.statFields?.[id];
+ statInspectTip.replaceChildren();
+ const name=document.createElement('strong');name.className='character-stat-inspection-title';name.textContent=definition.name||v04.name||catalogFullPath(id);statInspectTip.append(name);
+ const path=document.createElement('small');path.textContent=catalogFullPath(id);statInspectTip.append(path);
+ const kind=document.createElement('span');kind.textContent=`${definition.kind==='resource'||v04.resource?'Ресурс':'Стат'} · ${definition.type||v04.type||'integer'}`;statInspectTip.append(kind);
+ const description=v04.description||fields?.description;
+ if(description){const note=document.createElement('p');note.textContent=description;statInspectTip.append(note);}
+ const actual=snapshot.effective?.stats?.[id]?.value??snapshot.effective?.resources?.[id]?.current?.value;
+ if(actual!==undefined){const value=document.createElement('div');value.className='character-stat-inspection-value';value.textContent=`Текущее: ${displayRulesetValue(actual)}`;statInspectTip.append(value);}
+ const defaultField=definition.default?.value??v04.default;
+ if(defaultField!==undefined){const defaultRow=document.createElement('div');defaultRow.className='character-stat-inspection-default';defaultRow.append(document.createTextNode('Default: '));
+  if(defaultField&&typeof defaultField==='object'&&typeof defaultField.formula==='string')defaultRow.append(document.createTextNode(defaultField.formula));
+  else defaultRow.append(document.createTextNode(displayRulesetValue(defaultField)));
+  statInspectTip.append(defaultRow);
+ }
+ const derived=catalogDerivedFields(definition,fields?.derived);
+ if(derived.length){const heading=document.createElement('span');heading.textContent='Производные';statInspectTip.append(heading);
+  for(const field of derived.slice(0,8)){const row=document.createElement('div');row.className='character-stat-inspection-derived';
+   const label=document.createElement('b');label.textContent=field.label||field.name;row.append(label);
+   const formula=document.createElement('span');formula.textContent=field.formula===undefined?'':field.formula;row.append(formula);
+   if(field.current!==undefined){const output=document.createElement('strong');output.textContent=displayRulesetValue(field.current);row.append(output);}statInspectTip.append(row);
+  }
+  if(derived.length>8){const rest=document.createElement('small');rest.textContent=`И ещё ${derived.length-8}`;statInspectTip.append(rest);}
+ }
+ statInspectTip.hidden=false;
+ const width=statInspectTip.offsetWidth,height=statInspectTip.offsetHeight;
+ const viewportWidth=document.documentElement.clientWidth,viewportHeight=document.documentElement.clientHeight;
+ const left=event.clientX+width+18>viewportWidth?event.clientX-width-15:event.clientX+15;
+ statInspectTip.style.left=`${Math.max(10,Math.min(left,viewportWidth-width-10))}px`;
+ statInspectTip.style.top=`${Math.max(10,Math.min(event.clientY+12,viewportHeight-height-10))}px`;
+}
+function addStatInspection(node,snapshot,id){
+ if(!isEditorView()||!snapshot.permissions?.manage)return;
+ node.addEventListener('pointerenter',event=>showStatInspection(event,snapshot,id));
+ node.addEventListener('pointerleave',hideStatInspection);
+ node.addEventListener('focusin',hideStatInspection);
+}
+function catalogDefaultValue(definition){
+ const value=definition?.default?.value??catalogDefinitionFields(definition).default;
+ if(typeof value==='object'&&value!==null)return value.formula?'Формула: '+value.formula:JSON.stringify(value);
+ return value===undefined?'Не задано':displayRulesetValue(value);
+}
+function prepareCatalogCache(){
+ const definitions=catalogDefinitions();
+ const index=(items)=>items.map(def=>{
+  const derived=catalogDerivedFields(def,characterWatch.snapshot?.statFields?.[def.id]?.derived).map(field=>field.name).join(' ');
+  const own=Object.keys(catalogDefinitionFields(def)).join(' ');
+  return {def,search:`${def.name||''} ${def.id||''} ${derived} ${own}`.toLocaleLowerCase('ru')};
+ }).sort((a,b)=>(a.def.name||a.def.id).localeCompare(b.def.name||b.def.id,'ru'));
+ const actionEntries=catalogActionEntries(actionDefinitionRegistry||{});
+ catalogCache={definitions,stat:index(Object.values(definitions)),action:index(actionEntries.map(row=>row.def)),actionGroups:new Map(actionEntries.map(row=>[row.def.id,row.group]))};
+}
+function catalogStatValue(definition){
+ const val=definition?.default?.value??catalogDefinitionFields(definition).default;
+ if(typeof val==='number'||typeof val==='string'&&definition?.type==='string'||typeof val==='boolean')return val;
+ return definition?.type==='boolean'?false:definition?.type==='string'?'':0;
+}
+function renderStatCatalog(){
+ if(!statCatalogDialog.open)return;
+ if(!catalogCache)prepareCatalogCache();
+ const definitions=catalogCache.definitions,assigned=catalogAssigned(),snapshot=characterWatch.snapshot,d=characterEditSession;
+ const query=catalogEl('[data-catalog-query]').value.trim().toLocaleLowerCase('ru');
+ for(const btn of statCatalogDialog.querySelectorAll('[data-catalog-tab]')){btn.classList.toggle('active',btn.dataset.catalogTab===catalogState.tab);btn.setAttribute('aria-selected',String(btn.dataset.catalogTab===catalogState.tab));}
+ catalogEl('[data-catalog-existing]').hidden=catalogState.tab!=='existing';catalogEl('[data-catalog-new]').hidden=catalogState.tab!=='new';
+ for(const btn of statCatalogDialog.querySelectorAll('[data-catalog-kind]'))btn.classList.toggle('active',btn.dataset.catalogKind===catalogState.kind);
+ if(catalogState.tab!=='existing')return;
+ const candidates=catalogCache[catalogState.kind];
+ const items=candidates.filter(({search})=>search.includes(query)).map(({def})=>def);
+ if(!items.some(row=>row.id===catalogState.selected))catalogState.selected=items[0]?.id||'';
+ const list=catalogEl('[data-catalog-list]'),listKey=`${catalogState.kind}:${query}:${catalogLimit}`,keepScroll=query===catalogLastQuery?list.scrollTop:0;
+ if(listKey!==catalogLastListKey){catalogLastListKey=listKey;catalogLastQuery=query;list.replaceChildren();
+ if(!items.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='Ничего не найдено';list.append(empty);}
+ for(const def of items.slice(0,catalogLimit)){
+  const active=catalogState.selected===def.id,present=catalogState.kind==='stat'?assigned.has(def.id):d?.actionIds.includes(def.id);
+  const btn=document.createElement('button');btn.type='button';btn.className='character-stat-catalog-item'+(active?' selected':'');btn.setAttribute('role','option');btn.setAttribute('aria-selected',String(active));
+  const title=document.createElement('strong');title.textContent=def.name||def.id;
+  const meta=document.createElement('small');meta.textContent=catalogFullPath(def.id,catalogState.kind)+(catalogState.kind==='action'&&catalogCache.actionGroups.get(def.id)?` · группа ${catalogFullPath(catalogCache.actionGroups.get(def.id).id,'action')}`:'')+(present?' · У персонажа':'');
+  btn.append(title,meta);btn.dataset.catalogId=def.id;btn.onclick=()=>{catalogState.selected=def.id;renderStatCatalog();};list.append(btn);
+ }
+ if(items.length>catalogLimit){
+  const more=document.createElement('button');more.type='button';more.className='character-stat-catalog-more';more.textContent=`Показать ещё (${items.length-catalogLimit})`;
+  more.onclick=()=>{catalogLimit+=90;renderStatCatalog();};list.append(more);
+ }
+ list.scrollTop=keepScroll;
+ }else for(const button of list.querySelectorAll('[data-catalog-id]')){
+  const active=button.dataset.catalogId===catalogState.selected;button.classList.toggle('selected',active);button.setAttribute('aria-selected',String(active));
+ }
+ const detail=catalogEl('[data-catalog-detail]');detail.replaceChildren();
+ const def=items.find(row=>row.id===catalogState.selected);if(!def)return;
+ const title=document.createElement('h3');title.textContent=def.name||def.id;detail.append(title);
+ const technical=document.createElement('p');technical.className='character-stat-catalog-id';technical.textContent=catalogFullPath(def.id,catalogState.kind);detail.append(technical);
+ const info=document.createElement('div');info.className='character-stat-catalog-info';detail.append(info);
+ const parent=catalogState.kind==='stat'?catalogParentPath(def.id):'';
+ if(parent){const group=document.createElement('div');group.className='character-stat-catalog-group';group.append(document.createTextNode('Группа '));const crumb=document.createElement('strong');crumb.textContent=parent;group.append(crumb);detail.insertBefore(group,info);}
+ if(catalogState.kind==='action'){
+  const group=catalogCache.actionGroups.get(def.id);
+  if(group){const affiliation=document.createElement('div');affiliation.className='character-stat-catalog-action-group';
+   affiliation.append(document.createTextNode('Группа действий '));
+   const path=document.createElement('strong');path.textContent=catalogFullPath(group.id,'action');affiliation.append(path);
+   if(group.name){const name=document.createElement('span');name.textContent=group.name;affiliation.append(name);}info.append(affiliation);
+  }
+  const description=catalogDefinitionFields(def).description||def.description;
+  if(description){const note=document.createElement('p');note.className='character-stat-catalog-description';note.textContent=description;info.append(note);}
+  const source=catalogActionSource(def);
+  if(source){const heading=document.createElement('h4');heading.textContent='Полное определение действия';info.append(heading);
+   const pre=document.createElement('pre');pre.className='character-stat-catalog-action-source';
+   const code=document.createElement('code');code.textContent=`[${catalogFullPath(def.id,'action')}]\n${source}`;pre.append(code);info.append(pre);
+  }
+  const rules=catalogActionRules(def);
+  if(rules.length){const heading=document.createElement('h4');heading.textContent='Формулы и условия действия';info.append(heading);
+   for(const rule of rules){const row=document.createElement('div');row.className='character-stat-catalog-derived';const name=document.createElement('span');name.textContent=rule.path;const code=document.createElement('code');code.textContent=rule.value;row.append(name,code);info.append(row);}
+  }
+  const deps=dependencyStatus(def,editSnapshot(snapshot));
+  for(const dependency of deps.missing){const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=`Необходимо добавить зависимость «${dependency.definition.name||dependency.id}» для работы «${def.name||def.id}».`;info.append(p);}
+  for(const error of deps.errors){const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=error;info.append(p);}
+  const present=d?.actionIds.includes(def.id);
+  const add=document.createElement('button');add.type='button';add.className=present?'subtle':'primary';add.textContent=present?'Убрать у персонажа':'Добавить действие';
+  add.onclick=()=>{statCatalogDialog.close();if(present){if(confirm(`Убрать «${def.name||def.id}» у персонажа?`))removeEditItem(def.id,'action');}else assignActionToEdit(def.id);};detail.append(add);return;
+ }
+ const parsed=catalogDefinitionFields(def);
+ const kind=document.createElement('p');kind.className='muted';kind.textContent=`${def.kind==='resource'||parsed.resource?'Ресурс':'Стат'} · ${def.type||parsed.type||'integer'}`;info.append(kind);
+ const statDescription=parsed.description||def.description;
+ if(statDescription){const description=document.createElement('p');description.className='character-stat-catalog-description';description.textContent=statDescription;info.append(description);}
+ const label=document.createElement('div');label.className='character-stat-catalog-default';
+ const labelTitle=document.createElement('span');labelTitle.textContent='Default в рулсете';label.append(labelTitle);
+ const raw=document.createElement('output');raw.title='Общее определение. Изменение default для всех персонажей пока недоступно.';
+ const defaultExpression=def.default?.value??parsed.default;
+ if(defaultExpression&&typeof defaultExpression==='object'&&typeof defaultExpression.formula==='string')appendCatalogFormula(raw,defaultExpression.formula,definitions,def);
+ else raw.textContent=catalogDefaultValue(def);label.append(raw);info.append(label);
+ const allDeps=collectStatDependencies(def.id,definitions,assigned);
+ for(const depId of allDeps.needed){const dependency=definitions[depId];const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=`Необходимо добавить зависимость «${dependency?.name||depId}» для работы «${def.name||def.id}».`;info.append(p);}
+ for(const depId of allDeps.missing){const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=`Недоступно определение зависимости ${depId}`;info.append(p);}
+ const fields=snapshot?.statFields?.[def.id]?.derived||[];
+ const derived=catalogDerivedFields(def,fields);
+ if(derived.length){const header=document.createElement('h4');header.textContent='Производные значения';info.append(header);
+  for(const field of derived){
+   const row=document.createElement('div');row.className='character-stat-catalog-derived';
+   const head=document.createElement('div');head.className='character-stat-catalog-derived-head';
+   const name=document.createElement('strong');name.textContent=field.label||field.name;head.append(name);
+   const type=document.createElement('span');type.className='character-stat-catalog-derived-type';
+   type.textContent=field.type||(field.current!==undefined?(typeof field.current==='number'?(Number.isInteger(field.current)?'integer':'number'):typeof field.current):def.type||parsed.type||'');head.append(type);
+   const path=document.createElement('small');path.textContent=catalogFullPath(def.id,'stat')+'.'+field.name;head.append(path);
+   if(field.current!==undefined){const value=document.createElement('output');value.textContent=displayRulesetValue(field.current);value.title='Вычисленное значение у персонажа';head.append(value);}
+   row.append(head);
+   if(field.formula!==undefined){const code=document.createElement('code');appendCatalogFormula(code,field.formula,definitions,def);row.append(code);}
+   info.append(row);
+  }
+ }
+ if(assigned.has(def.id)){
+  const already=document.createElement('p');already.className='muted';already.textContent='Этот стат уже назначен персонажу.';detail.append(already);
+  const remove=document.createElement('button');remove.type='button';remove.className='subtle';remove.textContent='Убрать у персонажа';
+  remove.onclick=()=>{statCatalogDialog.close();if(confirm(`Убрать «${def.name||def.id}» у персонажа?`))removeEditItem(def.id,'stat');};detail.append(remove);return;
+ }
+ const current=document.createElement('label');current.className='character-stat-catalog-current';current.textContent='Значение для этого персонажа';
+ const input=document.createElement('input');input.type=def.type==='boolean'?'checkbox':def.type==='string'?'text':'number';if(input.type==='number')input.step=def.type==='number'?'any':'1';
+ const value=catalogStatValue(def);if(input.type==='checkbox')input.checked=!!value;else input.value=String(value);current.append(input);detail.append(current);
+ const add=document.createElement('button');add.type='button';add.className='primary';add.textContent=allDeps.needed.length?`Добавить со всеми зависимостями (${allDeps.needed.length+1})`:'Добавить персонажу';add.disabled=!!allDeps.missing.length;
+ add.onclick=()=>{
+  if(!characterEditSession||characterEditSession!==d)return;
+  try{
+   const chosen=statValueFromInput(def.type||'integer',input.value,input.checked);
+   const withDeps=[...allDeps.needed,def.id];
+   for(const id of withDeps){if(catalogAssigned().has(id))continue;const definition=definitions[id],raw=id===def.id?chosen:statValueFromInput(definition.type||'integer',String(catalogStatValue(definition)),!!catalogStatValue(definition));
+    if(definition.kind==='resource'){d.resourceInitial[id]=raw;d.resourceCurrent[id]={...raw};}else d.stats[id]=raw;
+    addEditPlacement(`stat:${id}`);
+   }
+   statCatalogDialog.close();renderCharacterPanel();
+  }catch(error){toast(error.message);}
+ };detail.append(add);
+}
+async function openStatCatalog(){
+ if(!characterEditSession||!isEditorView())return;
+ if(!resourceDefinitionRegistry||!actionDefinitionRegistry){try{await refreshResourceDefinitions();}catch{return;}}
+ if(!characterEditSession)return;
+ catalogCache=null;catalogLimit=90;catalogLastQuery='';catalogLastListKey='';
+ catalogState.kind=characterActiveTab==='actions'?'action':'stat';catalogState.selected='';catalogState.tab='existing';catalogEl('[data-catalog-query]').value='';
+ statCatalogDialog.showModal();renderStatCatalog();catalogEl('[data-catalog-query]').focus();
+}
+statCatalogDialog.addEventListener('close',()=>{catalogState.selected='';catalogCache=null;catalogLastListKey='';if(catalogSearchTimer)clearTimeout(catalogSearchTimer);catalogSearchTimer=null;});
+catalogEl('.character-stat-catalog-close').onclick=()=>statCatalogDialog.close();
+for(const btn of statCatalogDialog.querySelectorAll('[data-catalog-tab]'))btn.onclick=()=>{catalogState.tab=btn.dataset.catalogTab;renderStatCatalog();};
+for(const btn of statCatalogDialog.querySelectorAll('[data-catalog-kind]'))btn.onclick=()=>{catalogState.kind=btn.dataset.catalogKind;catalogLimit=90;catalogState.selected='';renderStatCatalog();};
+catalogEl('[data-catalog-query]').oninput=()=>{if(catalogSearchTimer)clearTimeout(catalogSearchTimer);catalogSearchTimer=setTimeout(()=>{catalogSearchTimer=null;catalogLimit=90;catalogState.selected='';renderStatCatalog();},75);};
 function selectedActionDefinition(id){return actionDefinitionRegistry?.[id]||characterWatch.snapshot?.actions?.[id];}
 function dependencyDefinitions(snapshot){return {...(resourceDefinitionRegistry||{}),...(snapshot?.statDefinitions||{}),...Object.fromEntries((characterEditSession?.definitions||[]).map(d=>[d.id,d]))};}
 function dependencyStatus(action,snapshot){return actionDependencies(action,snapshot.effective,dependencyDefinitions(snapshot));}
@@ -1219,6 +1509,10 @@ function editChangeValue(id,kind,definition,input,field){
   else d.stats[id]=value;
   d.invalid.delete(`${id}:${field}`);input.classList.remove('character-edit-invalid');
  }catch(error){d.invalid.add(`${id}:${field}`);input.classList.add('character-edit-invalid');input.title=error.message;}
+ if(kind==='resource'&&field==='current'){
+  const row=input.closest('.character-resource-card'),bar=row?.querySelector('.character-resource-meter-fill'),max=Number(characterEditSession.resourceInitial[id]?.value);
+  if(bar&&max>0)bar.style.width=`${Math.max(0,Math.min(100,Number(input.value)/max*100))}%`;
+ }
  updateEditButtons();
 }
 function editInput(id,kind,definition,value,field='value'){
@@ -1240,19 +1534,51 @@ function removeEditItem(id,kind){
  renderCharacterPanel();
 }
 function editRemoveButton(id,kind){const b=document.createElement('button');b.type='button';b.className='subtle character-edit-remove';b.title='Убрать у персонажа (определение останется в кампании)';b.textContent='Убрать';b.onclick=()=>removeEditItem(id,kind);return b;}
-function updateEditButtons(){
- const d=characterEditSession;$('characterEditHeader').hidden=!d;$('characterAddToolbar').hidden=!d;characterAvatarFrame.classList.toggle('character-avatar-editable',!!d);characterAvatarFrame.tabIndex=d?0:-1;characterAvatarFrame.setAttribute('role',d?'button':'img');characterAvatarFrame.setAttribute('aria-label',d?'Выбрать аватар персонажа':'Аватар персонажа');characterNameRow.hidden=!d;$('characterName').hidden=!!d;characterAvatarWrap.classList.toggle('editing',!!d);
- $('characterMechanicsToggle').classList.toggle('active',!!d);$('characterMechanicsToggle').setAttribute('aria-expanded',String(!!d));
- if(!d){$('characterAddPopover').hidden=true;return;}
- $('characterEditSave').disabled=d.saving||d.invalid.size>0||d.conflict;
- $('characterEditCancel').disabled=d.saving;
- $('characterEditFeedback').textContent=d.conflict?'Данные изменились на сервере. Отмените редактирование и повторите.':d.saving?'Сохранение…':d.invalid.size?'Исправьте недопустимые значения':'';
+function playerCharacterHasChanges(){
+ const d=playerCharacterDraft,snapshot=characterWatch.snapshot;
+ return !!(d&&snapshot?.characterId===d.characterId&&(d.name.trim()!==snapshot.instance.name||d.avatarFile||d.resetAvatar||d.placeholderAvatar||Object.keys(d.stats||{}).length));
 }
-function releaseEditSession(){if(actionDependenciesDialog.open)actionDependenciesDialog.close();const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);characterAssetPicker.close();characterEditSession=null;updateEditButtons();}
-function discardEdit(){if(!characterEditSession||characterEditSession.saving)return false;releaseEditSession();renderCharacterPanel();return true;}
-function confirmLeaveEdit(){if(!characterEditSession)return true;if(characterEditSession.saving){toast('Дождитесь подтверждения сохранения');return false;}if(!confirm('Несохранённые изменения персонажа будут потеряны. Выйти?'))return false;return discardEdit();}
+function characterEditHasChanges(){
+ const d=characterEditSession,snapshot=characterWatch.snapshot;if(!d||!snapshot||d.characterId!==snapshot.characterId)return false;
+ const current=Object.fromEntries(Object.entries(snapshot.effective?.resources||{}).map(([id,value])=>[id,value.current]));
+ return characterEditMechanicsChanged(d,snapshot)||JSON.stringify(d.resourceCurrent)!==JSON.stringify(current)||$('characterRename').value.trim()!==(snapshot.instance.name||'')||!!(d.avatarFile||d.selectedMediaAsset||d.artworkPath||d.resetAvatar||d.placeholderAvatar);
+}
+function canReorderSheet(){return sheetEdit&&!characterPanel.querySelector('.character-stat-value-slot.active');}
+function updateEditButtons(){
+ const d=characterEditSession,identity=d||playerCharacterDraft;$('characterEditHeader').hidden=!identity;$('characterAddToolbar').hidden=!(d&&sheetEdit);$('characterTokenOptions').hidden=!(d&&isEditorView());
+ sheetHintPanel.hidden=!sheetEdit||sheetHintClosed||sheetHintDismissed;
+ sheetHint.hidden=sheetHintPanel.hidden;
+ sheetHint.textContent=!sheetEdit?'':d?'Перетаскивайте строки между разделами и вкладками. Правый клик по разделу открывает переименование и удаление. Можно редактировать и добавлять статы. Раскладка сохраняется автоматически, игровые изменения — кнопкой «Сохранить». Наведите на число, чтобы увидеть путь значения.':'Перетаскивайте строки между разделами и вкладками. Наведите на раздел, чтобы открыть его. Правый клик по разделу позволяет переименовать или удалить его. Раскладка сохраняется автоматически.';
+ characterPanel.classList.toggle('character-sheet-editing',sheetEdit);characterPanel.classList.toggle('character-drag-locked',sheetEdit&&!canReorderSheet());characterAvatarFrame.classList.toggle('character-avatar-editable',!!identity);characterAvatarFrame.tabIndex=identity?0:-1;characterAvatarFrame.setAttribute('role',identity?'button':'img');characterAvatarFrame.setAttribute('aria-label',identity?'Выбрать аватар персонажа':'Аватар персонажа');characterNameRow.hidden=!identity;$('characterName').hidden=!!identity;characterAvatarWrap.classList.toggle('editing',!!identity);
+ $('characterMechanicsToggle').classList.toggle('active',sheetEdit);$('characterMechanicsToggle').setAttribute('aria-expanded',String(sheetEdit));
+ if(!identity){$('characterAddPopover').hidden=true;return;}
+ if(!d){$('characterEditSave').hidden=!playerCharacterHasChanges();$('characterEditSave').disabled=!!playerCharacterDraft?.saving||!!playerCharacterDraft?.invalid?.size;$('characterEditCancel').disabled=!!playerCharacterDraft?.saving;$('characterEditFeedback').textContent=playerCharacterDraft?.saving?'Сохранение…':playerCharacterDraft?.invalid?.size?'Исправьте недопустимые значения.':playerCharacterHasChanges()?'Есть несохранённые изменения. Для выхода нажмите «Сохранить» или «Выход».':'';return;}
+ $('characterEditSave').hidden=!characterEditHasChanges();$('characterEditSave').disabled=d.saving||d.invalid.size>0||d.conflict;
+ $('characterEditCancel').disabled=d.saving;
+ $('characterEditFeedback').textContent=d.conflict?'Данные изменились на сервере. Выйдите из настройки и повторите.':d.saving?'Сохранение…':d.invalid.size?'Исправьте недопустимые значения':characterEditHasChanges()?'Есть несохранённые изменения. Для выхода нажмите «Сохранить» или «Выход».':'';
+ for(const el of characterPanel.querySelectorAll('.sheet-entry[draggable],.character-layout-tabs button[draggable],.character-action-section-tabs button[draggable],.sheet-heading[draggable]'))el.draggable=canReorderSheet();
+}
+function releaseEditSession(){if(statCatalogDialog.open)statCatalogDialog.close();if(actionDependenciesDialog.open)actionDependenciesDialog.close();const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);characterAssetPicker.close();characterEditSession=null;updateEditButtons();}
+function releasePlayerEdit(){const d=playerCharacterDraft;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);playerCharacterDraft=null;}
+async function savePlayerCharacterEdit(){
+ const d=playerCharacterDraft;if(!d||d.saving||d.characterId!==characterWatch.snapshot?.characterId)return;
+ if(!d.name.trim()){toast('Укажите имя персонажа');return;}
+ if(d.invalid.size){toast('Исправьте недопустимые значения');return;}
+ d.saving=true;updateEditButtons();
+ try{
+  if(d.avatarFile){const query=new URLSearchParams({session:credentials.session,kind:'avatar',characterId:d.characterId});await api(`/api/upload?${query}`,d.avatarFile,true);}
+  else if(d.resetAvatar){if(!queueCommand('characterAvatarReset',{characterId:d.characterId}))throw new Error('Не удалось отправить сброс аватара');}
+  else if(d.placeholderAvatar){if(!queueCommand('characterAvatarSet',{characterId:d.characterId,avatarAssetId:''}))throw new Error('Не удалось отправить очистку аватара');}
+  for(const [statId,statValue] of Object.entries(d.stats)){if(!queueCommand('characterStatSet',{characterId:d.characterId,statId,statValue}))throw new Error(`Не удалось сохранить ${statId}`);}
+  if(d.name.trim()!==characterWatch.snapshot?.instance?.name&&!queueCommand('characterNameSet',{characterId:d.characterId,characterName:d.name.trim()}))throw new Error('Не удалось сохранить имя');
+  releasePlayerEdit();sheetEdit=false;renderCharacterPanel();
+ }catch(error){d.saving=false;toast(`Не удалось сохранить персонажа: ${error.message}`);updateEditButtons();}
+}
+function discardPlayerEdit(){if(playerCharacterDraft?.saving)return false;releasePlayerEdit();sheetEdit=false;renderCharacterPanel();return true;}
+function discardEdit(){if(!characterEditSession||characterEditSession.saving)return false;releaseEditSession();sheetEdit=false;characterSettingsOpen=false;renderCharacterPanel();return true;}
+function confirmLeaveEdit(){if(!characterEditSession)return true;if(characterEditSession.saving){toast('Дождитесь подтверждения сохранения');return false;}if(characterEditHasChanges()&&!confirm('Несохранённые изменения персонажа будут потеряны. Выйти?'))return false;return discardEdit();}
 function openCharacterEdit(){const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.manage||!isEditorView())return;
- cancelCharacterStatTimers(snapshot.characterId);characterEditSession=makeCharacterEdit(snapshot);sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;
+ cancelCharacterStatTimers(snapshot.characterId);characterEditSession=makeCharacterEdit(snapshot);sheetHintClosed=false;sheetEdit=true;characterSettingsOpen=false;characterMechanicsOpen=false;
  if(!resourceDefinitionRegistry)refreshResourceDefinitions();renderCharacterPanel();
 }
 function addEditPlacement(key){const d=characterEditSession;if(!d)return;d.places.push({key,tab:characterActiveTab});}
@@ -1295,12 +1621,14 @@ async function saveCharacterEdit(){const d=characterEditSession;if(!d||d.saving|
    }
  }catch(error){d.saving=false;toast(`Не удалось подготовить сохранение: ${error.message}`);updateEditButtons();}
 }
-$('characterEditCancel').onclick=discardEdit;$('characterEditSave').onclick=saveCharacterEdit;
-$('characterAddToggle').onclick=()=>{if(!characterEditSession)return;$('characterAddPopover').hidden=!$('characterAddPopover').hidden;if(!$('characterAddPopover').hidden)updateCharacterParameterOptions(editSnapshot(characterWatch.snapshot));};
-window.addEventListener('beforeunload',event=>{if(characterEditSession&&!characterEditSession.saving){event.preventDefault();event.returnValue='';}});
+$('characterEditCancel').onclick=()=>playerCharacterDraft?(playerCharacterHasChanges()&&!confirm('Несохранённые изменения персонажа будут потеряны. Выйти?')?false:discardPlayerEdit()):confirmLeaveEdit();$('characterEditSave').onclick=()=>playerCharacterDraft?savePlayerCharacterEdit():saveCharacterEdit();
+$('characterAddToggle').onclick=()=>openStatCatalog();
+window.addEventListener('beforeunload',event=>{if(characterEditHasChanges()&&!characterEditSession.saving||playerCharacterHasChanges()&&!playerCharacterDraft.saving){event.preventDefault();event.returnValue='';}});
 
 let sheetEdit=false,sheetScope='',sheetLayout=null,sheetDrag=null,sheetDropMarker=null;
-let selectedActionSectionID='',sheetTabScroll=0,actionSectionScroll=0;
+let sheetDragContext=null,sheetDragDestination=null,sheetDragPending=null;
+const selectedSheetSections=new Map();
+let sheetTabScroll=0,actionSectionScroll=0;
 const registeredSheetTabs=new WeakSet();
 // Wheel and mouse-drag scrolling for overflowing sheet tabs. Native touch
 // scrolling remains available; editing mode preserves HTML drag-and-drop.
@@ -1373,6 +1701,7 @@ function sheetEntryMenu(key,entries){
  else{const option=options[Number(answer)-1];if(option)sheetMutate(layout=>{const tab=layout.tabs.find(t=>t.id===option.tab.id);if(!tab.sections.some(s=>s.id===option.section.id))tab.sections.push({...option.section,items:[]});return moveEntry(layout,key,option.tab.id,option.section.id);});}
 }
 function clearSheetDrag(){
+ clearSheetDragPreview();
  sheetDropMarker?.remove();sheetDropMarker=null;
  document.querySelectorAll('.sheet-entry-moving,.sheet-drop').forEach(node=>node.classList.remove('sheet-entry-moving','sheet-drop'));
  sheetDrag=null;
@@ -1389,28 +1718,113 @@ function previewSheetDrop(event,listing){
  if(sheetDropMarker.parentElement!==listing||sheetDropMarker.nextElementSibling!==before){sheetDropMarker.parentElement?.classList.remove('sheet-drop');listing.insertBefore(sheetDropMarker,before);}
  listing.classList.add('sheet-drop');
 }
+function moveSheetItems(layout,keys,tabID,sectionID,before=''){
+ const unique=[...new Set(keys)];
+ for(const key of before?[...unique].reverse():unique)layout=moveEntry(layout,key,tabID,sectionID,before);
+ return layout;
+}
 function finishSheetDrop(tab,section){
  if(sheetDrag?.kind!=='item')return;
- const key=sheetDrag.key;
+ const keys=sheetDrag.keys||[sheetDrag.key];
  let next=sheetDropMarker?.nextElementSibling;
- while(next?.dataset?.sheetItem===key)next=next.nextElementSibling;
+ while(next&&keys.includes(next.dataset.sheetItem))next=next.nextElementSibling;
  const before=next?.dataset?.sheetItem||'';
  clearSheetDrag();
- sheetMutate(layout=>{ensureSheetSection(layout,tab,section);return moveEntry(layout,key,tab.id,section.id,before);});
+ sheetMutate(layout=>{ensureSheetSection(layout,tab,section);return moveSheetItems(layout,keys,tab.id,section.id,before);});
+}
+// Keep the original draggable node mounted while previewing another tab.
+// Re-rendering the character panel during native drag-and-drop can cancel the drag.
+function clearSheetDragPreview(){
+ if(sheetDragPending){clearTimeout(sheetDragPending.timer);sheetDragPending=null;}
+ sheetDragDestination=null;
+ const preview=document.getElementById('characterSheetDropPreview');preview?.remove();
+ $('characterLayoutContent').classList.remove('sheet-drag-original');
+ for(const button of $('characterLayoutTabs').querySelectorAll('[role=tab]'))button.setAttribute('aria-selected',String(button.dataset.tabId===characterActiveTab));
+}
+function sheetTargetSection(tab){
+ return tab?.sections.find(section=>section.name==='Прочие действия')||tab?.sections.find(section=>section.items.length&&!['Перемещённые','Добавлено'].includes(section.name))||tab?.sections[0]||{
+  id:`user:main:${tab.id}`,name:tab.id==='actions'?'Прочие действия':'Основное',view:'list',collapsed:false,items:[]};
+}
+function commitSheetItemDrop(tab,section,before=''){
+ if(sheetDrag?.kind!=='item'||!tab||!section)return;
+ const keys=sheetDrag.keys||[sheetDrag.key];
+ characterActiveTab=tab.id;selectedSheetSections.set(tab.id,section.id);
+ clearSheetDrag();
+ sheetMutate(layout=>{ensureSheetSection(layout,tab,section);return moveSheetItems(layout,keys,tab.id,section.id,before);});
+}
+function openSheetDragPreview(tabID,sectionID=''){
+ if(sheetDrag?.kind!=='item'||!sheetDragContext)return;
+ const {full,elements,snapshot}=sheetDragContext;
+ const tab=full.tabs.find(row=>row.id===tabID);if(!tab)return;
+ const section=tab.sections.find(row=>row.id===sectionID)||sheetTargetSection(tab);
+ if(sheetDragDestination?.tabID===tabID&&sheetDragDestination.sectionID===section.id)return;
+ sheetDragDestination={tabID,sectionID:section.id};
+ sheetDropMarker?.remove();sheetDropMarker=null;
+ const body=$('characterLayoutContent');let preview=document.getElementById('characterSheetDropPreview');
+ if(!preview){preview=document.createElement('div');preview.id='characterSheetDropPreview';preview.className='character-sheet-drop-preview';body.before(preview);}
+ preview.replaceChildren();body.classList.add('sheet-drag-original');
+ for(const button of $('characterLayoutTabs').querySelectorAll('[role=tab]'))button.setAttribute('aria-selected',String(button.dataset.tabId===tabID));
+ const nav=document.createElement('nav');nav.className='character-action-section-tabs sheet-drag-preview-tabs';nav.setAttribute('aria-label',`Разделы вкладки ${tab.name}`);
+ const sectionList=tab.sections.length?tab.sections:[section];
+ for(const option of sectionList){
+  const button=document.createElement('button');button.type='button';button.textContent=option.name;
+  button.setAttribute('aria-selected',String(option.id===section.id));
+  button.ondragover=event=>{if(sheetDrag?.kind==='item'){event.preventDefault();queueSheetDragPreview(tabID,option.id);}};
+  button.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();commitSheetItemDrop(tab,option);};
+  nav.append(button);
+ }
+ preview.append(nav);
+ const listing=document.createElement('div');listing.className='sheet-list';listing.classList.add('sheet-drag-preview-list');
+ const groups=groupSheetActionSources(snapshot,[section]);
+ for(const key of section.items){
+  if(groups.handled.has(key)&&!groups.byEntry.has(key))continue;
+  const sourceGroups=groups.byEntry.get(key);
+  const displays=sourceGroups?.length?sourceGroups.map(group=>renderSourceActionGroup(snapshot,group)):[elements.get(key)?.cloneNode(true)];
+  for(const display of displays){if(!display)continue;
+   const frame=document.createElement('div');frame.className='sheet-entry'+(key.startsWith('stat:')?' sheet-entry-stat':'');frame.dataset.sheetItem=key;
+   frame.append(display);listing.append(frame);
+  }
+ }
+ listing.ondragover=event=>previewSheetDrop(event,listing);
+ listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();let next=sheetDropMarker?.nextElementSibling;const keys=sheetDrag.keys||[sheetDrag.key];while(next&&keys.includes(next.dataset.sheetItem))next=next.nextElementSibling;commitSheetItemDrop(tab,section,next?.dataset.sheetItem||'');};
+ preview.append(listing);
+}
+function queueSheetDragPreview(tabID,sectionID=''){
+ if(sheetDrag?.kind!=='item')return;
+ const key=`${tabID}/${sectionID}`;
+ if(sheetDragPending?.key===key)return;
+ if(sheetDragPending)clearTimeout(sheetDragPending.timer);
+ // A short hover prevents accidental switches when crossing tab labels.
+ sheetDragPending={key,timer:setTimeout(()=>{sheetDragPending=null;openSheetDragPreview(tabID,sectionID);},160)};
 }
 function renderSheetLayout(snapshot){
- if(characterBrowseID!==snapshot.characterId){characterBrowseID=snapshot.characterId;characterBrowseAction='';characterBrowseItem='';closeInventoryDrawer();characterInventoryQuery='';characterInventoryFilter='all';selectedActionSectionID='';actionSectionScroll=0;}
- const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';selectedActionSectionID='';sheetTabScroll=0;actionSectionScroll=0;}
+ if(characterBrowseID!==snapshot.characterId){characterBrowseID=snapshot.characterId;characterBrowseAction='';characterBrowseItem='';closeInventoryDrawer();characterInventoryQuery='';characterInventoryFilter='all';selectedSheetSections.clear();actionSectionScroll=0;}
+ const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';selectedSheetSections.clear();sheetTabScroll=0;actionSectionScroll=0;}
  const entries=sheetEntryList(snapshot);
  const full=buildSheet(sheetLayout,entries);
  if(characterEditSession){for(const {key,tab} of characterEditSession.places){for(const t of full.tabs)for(const section of t.sections)section.items=section.items.filter(x=>x!==key);let target=full.tabs.find(t=>t.id===tab);if(!target)continue;let group=target.sections.find(x=>x.id===`user:added:${tab}`);if(!group){group={id:`user:added:${tab}`,name:'Добавлено',view:'grid',collapsed:false,items:[]};target.sections.push(group);}group.items.push(key);}}
  const tabs=$('characterLayoutTabs'),body=$('characterLayoutContent');
  const elements=new Map([...document.querySelectorAll('#characterLayoutContent [data-sheet-item],#characterStats [data-sheet-item],#characterResources [data-sheet-item],#characterActions [data-sheet-item]')].map(node=>[node.dataset.sheetItem,node]));
+ sheetDragContext={full,elements,snapshot};clearSheetDragPreview();
  tabs.replaceChildren();body.replaceChildren();
  if(!full.tabs.some(tab=>tab.id===characterActiveTab))characterActiveTab='stats';
  for(const tab of full.tabs){
   const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;closeInventoryDrawer();renderCharacterPanel();};
-  if(sheetEdit){button.draggable=true;button.ondragend=clearSheetDrag;button.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};button.ondragover=event=>event.preventDefault();button.ondrop=event=>{event.preventDefault();sheetDropMarker?.remove();sheetDropMarker=null;if(sheetDrag?.kind==='item')sheetMutate(layout=>{const t=layout.tabs.find(t=>t.id===tab.id);let bucket=t.sections.find(s=>s.id===`user:drop:${tab.id}`);if(!bucket){bucket={id:`user:drop:${tab.id}`,name:'Перемещённые',view:'list',collapsed:false,items:[]};t.sections.push(bucket);}characterActiveTab=tab.id;return moveEntry(layout,sheetDrag.key,tab.id,bucket.id);});else if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===sheetDrag.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});else if(sheetDrag?.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===sheetDrag.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});};button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions','inventory'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
+  button.dataset.tabId=tab.id;
+  if(sheetEdit){
+   button.draggable=canReorderSheet();button.ondragend=clearSheetDrag;
+   button.ondragstart=event=>{if(!canReorderSheet()){event.preventDefault();return;}clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};
+   button.ondragover=event=>{if(!sheetDrag)return;event.preventDefault();if(sheetDrag.kind==='item')queueSheetDragPreview(tab.id);};
+   button.ondrop=event=>{
+    if(!sheetDrag)return;event.preventDefault();event.stopPropagation();
+    if(sheetDrag.kind==='item'){const dest=sheetDragDestination?.tabID===tab.id?sheetDragDestination:null;const section=tab.sections.find(s=>s.id===dest?.sectionID)||sheetTargetSection(tab);commitSheetItemDrop(tab,section);return;}
+    sheetDropMarker?.remove();sheetDropMarker=null;
+    const moving={...sheetDrag};clearSheetDrag();
+    if(moving.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===moving.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===moving.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});
+    else if(moving.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===moving.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});
+   };
+   button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions','inventory'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
+
   tabs.append(button);
  }
  horizontalSheetTabs(tabs,'main',!sheetEdit);
@@ -1420,7 +1834,7 @@ function renderSheetLayout(snapshot){
  if(selected.id!=='inventory'&&!inventoryDrawer.hidden)closeInventoryDrawer();
   const actionInTab=selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')));
   const legacyActionInTab=actionInTab&&selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')&&!snapshot.actions?.[key.slice(7)]?.v04));
-  const sourceGroups=!sheetEdit&&!characterEditSession?groupSheetActionSources(snapshot,selected.sections):null;
+  const sourceGroups=groupSheetActionSources(snapshot,selected.sections);
   const useBrowser=!sheetEdit&&legacyActionInTab;
   const browser=useBrowser?document.createElement('div'):null;
   const sheetMain=useBrowser?document.createElement('div'):body;
@@ -1431,34 +1845,71 @@ function renderSheetLayout(snapshot){
    const browse=document.createElement('div');browse.id='characterInventoryBrowse';section.append(browse);sheetMain.append(section);
   }
  // In normal play action sections become a separate horizontal tab strip.
- const sectionTabsActive=selected.id==='actions';
+ const sectionTabsActive=selected.sections.length>0||sheetEdit;
  let visibleSections=selected.sections;
  if(sectionTabsActive){
-  visibleSections=selected.sections.filter(section=>section.items.some(key=>!sourceGroups?.handled.has(key)||sourceGroups.byEntry.has(key)));
-  if(!visibleSections.some(section=>section.id===selectedActionSectionID))selectedActionSectionID=visibleSections[0]?.id||'';
-  const nav=document.createElement('nav');nav.className='character-action-section-tabs';nav.setAttribute('role','tablist');nav.setAttribute('aria-label','Группы действий');
+  visibleSections=sheetEdit?selected.sections:selected.sections.filter(section=>section.items.some(key=>!sourceGroups?.handled.has(key)||sourceGroups.byEntry.has(key)));
+  if(!visibleSections.some(section=>section.id===selectedSheetSections.get(selected.id)))selectedSheetSections.set(selected.id,visibleSections[0]?.id||'');
+  const nav=document.createElement('nav');nav.className='character-action-section-tabs';nav.setAttribute('role','tablist');nav.setAttribute('aria-label','Разделы текущей вкладки');
   for(const section of visibleSections){
-   const button=document.createElement('button');button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(section.id===selectedActionSectionID));button.textContent=section.name;
-   button.onclick=()=>{selectedActionSectionID=section.id;renderCharacterPanel();};nav.append(button);
+   const button=document.createElement('button');button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(section.id===selectedSheetSections.get(selected.id)));button.textContent=section.name;
+   button.onclick=()=>{selectedSheetSections.set(selected.id,section.id);renderCharacterPanel();};
+   if(sheetEdit){
+    button.draggable=canReorderSheet();
+    button.ondragstart=event=>{if(!canReorderSheet()){event.preventDefault();return;}clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',section.id);};
+    button.ondragend=clearSheetDrag;
+    button.ondragover=event=>{if(sheetDrag?.kind==='item'){event.preventDefault();queueSheetDragPreview(selected.id,section.id);}else if(sheetDrag?.kind==='section')event.preventDefault();};
+    button.ondrop=event=>{if(sheetDrag?.kind==='item'){event.preventDefault();event.stopPropagation();commitSheetItemDrop(selected,section);return;}if(sheetDrag?.kind!=='section')return;event.preventDefault();event.stopPropagation();const movingID=sheetDrag.id;clearSheetDrag();sheetMutate(layout=>{
+     const active=layout.tabs.find(t=>t.id===selected.id);const source=selected.sections.find(row=>row.id===movingID),target=selected.sections.find(row=>row.id===section.id);
+     if(!active||!source||!target||movingID===section.id)return layout;
+     ensureSheetSection(layout,selected,source);ensureSheetSection(layout,selected,target);
+     const from=active.sections.findIndex(row=>row.id===movingID),to=active.sections.findIndex(row=>row.id===section.id);
+     if(from>=0&&to>=0)active.sections.splice(from<to?to-1:to,0,...active.sections.splice(from,1));
+     return layout;
+    });};
+    button.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};
+   }
+   nav.append(button);
   }
-  body.prepend(nav);horizontalSheetTabs(nav,'sections',true);
-  visibleSections=visibleSections.filter(section=>section.id===selectedActionSectionID);
+  if(sheetEdit){
+   const add=document.createElement('button');add.type='button';add.className='sheet-section-add';add.textContent='+ Раздел';add.title='Создать раздел в текущей вкладке';
+   add.onclick=()=>{const name=prompt('Название раздела');if(!name?.trim())return;const id=`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;selectedSheetSections.set(selected.id,id);sheetMutate(layout=>{layout.tabs.find(t=>t.id===selected.id).sections.push({id,name:name.trim().slice(0,120),view:'list',collapsed:false,items:[]});return layout;});};nav.append(add);
+   const hidden=entries.filter(entry=>sheetLayout.hidden.includes(entry.key));if(hidden.length){const restore=document.createElement('button');restore.type='button';restore.className='sheet-section-add';restore.textContent=`Скрытые (${hidden.length})`;restore.onclick=()=>{const answer=prompt(hidden.map((entry,i)=>`${i+1}. ${entry.name}`).join('\n'));const entry=hidden[Number(answer)-1];if(entry)sheetMutate(layout=>{layout.hidden=layout.hidden.filter(item=>item!==entry.key);return layout;});};nav.append(restore);}
+  }
+  body.prepend(nav);horizontalSheetTabs(nav,'sections',!sheetEdit);
+  visibleSections=visibleSections.filter(section=>section.id===selectedSheetSections.get(selected.id));
  }
- if(sheetEdit){const toolbar=document.createElement('div');toolbar.className='sheet-edit-toolbar';const add=document.createElement('button');add.type='button';add.textContent='+ Раздел';add.onclick=()=>{const name=prompt('Название раздела');if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===selected.id).sections.push({id:`user:${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`,name:name.trim().slice(0,120),view:'list',collapsed:false,items:[]});return layout;});};toolbar.append(add);const hidden=entries.filter(entry=>sheetLayout.hidden.includes(entry.key));if(hidden.length){const restore=document.createElement('button');restore.type='button';restore.textContent=`Скрытые (${hidden.length})`;restore.onclick=()=>{const answer=prompt(hidden.map((entry,i)=>`${i+1}. ${entry.name}`).join('\n'));const entry=hidden[Number(answer)-1];if(entry)sheetMutate(layout=>{layout.hidden=layout.hidden.filter(item=>item!==entry.key);return layout;});};toolbar.append(restore);}body.append(toolbar);}
  for(const section of visibleSections){
   const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
-  const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=true;heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
+  const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=canReorderSheet();heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{if(!canReorderSheet()){event.preventDefault();return;}clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
   if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
-  if(!sectionTabsActive||sheetEdit)wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=sectionTabsActive?false:section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
+  if(!sectionTabsActive)wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=sheetEdit?'sheet-list':hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=sectionTabsActive?false:section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
   if(sheetEdit){
    listing.ondragover=event=>previewSheetDrop(event,listing);
    listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
   }
-  for(const key of section.items){
-   if(sourceGroups?.handled.has(key)){for(const group of sourceGroups.byEntry.get(key)||[])listing.append(renderSourceActionGroup(snapshot,group));continue;}
-   const item=elements.get(key);if(!item)continue;const frame=document.createElement('div');frame.className='sheet-entry'+(key.startsWith('stat:')?' sheet-entry-stat':'');frame.dataset.sheetItem=key;
-   if(sheetEdit){const drag=document.createElement('button');drag.type='button';drag.className='subtle sheet-handle';drag.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20m0-20-4 4m4-4 4 4m-4 16-4-4m4 4 4-4M2 12h20m-20 0 4-4m-4 4 4 4m16-4-4-4m4 4-4 4"/></svg>';drag.setAttribute('aria-label','Переместить карточку');drag.draggable=true;drag.title='Перетащить';drag.ondragstart=event=>{clearSheetDrag();sheetDrag={kind:'item',key};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',key);frame.classList.add('sheet-entry-moving');};drag.ondragend=clearSheetDrag;const hide=document.createElement('button');hide.type='button';hide.className='subtle sheet-entry-hide';hide.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3 21 21M10.6 6.2A10.5 10.5 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-3 3.4M6.4 6.4C3.8 8 3 12 3 12s3 6 9 6a10 10 0 0 0 3.6-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';hide.title='Скрыть элемент';hide.setAttribute('aria-label','Скрыть элемент');hide.onclick=()=>sheetMutate(layout=>{for(const tab of layout.tabs)for(const section of tab.sections)section.items=section.items.filter(item=>item!==key);layout.hidden.push(key);return layout;});const controls=document.createElement('div');controls.className='sheet-entry-controls';controls.append(drag,hide);frame.append(item,controls);frame.ondragover=event=>previewSheetDrop(event,listing);frame.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};}
+  const appendSheetEntry=(item,key,relatedKeys=[key])=>{
+   const frame=document.createElement('div');frame.className='sheet-entry'+(key.startsWith('stat:')?' sheet-entry-stat':'');frame.dataset.sheetItem=key;
+   if(sheetEdit){
+    frame.draggable=canReorderSheet();frame.classList.add('sheet-entry-draggable');
+    frame.title='Перетащите строку, чтобы переместить её. Правой кнопкой можно скрыть или перенести элемент.';
+    frame.ondragstart=event=>{
+     if(!canReorderSheet()||event.target.closest('input,textarea,select')){event.preventDefault();return;}
+     clearSheetDrag();sheetDrag={kind:'item',key,keys:relatedKeys};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',key);frame.classList.add('sheet-entry-moving');
+    };
+    frame.ondragend=clearSheetDrag;
+    frame.oncontextmenu=event=>{if(event.target.closest('input,textarea,select'))return;event.preventDefault();sheetEntryMenu(key,entries);};
+    frame.ondragover=event=>previewSheetDrop(event,listing);
+    frame.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
+   }
    frame.append(item);listing.append(frame);
+  };
+  for(const key of section.items){
+   if(sourceGroups?.handled.has(key)){
+    for(const group of sourceGroups.byEntry.get(key)||[])appendSheetEntry(renderSourceActionGroup(snapshot,group),key,[...new Set(group.choices.map(choice=>`action:${choice.actionId}`))]);
+    continue;
+   }
+   const item=elements.get(key);if(item)appendSheetEntry(item,key);
   }
   wrapper.append(listing);
   if(!(hasGroups&&!sheetEdit&&!listing.children.length))sheetMain.append(wrapper);
@@ -1467,48 +1918,55 @@ function renderSheetLayout(snapshot){
 }
 function updateCharacterPanelMode(){
  $('characterStatsTab').hidden=true;$('characterActionsTab').hidden=true;
- $('characterSettingsPanel').hidden=!characterSettingsOpen;
- $('characterSettingsToggle').setAttribute('aria-expanded',String(characterSettingsOpen));
- $('characterMechanicsToggle').setAttribute('aria-expanded',String(!!characterEditSession));
- $('characterMechanicsToggle').classList.toggle('active',!!characterEditSession);
- $('characterLayoutToggle').classList.toggle('active',sheetEdit);
+ $('characterSettingsPanel').hidden=!sheetEdit||!characterSettingsOpen;
+ $('characterSettingsToggle').hidden=true;
+ $('characterLayoutToggle').hidden=true;
+ $('characterMechanicsToggle').setAttribute('aria-expanded',String(sheetEdit));
+ $('characterMechanicsToggle').classList.toggle('active',sheetEdit);
 }
-$('characterLayoutToggle').onclick=()=>{if(characterEditSession)return toast('Завершите редактирование персонажа');sheetEdit=!sheetEdit;if(characterWatch.snapshot)renderCharacterPanel();};
-$('characterSettingsToggle').onclick=()=>{if(characterEditSession)return toast('Сначала сохраните или отмените редактирование');characterSettingsOpen=!characterSettingsOpen;if(!characterSettingsOpen)characterMechanicsOpen=false;updateCharacterPanelMode();};
-$('characterMechanicsToggle').onclick=()=>characterEditSession?confirmLeaveEdit():openCharacterEdit();
+$('characterTokenOptions').onclick=()=>{if(!sheetEdit||!isEditorView())return;characterSettingsOpen=!characterSettingsOpen;updateCharacterPanelMode();};
+$('characterLayoutToggle').onclick=()=>{};
+$('characterSettingsToggle').onclick=()=>{};
+$('characterMechanicsToggle').onclick=()=>{
+ if(sheetEdit){if(characterEditSession){confirmLeaveEdit();return;}if(playerCharacterDraft){if(playerCharacterHasChanges()&&!confirm('Несохранённые изменения персонажа будут потеряны. Выйти?'))return;discardPlayerEdit();return;}sheetEdit=false;characterSettingsOpen=false;renderCharacterPanel();return;}
+ const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.edit)return;
+ if(snapshot.permissions.manage&&isEditorView())openCharacterEdit();
+ else{playerCharacterDraft={characterId:snapshot.characterId,name:snapshot.instance.name||'',avatarFile:null,avatarPreview:'',resetAvatar:false,placeholderAvatar:false,saving:false,stats:{},invalid:new Set()};sheetHintClosed=false;sheetEdit=true;characterSettingsOpen=false;renderCharacterPanel();}
+};
 function renderCharacterPanel(){
+ hideStatInspection();
  const token=navigationToken(selected),snapshot=characterWatch.snapshot,linkedID=token?.characterInstanceId||'',gm=isEditorView(),ready=!!linkedID&&snapshot?.characterId===linkedID;
  if(!gm)characterSettingsOpen=false;
  if(actionTargetPicker.request?.action.characterId!==linkedID)actionTargetPicker.close();
  const loading=!!linkedID&&!ready&&(characterWatchReason==='pending'||characterWatchReason==='replaced'),retainDisplayed=!!token&&loading&&!!characterDisplayedID&&!$('characterSummary').hidden,deferInitial=!!token&&loading&&!characterDisplayedID;
  characterPanel.hidden=!token||deferInitial;
  characterPanel.inert=retainDisplayed;if(retainDisplayed)characterPanel.setAttribute('aria-busy','true');else characterPanel.removeAttribute('aria-busy');
- if(!token){closeInventoryDrawer();if(characterEditSession)releaseEditSession();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
+ if(!token){closeInventoryDrawer();if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
  if(retainDisplayed||deferInitial)return;
- if(characterDisplayedID!==linkedID){if(characterEditSession)releaseEditSession();characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';sheetEdit=false;$('characterMechanicsSection').open=false;}
+ if(characterDisplayedID!==linkedID){if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';sheetEdit=false;$('characterMechanicsSection').open=false;}
  characterPanel.dataset.characterId=linkedID;
- $('characterSettingsToggle').hidden=!gm;
+ $('characterSettingsToggle').hidden=true;
 
  const instance=ready?snapshot.instance:null;
  const unavailable=!!linkedID&&!ready&&['accessRevoked','unavailable','closed'].includes(characterWatchReason);$('characterUnavailable').hidden=!unavailable;$('characterPending').hidden=ready||unavailable;$('characterSummary').hidden=!ready;characterRecoveryToggle.hidden=!unavailable||!gm;$('characterIdentitySection').hidden=true;$('characterLinkSection').hidden=!gm;$('characterTechnicalSection').hidden=!gm||!ready;$('characterMechanicsSection').hidden=true;if(!ready)$('characterSettingsPanel').hidden=!gm||!characterSettingsOpen;
  if(ready){
   const canManage=!!snapshot.permissions?.manage&&gm;
   $('editCharacterPreset').hidden=!canManage||!instance.presetId;
-  $('characterMechanicsToggle').hidden=!canManage;
+  $('characterMechanicsToggle').hidden=!snapshot.permissions?.edit;
   $('characterMechanicsSection').hidden=true;
   $('characterLinkSection').hidden=!gm;
   $('characterTechnicalSection').hidden=!gm;
   $('characterName').textContent=characterDisplayTitle(snapshot.effective?.name||instance.name||'Без имени',snapshot.characterId);
   $('characterSubtitle').textContent=snapshot.preset?.name||'';
   $('characterRenameRow').hidden=!snapshot.permissions?.edit;
-  if(document.activeElement!==$('characterRename'))$('characterRename').value=characterEditSession?.name??instance.name??'';
+  if(document.activeElement!==$('characterRename'))$('characterRename').value=characterEditSession?.name??playerCharacterDraft?.name??instance.name??'';
   $('characterTechnicalID').textContent=snapshot.characterId;
   $('characterTechnicalPreset').textContent=instance.presetId?`${snapshot.preset?.name||instance.presetId} (${instance.presetId})`:'Без пресета';
   $('characterTechnicalMechanics').textContent=instance.materialized?'Самостоятельная (materialized)':instance.presetId?'Следует шаблону':'Самостоятельная';
   $('characterTechnicalArtwork').textContent=snapshot.effective?.artwork?.source==='character'?'Собственный artwork':snapshot.effective?.artwork?.status==='missing'?'Artwork отсутствует':snapshot.effective?.artwork?.source==='preset'?'Artwork шаблона':'Placeholder';
   const view=editSnapshot(snapshot);renderCharacterStats(view);renderCharacterResources(view);renderCharacterActions(view);renderSheetLayout(view);renderCharacterInventory(view);updateEditButtons();
   $('characterAvatarControls').hidden=true;
-  const draft=characterEditSession,hasPreset=!!instance.presetId&&!!snapshot.preset;
+  const draft=characterEditSession||playerCharacterDraft,hasPreset=!!instance.presetId&&!!snapshot.preset;
   const avatarOverridden=!!(instance.artworkPath||instance.avatarAssetId!==undefined&&instance.avatarAssetId!==null);
   const presetArtwork=snapshot.presetArtwork;
   const sameAsPreset=(snapshot.effective?.avatarAssetId||'')===(presetArtwork?.assetId||'');
@@ -1660,7 +2118,7 @@ $('characterParameterCreate').onclick=()=>{
 };
 updateCharacterParameterValue(true);
 function setCharacterAvatarFile(file){
- const d=characterEditSession;if(!d||!file)return;
+ const d=characterEditSession||playerCharacterDraft;if(!d||!file)return;
  if(file.size>10*1024*1024||!['image/png','image/jpeg','image/webp'].includes(file.type))throw new Error('Выберите PNG, JPEG или WebP до 10 МиБ');
  if(d.avatarPreview)URL.revokeObjectURL(d.avatarPreview);
  if(characterAvatarDisplayController)characterAvatarDisplayController.abort();
@@ -1668,13 +2126,13 @@ function setCharacterAvatarFile(file){
  renderCharacterPanel();
 }
 $('characterAvatarUpload').onchange=e=>{const file=e.target.files?.[0];e.target.value='';try{setCharacterAvatarFile(file);}catch(error){toast(error.message);}};
-$('characterRename').oninput=()=>{if(characterEditSession)characterEditSession.name=$('characterRename').value;};$('characterRename').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('characterRename').blur();}};
+$('characterRename').oninput=()=>{if(characterEditSession||playerCharacterDraft){(characterEditSession||playerCharacterDraft).name=$('characterRename').value;updateEditButtons();}};$('characterRename').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('characterRename').blur();}};
 function clearCharacterImageDraft(d){
  d.avatarFile=null;d.selectedMediaAsset='';d.artworkPath='';if(d.avatarPreview){URL.revokeObjectURL(d.avatarPreview);d.avatarPreview='';}
  characterAssetPicker.close();
 }
-$('characterAvatarReset').onclick=()=>{const d=characterEditSession;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=true;d.placeholderAvatar=false;renderCharacterPanel();};
-$('characterAvatarPlaceholder').onclick=()=>{const d=characterEditSession;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=false;d.placeholderAvatar=true;renderCharacterPanel();};
+$('characterAvatarReset').onclick=()=>{const d=characterEditSession||playerCharacterDraft;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=true;d.placeholderAvatar=false;renderCharacterPanel();};
+$('characterAvatarPlaceholder').onclick=()=>{const d=characterEditSession||playerCharacterDraft;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=false;d.placeholderAvatar=true;renderCharacterPanel();};
 async function selectCharacterLibraryAsset(d,file){
  if(!d||!file?.assetId||!file.path)return;
  d.selectedMediaAsset='';d.artworkPath=file.path;d.avatarFile=null;d.resetAvatar=false;d.placeholderAvatar=false;
@@ -1684,6 +2142,7 @@ async function selectCharacterLibraryAsset(d,file){
  d.avatarPreview=URL.createObjectURL(blob);renderCharacterPanel();
 }
 function openCharacterAvatarGallery(){
+ if(playerCharacterDraft){$('characterAvatarUpload').click();return;}
  const d=characterEditSession;if(!d||!isEditorView())return;
  characterAssetPicker.open({title:'Аватар персонажа',actionLabel:'Выбрать',onSelect:file=>selectCharacterLibraryAsset(d,file),onUpload:setCharacterAvatarFile}).catch(error=>toast(error.message));
 }
