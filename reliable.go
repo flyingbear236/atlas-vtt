@@ -178,6 +178,7 @@ type Command struct {
 	CharacterID              string                     `json:"characterId,omitempty"`
 	CharacterDefinitionID    string                     `json:"characterDefinitionId,omitempty"`
 	CharacterEdit            *CharacterEditPayload      `json:"characterEdit,omitempty"`
+	TraceEdit                *characterTraceEdit        `json:"traceEdit,omitempty"`
 	CharacterWatch           uint64                     `json:"characterWatch,omitempty"`
 	CharacterName            string                     `json:"characterName,omitempty"`
 	ItemID                   string                     `json:"itemId,omitempty"`

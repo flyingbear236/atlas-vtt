@@ -47,6 +47,10 @@ func decodeNestedCharacter(id string, fields *RulesetFields, registry EffectiveR
 		return CharacterInstance{}, err
 	}
 	instance.Persistent = true
+	instance.StatFieldOverrides, err = decodeNestedStatFieldOverrides(fields.values["stat_field_overrides"])
+	if err != nil {
+		return CharacterInstance{}, err
+	}
 	instance.Materialized.ActionIDs = rulesetGrantIDs(fields.values["actions"])
 	instance.EffectIDs = rulesetGrantIDs(fields.values["effects"])
 	instance.Inventory, err = decodeInventory(fields.values["inventory"])
@@ -78,6 +82,26 @@ func decodeNestedCharacter(id string, fields *RulesetFields, registry EffectiveR
 		}
 	}
 	return validateDecodedCharacter(instance, registry)
+}
+
+// Nested v0.4 character TOML stores keys as quoted complete stat addresses.
+func decodeNestedStatFieldOverrides(raw any) (map[string]int64, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	fields, ok := raw.(map[string]any)
+	if !ok || len(fields) > MaxStatsPerRegistry {
+		return nil, fmt.Errorf("stat_field_overrides must be a limited table")
+	}
+	result := make(map[string]int64, len(fields))
+	for address, rawValue := range fields {
+		value, ok := rawValue.(int64)
+		if !ok {
+			return nil, fmt.Errorf("stat_field_overrides %q must be an integer", address)
+		}
+		result[address] = value
+	}
+	return result, nil
 }
 
 func decodeInventory(raw any) ([]InventoryItem, error) {
@@ -171,6 +195,13 @@ func encodeNestedCharacter(instance CharacterInstance) ([]byte, error) {
 	fields := maps.Clone(instance.V04.values)
 	if instance.Name != "" {
 		fields["name"] = instance.Name
+	}
+	if len(instance.StatFieldOverrides) != 0 {
+		overrides := make(map[string]any, len(instance.StatFieldOverrides))
+		for path, value := range instance.StatFieldOverrides {
+			overrides[path] = value
+		}
+		fields["stat_field_overrides"] = overrides
 	}
 	for kind, ids := range map[string][]string{"action": instance.Materialized.ActionIDs, "effect": instance.EffectIDs} {
 		if len(ids) > 0 {

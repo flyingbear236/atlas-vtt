@@ -232,17 +232,18 @@ type CharacterMechanicalState struct {
 }
 
 type CharacterInstance struct {
-	ID              string                    `json:"id"`
-	PresetID        string                    `json:"presetId,omitempty"`
-	Name            string                    `json:"name"`
-	AvatarAssetID   *string                   `json:"avatarAssetId,omitempty"`
-	ArtworkPath     string                    `json:"artworkPath,omitempty"`
-	Materialized    *CharacterMechanicalState `json:"materialized,omitempty"`
-	ResourceCurrent map[string]StatValue      `json:"resourceCurrent,omitempty"`
-	Inventory       []InventoryItem           `json:"inventory,omitempty"`
-	EffectIDs       []string                  `json:"effectIds,omitempty"`
-	V04             *RulesetFields            `json:"v04,omitempty"` // custom fields of a v0.4 instance
-	Persistent      bool                      `json:"persistent,omitempty"`
+	ID                 string                    `json:"id"`
+	PresetID           string                    `json:"presetId,omitempty"`
+	Name               string                    `json:"name"`
+	AvatarAssetID      *string                   `json:"avatarAssetId,omitempty"`
+	ArtworkPath        string                    `json:"artworkPath,omitempty"`
+	Materialized       *CharacterMechanicalState `json:"materialized,omitempty"`
+	ResourceCurrent    map[string]StatValue      `json:"resourceCurrent,omitempty"`
+	StatFieldOverrides map[string]int64          `json:"statFieldOverrides,omitempty"` // per-character v0.4 literal fields
+	Inventory          []InventoryItem           `json:"inventory,omitempty"`
+	EffectIDs          []string                  `json:"effectIds,omitempty"`
+	V04                *RulesetFields            `json:"v04,omitempty"` // custom fields of a v0.4 instance
+	Persistent         bool                      `json:"persistent,omitempty"`
 }
 
 type RulesetRegistry struct {
@@ -656,6 +657,21 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 			}
 		}
 	}
+	if len(instance.StatFieldOverrides) > MaxStatsPerRegistry {
+		return errors.New("character stat field overrides exceed domain limits")
+	}
+	for address, value := range instance.StatFieldOverrides {
+		if registry.statPlan == nil {
+			return fmt.Errorf("stat field override %q requires a v0.4 ruleset", address)
+		}
+		_, valid := registry.statPlan.constants[address].(int64)
+		if !valid {
+			return fmt.Errorf("stat field %q is not an editable integer constant", address)
+		}
+		if value < -MaxSafeInteger || value > MaxSafeInteger {
+			return fmt.Errorf("stat field %q exceeds integer limits", address)
+		}
+	}
 	if instance.Materialized == nil {
 		return nil
 	}
@@ -920,6 +936,7 @@ func cloneCharacterInstance(instance CharacterInstance) CharacterInstance {
 		instance.Materialized = &snapshot
 	}
 	instance.ResourceCurrent = cloneStatValues(instance.ResourceCurrent)
+	instance.StatFieldOverrides = maps.Clone(instance.StatFieldOverrides)
 	if instance.AvatarAssetID != nil {
 		avatar := *instance.AvatarAssetID
 		instance.AvatarAssetID = &avatar

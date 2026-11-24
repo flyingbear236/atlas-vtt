@@ -48,6 +48,7 @@ type ActionEvent struct {
 	RollTotalText string               `json:"rollTotalText,omitempty"`
 	Success       *bool                `json:"success,omitempty"`
 	Messages      []string             `json:"messages,omitempty"`
+	Trace         *ActionTrace         `json:"trace,omitempty"`
 }
 
 type actionMessageAccess struct {
@@ -123,6 +124,9 @@ func (a actionAudience) project(e *actionJournalEntry) (ActionEvent, bool) {
 		return ActionEvent{}, false
 	}
 	out := e.ActionEvent
+	if !memberIsGM(a.peer.member) || a.peer.playerPreview {
+		out.Trace = nil
+	}
 	if out.Roll != nil {
 		out.RollTotalText = strconv.FormatInt(out.Roll.Total, 10)
 	}
@@ -208,6 +212,12 @@ func (s *Server) prepareAction(session *Session, p *peer, c Command, stream, dig
 	details := actionDetails{Source: result.Source, Target: result.Target, Variables: result.Variables, Skipped: result.Skipped}
 	if result.Plan != nil {
 		details.Changes = result.Plan.Changes
+		if result.Trace != nil {
+			result.Trace.Changes = append([]ActionChange(nil), result.Plan.Changes...)
+		}
+	}
+	if result.Trace != nil {
+		result.Trace.Variables = result.Variables
 	}
 	// Keep the exact JSON scalars (including int64 variables) across restart,
 	// without retaining the executor's character drafts in memory.
@@ -222,10 +232,41 @@ func (s *Server) prepareAction(session *Session, p *peer, c Command, stream, dig
 	if size > maxActionOutputBytes {
 		return nil, errors.New("action output exceeds journal limit")
 	}
+	// Diagnostic data never makes an otherwise-valid action fail to execute.
+	// Bound per-entry memory and persisted history independently of game output.
+	if result.Trace != nil {
+		for {
+			raw, err := json.Marshal(result.Trace)
+			if err != nil {
+				return nil, err
+			}
+			if len(raw) <= 8192 {
+				break
+			}
+			result.Trace.Truncated = true
+			switch {
+			case len(result.Trace.Reads) > 0:
+				result.Trace.Reads = result.Trace.Reads[:len(result.Trace.Reads)-1]
+			case len(result.Trace.Changes) > 0:
+				result.Trace.Changes = result.Trace.Changes[:len(result.Trace.Changes)-1]
+			case len(result.Trace.Variables) > 0:
+				result.Trace.Variables = nil
+			case len(result.Trace.Skipped) > 0:
+				result.Trace.Skipped = result.Trace.Skipped[:len(result.Trace.Skipped)-1]
+			case len(result.Trace.Effects) > 0:
+				result.Trace.Effects = result.Trace.Effects[:len(result.Trace.Effects)-1]
+			default:
+				result.Trace = nil
+			}
+			if result.Trace == nil {
+				break
+			}
+		}
+	}
 	entry := actionJournalEntry{ActionEvent: ActionEvent{
 		ExecutionID: id(), SceneID: p.sceneID, CharacterID: req.CharacterID, ActionID: req.ActionID, Timestamp: s.rollService.now().UTC(),
 		UserID: p.member.ID, AuthorName: p.member.Name, CharacterName: session.CharacterInstances[req.CharacterID].Name, ActionName: session.Ruleset.Registry.Actions[req.ActionID].Name,
-		Revision: session.ActionRevision + 1, Roll: result.Roll, Success: result.Success, Messages: result.Messages,
+		Revision: session.ActionRevision + 1, Roll: result.Roll, Success: result.Success, Messages: result.Messages, Trace: result.Trace,
 	}, Details: encoded, Stream: stream, Seq: c.Seq, Digest: digest, Target: result.Target, MessageAccess: messageAccess(result)}
 	player := &Member{}
 	entry.GMOnly = !a.scene.Published || !actionCharacterVisible(session, a.scene, player, req.CharacterID) || result.Target != nil && !actionCharacterVisible(session, a.scene, player, result.Target.CharacterID)
@@ -300,12 +341,20 @@ func (s *Server) publishAction(session *Session, m *actionCommit) {
 			continue
 		}
 		messages := event.Messages
+		// The detailed journal has its own GM-only delivery channel.
+		// Roll and message broadcasts remain as small as before.
+		trace := event.Trace
 		event.Messages = nil
+		event.Trace = nil
 		if event.Roll != nil {
 			s.send(p, map[string]any{"type": "actionRoll", "executionId": event.ExecutionID, "rollRevision": session.RollRevision, "event": event})
 		}
 		for i, text := range messages {
 			s.send(p, map[string]any{"type": "actionMessage", "executionId": event.ExecutionID, "sceneId": event.SceneID, "actionRevision": event.Revision, "index": i, "message": text, "event": event})
+		}
+		if trace != nil && memberIsGM(p.member) && !p.playerPreview {
+			event.Trace = trace
+			s.send(p, map[string]any{"type": "actionTrace", "event": event})
 		}
 	}
 	if len(m.changed) > 0 {

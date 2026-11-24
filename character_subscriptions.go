@@ -59,16 +59,51 @@ type inventorySheetField struct {
 	Path  []string `json:"path"`
 	Value string   `json:"value"`
 }
+type inventorySheetEffect struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Targets   []string `json:"targets,omitempty"`
+	Formula   string   `json:"formula,omitempty"`
+	Condition string   `json:"condition,omitempty"`
+	Stack     string   `json:"stack,omitempty"`
+	Value     *int64   `json:"value,omitempty"`
+	Status    string   `json:"status"`
+}
 type inventorySheetDetail struct {
-	Description string                `json:"description,omitempty"`
-	Fields      []inventorySheetField `json:"fields,omitempty"`
+	Effects     []inventorySheetEffect `json:"effects,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Fields      []inventorySheetField  `json:"fields,omitempty"`
 }
 
-func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem) map[string]inventorySheetDetail {
+func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem, directGrants ...EffectGrant) map[string]inventorySheetDetail {
 	if len(items) == 0 {
 		return nil
 	}
 	result := make(map[string]inventorySheetDetail, len(items))
+	// Same deterministic order as ActiveEffects for unique stacking.
+	firstSource := map[string]string{}
+	for _, item := range items {
+		if !item.Equipped {
+			continue
+		}
+		if registry.mechanics != nil {
+			if object, ok := registry.mechanics.objects[item.ObjectID]; ok {
+				for _, id := range object.effects {
+					if firstSource[id] == "" || item.ID < firstSource[id] {
+						firstSource[id] = item.ID
+					}
+				}
+			}
+		}
+	}
+	for _, grant := range directGrants {
+		if grant.EffectID == "" || grant.SourceID == "" {
+			continue
+		}
+		if firstSource[grant.EffectID] == "" || grant.SourceID < firstSource[grant.EffectID] {
+			firstSource[grant.EffectID] = grant.SourceID
+		}
+	}
 	for _, item := range items {
 		object := registry.Objects[item.ObjectID]
 		if object == nil {
@@ -76,11 +111,64 @@ func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem)
 		}
 		detail := inventorySheetDetail{}
 		detail.Description, _ = object.values["description"].(string)
+		if mechanics := registry.mechanics; mechanics != nil {
+			if compiled, ok := mechanics.objects[item.ObjectID]; ok {
+				overrides := map[string]int64{}
+				if item.Fields != nil {
+					raw, ok := item.Fields.values["effect_overrides"].(map[string]any)
+					if ok {
+						for id, v := range raw {
+							if n, ok := v.(int64); ok {
+								overrides[id] = n
+							}
+						}
+					}
+				}
+				for _, id := range compiled.effects {
+					effect := mechanics.effects[id]
+					if effect == nil {
+						continue
+					}
+					def := registry.Effects[id]
+					name := id
+					if def != nil {
+						if raw, ok := def.values["name"].(string); ok && raw != "" {
+							name = raw
+						}
+					}
+					entry := inventorySheetEffect{ID: "effect." + id, Name: name, Targets: append([]string(nil), effect.targets...), Formula: effect.formulaSource, Status: "Активен"}
+					if def != nil {
+						entry.Condition, _ = def.values["when"].(string)
+					}
+					if effect.unique {
+						entry.Stack = "unique"
+					}
+					if effect.sourceScope {
+						entry.Stack = "source"
+					}
+					if !item.Equipped {
+						entry.Status = "Снят"
+					} else if effect.unique && !effect.sourceScope && firstSource[id] != item.ID {
+						entry.Status = "Не складывается (unique)"
+					} else if entry.Condition != "" {
+						entry.Status = "Условие проверяется при расчёте"
+					}
+					if effect.additiveEditable {
+						value := effect.additiveValue
+						if override, ok := overrides[id]; ok {
+							value = override
+						}
+						entry.Value = &value
+					}
+					detail.Effects = append(detail.Effects, entry)
+				}
+			}
+		}
 		if len(detail.Description) > 2048 {
 			detail.Description = strings.ToValidUTF8(detail.Description[:2048], "�")
 		}
 		fields := registry.itemBindings(item)
-		for _, key := range []string{"id", "object", "equipped", "name", "description", "actions", "effects"} {
+		for _, key := range []string{"id", "object", "equipped", "name", "description", "actions", "effects", "effect_overrides"} {
 			delete(fields, key)
 		}
 		var walk func(map[string]any, []string)
@@ -125,26 +213,27 @@ type characterPermissions struct {
 }
 
 type characterSnapshot struct {
-	ActionSelectors       map[string]string               `json:"actionSelectors,omitempty"`
-	ActionGroups          map[string]string               `json:"actionGroups,omitempty"`
-	ActionPreviews        []ActionPreview                 `json:"actionPreviews,omitempty"`
-	InactiveActionSources []ActionSource                  `json:"inactiveActionSources,omitempty"`
-	ItemNames             map[string]string               `json:"itemNames,omitempty"`
-	ItemDetails           map[string]inventorySheetDetail `json:"itemDetails,omitempty"`
-	StatFields            map[string]statFieldsView       `json:"statFields,omitempty"`
-	ExecutionID           string                          `json:"executionId,omitempty"`
-	Type                  string                          `json:"type"`
-	CharacterWatch        uint64                          `json:"characterWatch"`
-	CharacterID           string                          `json:"characterId"`
-	Revision              uint64                          `json:"revision"`
-	RegistryRevision      uint64                          `json:"registryRevision"`
-	Instance              CharacterInstance               `json:"instance"`
-	Preset                *CharacterPresetDefinition      `json:"preset,omitempty"`
-	PresetArtwork         ArtworkResolution               `json:"presetArtwork,omitempty"`
-	Effective             EffectiveCharacter              `json:"effective"`
-	StatDefinitions       map[string]StatDefinition       `json:"statDefinitions"`
-	Actions               map[string]ActionDefinition     `json:"actions"`
-	Permissions           characterPermissions            `json:"permissions"`
+	ActionSelectors       map[string]string                `json:"actionSelectors,omitempty"`
+	ActionGroups          map[string]string                `json:"actionGroups,omitempty"`
+	ActionPreviews        []ActionPreview                  `json:"actionPreviews,omitempty"`
+	InactiveActionSources []ActionSource                   `json:"inactiveActionSources,omitempty"`
+	ItemNames             map[string]string                `json:"itemNames,omitempty"`
+	ItemDetails           map[string]inventorySheetDetail  `json:"itemDetails,omitempty"`
+	StatFields            map[string]statFieldsView        `json:"statFields,omitempty"`
+	StatTraces            map[string]*statCalculationTrace `json:"statTraces,omitempty"`
+	ExecutionID           string                           `json:"executionId,omitempty"`
+	Type                  string                           `json:"type"`
+	CharacterWatch        uint64                           `json:"characterWatch"`
+	CharacterID           string                           `json:"characterId"`
+	Revision              uint64                           `json:"revision"`
+	RegistryRevision      uint64                           `json:"registryRevision"`
+	Instance              CharacterInstance                `json:"instance"`
+	Preset                *CharacterPresetDefinition       `json:"preset,omitempty"`
+	PresetArtwork         ArtworkResolution                `json:"presetArtwork,omitempty"`
+	Effective             EffectiveCharacter               `json:"effective"`
+	StatDefinitions       map[string]StatDefinition        `json:"statDefinitions"`
+	Actions               map[string]ActionDefinition      `json:"actions"`
+	Permissions           characterPermissions             `json:"permissions"`
 }
 
 func characterSnapshotForMember(session *Session, member *Member, characterID string, watch uint64) (characterSnapshot, error) {
@@ -161,7 +250,11 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 		copy := clonePresetDefinition(definition)
 		preset = &copy
 	}
-	effective, err := EffectiveCharacterState(instance, preset, registry)
+	var traces map[string]*statCalculationTrace
+	if memberIsGM(member) && registry.statPlan != nil {
+		traces = map[string]*statCalculationTrace{}
+	}
+	effective, err := projectCharacterStatsWithTrace(instance, preset, registry, nil, nil, false, traces)
 	if err != nil {
 		return characterSnapshot{}, err
 	}
@@ -240,12 +333,17 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	for _, item := range instance.Inventory {
 		itemNames[item.ID] = inventoryItemName(registry.Objects, item)
 	}
+	directEffects := make([]EffectGrant, 0, len(instance.EffectIDs))
+	for _, id := range instance.EffectIDs {
+		directEffects = append(directEffects, EffectGrant{EffectID: id, SourceID: instance.ID})
+	}
 	return characterSnapshot{
 		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
-		ItemDetails:           inventoryDetailsForSheet(registry, instance.Inventory),
+		ItemDetails:           inventoryDetailsForSheet(registry, instance.Inventory, directEffects...),
 		ActionPreviews:        actionPreviewsForSheet(session.Ruleset, instance, effective, registry),
 		InactiveActionSources: inactiveSources,
 		StatFields:            statFieldsForSheet(registry, effective),
+		StatTraces:            traces,
 		Type:                  "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
 		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, PresetArtwork: presetArtwork, Effective: effective,
 		StatDefinitions: stats, Actions: actions,

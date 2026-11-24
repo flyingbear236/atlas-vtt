@@ -30,6 +30,7 @@ type ActionExecutionResult struct {
 	Messages         []string               `json:"messages,omitempty"`
 	Plan             *ActionChangePlan      `json:"plan,omitempty"`
 	Skipped          []ActionExecutionIssue `json:"skipped,omitempty"`
+	Trace            *ActionTrace           `json:"-"`
 	Errors           []ActionExecutionIssue `json:"errors,omitempty"`
 }
 
@@ -52,6 +53,7 @@ type actionExecution struct {
 	missingOptionalTarget bool
 	plan                  ActionChangePlan
 	result                ActionExecutionResult
+	statTraces            map[string]*statCalculationTrace
 }
 
 // ExecuteRulesetAction reads a consistent server snapshot. Callers holding a
@@ -68,6 +70,9 @@ func ExecuteRulesetAction(session *Session, sceneID string, member *Member, req 
 		modify := run.frame.modifyRoll
 		run.frame.modifyRoll = func(base exprValue) (exprValue, error) {
 			roll.Base = base.num.Num().Int64()
+			if run.result.Trace != nil {
+				run.result.Trace.RollBase = traceScalar(roll.Base)
+			}
 			if modify != nil {
 				return modify(base)
 			}
@@ -80,6 +85,9 @@ func ExecuteRulesetAction(session *Session, sceneID string, member *Member, req 
 			return run.failure("roll", err)
 		}
 		roll.Total = value.num.Num().Int64()
+		if run.result.Trace != nil {
+			run.result.Trace.RollTotal = traceScalar(roll.Total)
+		}
 		run.result.Roll = roll
 	}
 	if action.success != nil && !run.skip("success", action.success.UsesOptionalTarget) {
@@ -115,6 +123,9 @@ func ExecuteRulesetAction(session *Session, sceneID string, member *Member, req 
 		run.result.Plan = &run.plan
 	}
 	run.collectVariables()
+	if run.result.Trace != nil {
+		run.result.Trace.SkippedOperations = run.result.Skipped
+	}
 	return run.result, nil
 }
 
@@ -197,7 +208,9 @@ func (r *actionExecution) prepare(session *Session, sceneID string, member *Memb
 	if err != nil {
 		return err
 	}
-	state, err := characterStatsForRegistry(actor, registry)
+	r.statTraces = make(map[string]*statCalculationTrace)
+	preset := registry.Presets[actor.PresetID]
+	state, err := projectCharacterStatsWithTrace(actor, &preset, registry, nil, nil, false, r.statTraces)
 	if err != nil {
 		return err
 	}
@@ -216,6 +229,15 @@ func (r *actionExecution) prepare(session *Session, sceneID string, member *Memb
 		return err
 	}
 	r.frame = session.Ruleset.actionFrameWithEffects(req.ActionID, bindings, rng, state.activeEffects)
+	r.frame.effectOverrides = itemEffectOverrides(actor)
+	r.result.Trace = &ActionTrace{}
+	if def := registry.Actions[req.ActionID]; def.V04 != nil {
+		r.result.Trace.RollFormula, _ = def.V04.values["roll"].(string)
+		r.result.Trace.SuccessFormula, _ = def.V04.values["success"].(string)
+	}
+	r.frame.observeRead = r.appendTraceRead
+	r.frame.traceEffect = r.appendTraceEffect
+	r.frame.traceSkip = r.appendTraceSkip
 	r.plan = ActionChangePlan{
 		SessionID: session.ID, SceneID: scene.ID, SceneRevision: scene.Revision,
 		RegistryRevision: session.RegistryRevision, CharacterRevision: session.CharacterRevision,

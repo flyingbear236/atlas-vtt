@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"path"
 	"reflect"
 	"slices"
@@ -27,20 +28,21 @@ type characterTOMLDocument struct {
 	Character     characterTOMLBody `toml:"character"`
 }
 type characterTOMLBody struct {
-	ID              string          `toml:"id"`
-	Name            string          `toml:"name"`
-	PresetID        string          `toml:"preset_id,omitempty"`
-	Persistent      bool            `toml:"persistent"`
-	Materialized    bool            `toml:"materialized"`
-	Artwork         string          `toml:"artwork,omitempty"`
-	ArtworkMode     string          `toml:"artwork_mode,omitempty"` // "placeholder" is distinct from inheritance.
-	Actions         []string        `toml:"actions,omitempty"`
-	Stats           map[string]any  `toml:"stats,omitempty"`
-	ResourceInitial map[string]any  `toml:"resource_initial,omitempty"`
-	ResourceCurrent map[string]any  `toml:"resource_current,omitempty"`
-	Inventory       []any           `toml:"inventory,omitempty"`
-	EffectIDs       []string        `toml:"effect_ids,omitempty"`
-	V04             *map[string]any `toml:"ruleset_v04,omitempty"`
+	ID                 string           `toml:"id"`
+	Name               string           `toml:"name"`
+	PresetID           string           `toml:"preset_id,omitempty"`
+	Persistent         bool             `toml:"persistent"`
+	Materialized       bool             `toml:"materialized"`
+	Artwork            string           `toml:"artwork,omitempty"`
+	ArtworkMode        string           `toml:"artwork_mode,omitempty"` // "placeholder" is distinct from inheritance.
+	Actions            []string         `toml:"actions,omitempty"`
+	Stats              map[string]any   `toml:"stats,omitempty"`
+	ResourceInitial    map[string]any   `toml:"resource_initial,omitempty"`
+	ResourceCurrent    map[string]any   `toml:"resource_current,omitempty"`
+	StatFieldOverrides map[string]int64 `toml:"stat_field_overrides,omitempty"`
+	Inventory          []any            `toml:"inventory,omitempty"`
+	EffectIDs          []string         `toml:"effect_ids,omitempty"`
+	V04                *map[string]any  `toml:"ruleset_v04,omitempty"`
 }
 
 // A saved ATLAS instance has a flat, versioned [character] record.
@@ -122,7 +124,7 @@ func buildCharacterTOMLDocument(instance CharacterInstance, media map[string]str
 	}
 	body := characterTOMLBody{ID: instance.ID, Name: instance.Name, PresetID: instance.PresetID, Persistent: true,
 		Materialized: instance.Materialized != nil, Artwork: artwork, ArtworkMode: mode,
-		ResourceCurrent: characterTOMLValues(instance.ResourceCurrent), Inventory: inventoryTOML(instance.Inventory), EffectIDs: instance.EffectIDs}
+		ResourceCurrent: characterTOMLValues(instance.ResourceCurrent), StatFieldOverrides: maps.Clone(instance.StatFieldOverrides), Inventory: inventoryTOML(instance.Inventory), EffectIDs: instance.EffectIDs}
 	if instance.V04 != nil {
 		body.V04 = &instance.V04.values
 	}
@@ -213,6 +215,7 @@ func DecodeCharacterTOML(data []byte, media map[string]string, registry Effectiv
 		return CharacterInstance{}, err
 	}
 	instance.ResourceCurrent = current
+	instance.StatFieldOverrides = maps.Clone(b.StatFieldOverrides)
 	instance.Inventory, err = decodeInventory(b.Inventory)
 	if err != nil {
 		return CharacterInstance{}, err

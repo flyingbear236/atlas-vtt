@@ -11,8 +11,11 @@ import {constrainTokenMovement} from './movement-geometry.js';
 import {CharacterCatalog,CharacterWatch,statInputValue,statValueFromInput,actionDependencies} from './characters.js';
 import {DefinitionsEditor} from './definitions.js';
 import {ActionTargetPicker,displayRulesetValue} from './ruleset-sheet.js';
-import {collectStatDependencies,catalogDefinitionFields,catalogDerivedFields,catalogActionRules,catalogActionEntries,catalogActionSource,catalogFullPath,catalogParentPath} from './stat-catalog.js';
+import {CharacterTracePanel} from './character-trace.js';
+import {collectStatDependencies,catalogDefinitionFields,catalogDerivedFields,catalogActionEntries,catalogFullPath,catalogParentPath} from './stat-catalog.js';
 import {ActionVisualGate} from './action-visual-gate.js';
+import {ActionTraceJournal} from './action-trace-journal.js';
+import {ActionReferencePanel,renderActionReference} from './action-reference.js';
 import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
 import {createDicePanel,DiceAnimator,DiceRuntime} from './dice.js';
@@ -215,6 +218,7 @@ const characterWatch=new CharacterWatch(value=>send(value),onCharacterWatchChang
 async function loadCharacterCatalogPage(kind,cursor){const query=new URLSearchParams({session:credentials.session,kind,limit:'50'});if(cursor)query.set('cursor',cursor);const response=await fetch(`/api/characters?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error(await response.text());return response.json();}
 const characterCatalog=new CharacterCatalog(loadCharacterCatalogPage,()=>{renderTokenCreateOptions();renderCharacterPanel();});
 const actionVisualGate=new ActionVisualGate();
+const actionTraceJournal=new ActionTraceJournal();
 const displayUpdateSeq=new Map();
 const diceAnimator=new DiceAnimator({createRenderer:()=>new DiceRendererAdapter(),onError:error=>toast(`3D-анимация кубиков недоступна: ${error.message}`),onFinished:event=>dice.finishAnimation(event)});
 const dice=new DiceRuntime(createDicePanel(),{queue:queueCommand,getCharacterId:()=>navigationToken(selected)?.characterInstanceId||'',toast,animator:diceAnimator,onActionPresented:id=>actionVisualGate.present(id)});
@@ -441,6 +445,7 @@ function send(value){
 }
 function renderInteractionMode(){
  const authorized=isGM(state?.you||campaign?.you),preview=!!state?.playerPreview,pending=!!previewSwitchPending;
+ actionTraceJournal.setContext(state?.scene?.id||'',isEditorView());
  $('viewMode').hidden=!authorized||!state?.scene;$('gmView').classList.toggle('active',authorized&&!preview);$('playerView').classList.toggle('active',authorized&&preview);$('gmView').disabled=pending;$('playerView').disabled=pending;$('viewMode').classList.toggle('pending',pending);
  if(state||campaign)$('roleBadge').textContent=authorized?(preview?'ВЕДУЩИЙ · PLAYER VIEW':'ВЕДУЩИЙ'):'ИГРОК';
  document.querySelectorAll('.gm').forEach(el=>el.hidden=!authorized||!!state&&!isEditorView()&&!el.classList.contains('preview-always'));
@@ -576,6 +581,8 @@ function connect(){
   if(msg.type==='error'){const correction=blockedMoveCorrection(msg,drag,state?.tokens?.[msg.id],state?.scene?.id);if(correction){drag=correction.drag;if(correction.token){state.tokens[msg.id]=correction.token;tokenIndex.set(correction.token);}dirty=true;return;}regionInFlight=false;pendingActiveFocus='';if(msg.operation==='playerPreview'){preferredPlayerPreview=!!state?.playerPreview;previewSwitchPending=null;clearTimeout(previewSwitchTimer);previewSwitchTimer=null;renderInteractionMode();}if(msg.operation==='activeToken'&&pendingActiveSwitch&&state){state.activeTokenId=pendingActiveSwitch.activeTokenId;state.currentFloorId=pendingActiveSwitch.floorId;currentFloorID=pendingActiveSwitch.floorId;camera={...pendingActiveSwitch.camera};rememberActiveToken(state.scene.id,state.activeTokenId||'');pendingActiveSwitch=null;renderPanels();send({type:'sync'});dirty=true;}toast(msg.message);drag=null;if(!state&&desiredSceneID){desiredSceneID='';scenes.showHome();}return;}
   if(actionTargetPicker.handle(msg))return;
   if(msg.type==='rollHistory'&&msg.sceneId===state?.scene.id&&Number.isSafeInteger(msg.actionGeneration))actionGeneration=msg.actionGeneration;
+  actionTraceJournal.handle(msg);
+  if(msg.type==='actionTrace')return;
   if(dice.handle(msg))return;
   if(!state)return;
   if(msg.sceneId!==state.scene.id)return;
@@ -629,7 +636,8 @@ function activatePlayerToken(token,focus){
  renderPanels();dirty=true;return true;
 }
 function abortUploads(){for(const controller of uploadControllers)controller.abort();uploadControllers.clear();}
-function clearSceneState(preserveCharacterWatch=false){actionVisualGate.clear();displayUpdateSeq.clear();actionGeneration=null;actionTargetPicker.close();closeTokenContextMenu();closeTokenCreatePanel();saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);clearTimeout(transitionNameTimer);clearTimeout(previewSwitchTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;transitionNameTimer=null;transitionPropertyDrafts.clear();previewSwitchTimer=null;previewSwitchPending=null;viewportSaveDirty=false;abortUploads();dice.setScene('');if(preserveCharacterWatch){const previous=selected;selected=null;if(previous&&tokenRows.has(previous))tokenRows.get(previous).classList.remove('selected');fillProperties();}else{select(null);discardCharacterPanelDisplay();}selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;tokenIndex.clear();sceneRenderIndex.clear();renderBoundsPaths.clear();renderBoundsResources.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;renderInteractionMode();dirty=true;}
+function clearSceneState(preserveCharacterWatch=false){
+ actionTraceJournal.setContext('',false);actionVisualGate.clear();displayUpdateSeq.clear();actionGeneration=null;actionTargetPicker.close();closeTokenContextMenu();closeTokenCreatePanel();saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);clearTimeout(transitionNameTimer);clearTimeout(previewSwitchTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;transitionNameTimer=null;transitionPropertyDrafts.clear();previewSwitchTimer=null;previewSwitchPending=null;viewportSaveDirty=false;abortUploads();dice.setScene('');if(preserveCharacterWatch){const previous=selected;selected=null;if(previous&&tokenRows.has(previous))tokenRows.get(previous).classList.remove('selected');fillProperties();}else{select(null);discardCharacterPanelDisplay();}selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;tokenIndex.clear();sceneRenderIndex.clear();renderBoundsPaths.clear();renderBoundsResources.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;renderInteractionMode();dirty=true;}
 function rebuildTokenIndex(){tokenIndex.clear();movingTokens.clear();for(const t of Object.values(state.tokens)){tokenIndex.set(t);const v=visuals.get(t.id);if(v&&(v.x!==t.x||v.y!==t.y))movingTokens.add(t.id);}}
 function renderMembers(){
  $('members').replaceChildren();let online=0;
@@ -825,24 +833,39 @@ function renderCharacterStats(snapshot){
   output.textContent=definition.type==='boolean'?(shown.value?'Да':'Нет'):displayRulesetValue(shown.value);
   output.title=`stat.${statID} · эффективное значение`;if(isEditorView()&&snapshot.permissions?.manage)output.classList.add('character-stat-inspect-source');
   slot.append(output);
-  if(editable){
+  const useTraceEditor=isEditorView()&&snapshot.permissions?.manage&&definition.type==='integer'&&!!snapshot.statTraces&&!!definition.v04;
+  if(editable && !useTraceEditor){
    const gmDraft=characterEditSession,playerDraft=playerCharacterDraft;
-   const changed=gmDraft&&original&&JSON.stringify(gmDraft.stats[statID])!==JSON.stringify(original);
-   const base=playerDraft?.stats?.[statID]||changed? (playerDraft?.stats?.[statID]||gmDraft.stats[statID])
-    :fields?.base!==undefined?{type:definition.type,value:fields.base}:value;
+   const base=playerDraft?.stats?.[statID]??gmDraft?.stats?.[statID]
+    ??(fields?.base!==undefined?{type:definition.type,value:fields.base}:value);
    const input=gmDraft?editInput(statID,'stat',definition,base):playerStatInput(statID,definition,base,fields);
    input.classList.add('character-stat-inline-input');input.hidden=true;
    input.title=`stat.${statID}.default · значение этого персонажа`;
    output.classList.add('character-stat-clickable');output.tabIndex=0;output.setAttribute('role','button');output.setAttribute('aria-label',`Изменить ${title}`);
    const activate=()=>{output.hidden=true;input.hidden=false;slot.classList.add('active');updateEditButtons();input.focus();if(input.type!=='checkbox')input.select();};
    output.onclick=activate;output.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}};
-   input.addEventListener('blur',()=>{input.hidden=true;output.hidden=false;slot.classList.remove('active');updateEditButtons();});
+   input.addEventListener('blur',()=>{
+    if(input.checkValidity())output.textContent=definition.type==='boolean'?(input.checked?'Да':'Нет'):input.value;
+    input.hidden=true;output.hidden=false;slot.classList.remove('active');updateEditButtons();
+   });
    slot.append(input);
+  }
+  if(useTraceEditor){
+   output.classList.add('character-stat-clickable');output.tabIndex=0;output.setAttribute('role','button');output.setAttribute('aria-label',`Открыть расчёт: ${title}`);
+   output.onclick=()=>{hideStatInspection();characterTracePanel.open(snapshot,statID);};
+   output.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();output.click();}};
   }
   main.append(slot,name);
   card.append(main);
   const derived=createStatDerivedFields(fields,statID,isEditorView()&&snapshot.permissions?.manage);
-  if(derived)card.append(derived);
+  if(derived){
+   if(isEditorView()&&snapshot.statTraces)for(const value of derived.querySelectorAll('.character-stat-derived-value')){
+    value.classList.add('character-stat-clickable');value.tabIndex=0;value.setAttribute('role','button');
+    value.onclick=()=>{hideStatInspection();characterTracePanel.open(snapshot,statID);};
+    value.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();value.click();}};
+   }
+   card.append(derived);
+  }
   addStatInspection(card,snapshot,statID);
   container.append(card);
   if(definition.v04||characterEditSession||!snapshot.permissions?.manage||!isEditorView())continue;
@@ -874,7 +897,10 @@ function renderCharacterResources(snapshot){
   const input=characterEditSession&&snapshot.permissions?.manage
    ?editInput(statID,'resource',definition,resource.current,'current')
    :createCharacterResourceInput(snapshot,statID,definition,resource,'current');
-  input.classList.add('character-resource-value-input');if(isEditorView()&&snapshot.permissions?.manage)input.classList.add('character-stat-inspect-source');
+  input.classList.add('character-resource-value-input');if(isEditorView()&&snapshot.permissions?.manage){
+   input.classList.add('character-stat-inspect-source');
+   if(snapshot.statTraces)input.addEventListener('pointerdown',e=>{e.preventDefault();hideStatInspection();characterTracePanel.open(snapshot,statID);});
+  }
   if(input.type==='number'){
    const decrement=document.createElement('button'),increment=document.createElement('button');
    for(const [button,delta,label] of [[decrement,-1,'−'],[increment,1,'+']]){
@@ -894,7 +920,12 @@ function renderCharacterResources(snapshot){
   }
   row.dataset.sheetItem=`stat:${statID}`;
   const fields=snapshot.statFields?.[statID];if(!isEditorView())row.title=fields?.description||`stat.${statID}.current`;
-  const derived=createStatDerivedFields(fields,statID,isEditorView()&&snapshot.permissions?.manage);if(derived)row.append(derived);
+  const derived=createStatDerivedFields(fields,statID,isEditorView()&&snapshot.permissions?.manage);
+  if(derived){if(isEditorView()&&snapshot.statTraces)for(const value of derived.querySelectorAll('.character-stat-derived-value')){
+   value.classList.add('character-stat-clickable');value.tabIndex=0;value.setAttribute('role','button');
+   value.onclick=()=>{hideStatInspection();characterTracePanel.open(snapshot,statID);};
+   value.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();value.click();}};
+  }row.append(derived);}
   addStatInspection(row,snapshot,statID);
   container.append(row);
   if(!definition.v04&&!characterEditSession&&snapshot.permissions?.manage&&isEditorView()){
@@ -1016,19 +1047,30 @@ function characterSelectInventory(snapshot,id,open=true){
  const fields=snapshot.itemDetails?.[item.id]?.fields||[];
  if(fields.length){const heading=document.createElement('h3');heading.textContent='Свойства';inventoryDrawer.append(heading);
   const group=document.createElement('div');group.className='character-item-properties';renderInventoryFieldTree(group,nestInventoryFields(fields));inventoryDrawer.append(group);}
+ const itemEffects=snapshot.itemDetails?.[item.id]?.effects||[];
+ if(itemEffects.length){
+  const effectsHeading=document.createElement('h3');effectsHeading.textContent='Эффекты предмета';inventoryDrawer.append(effectsHeading);
+  const effectList=document.createElement('div');effectList.className='character-item-effects';
+  for(const effect of itemEffects){
+   const row=document.createElement('div');row.className='character-item-effect';
+   const heading=document.createElement('div');heading.className='character-item-effect-heading';
+   const name=document.createElement('strong');name.textContent=effect.name||effect.id;
+   const value=document.createElement('b');if(effect.value!==undefined&&effect.value!==null){const n=Number(effect.value);value.textContent=(n>=0?'+':'')+n;}else value.textContent='';
+   heading.append(name,value);row.append(heading);
+   const id=document.createElement('small');id.textContent=effect.id;row.append(id);
+   const status=document.createElement('span');status.className='character-item-effect-status';status.textContent=effect.status;row.append(status);
+   if(effect.targets?.length){const targets=document.createElement('div');targets.textContent=effect.targets.join(' · ');row.append(targets);}
+   if(effect.formula){const formula=document.createElement('code');formula.textContent=effect.formula;row.append(formula);}
+   if(effect.condition){const condition=document.createElement('small');condition.textContent=`Условие: ${effect.condition}`;row.append(condition);}
+   effectList.append(row);
+  }
+  inventoryDrawer.append(effectList);
+ }
  const choices=itemActionsForInventory(snapshot,item.id);
  if(choices.length){
   const heading=document.createElement('h3');heading.textContent='Действия предмета';inventoryDrawer.append(heading);
   const actions=document.createElement('div');actions.className='character-item-actions';
-  for(const choice of choices){
-   const action=snapshot.actions?.[choice.actionId],preview=(snapshot.actionPreviews||[]).find(p=>p.actionId===choice.actionId&&(p.sourceId||'')===item.id);
-   const button=document.createElement('button');button.type='button';button.className='character-source-roll'+(choice.actionId.endsWith('.damage')?' damage':'');
-   button.disabled=!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||sheetEdit;
-   const name=document.createElement('strong');name.className='character-source-roll-name';name.innerHTML=actionDiceSvg;name.append(document.createTextNode(action?.name||choice.actionId));button.append(name);
-   const formula=renderActionFormula(preview,true);if(!item.equipped&&!preview)formula.textContent='Доступно после экипировки';button.append(formula);
-   const total=shortActionFormula(preview);if(total){const sum=document.createElement('strong');sum.className='character-source-roll-total';sum.textContent=total;button.append(sum);}
-   button.onclick=()=>executeRulesetActionChoice(snapshot,choice);actions.append(button);
-  }
+  for(const choice of choices)actions.append(renderActionChoiceCard(snapshot,choice,item));
   inventoryDrawer.append(actions);
   if(!item.equipped){const note=document.createElement('p');note.className='character-item-hint';note.textContent='Экипируйте предмет, чтобы использовать его действия.';inventoryDrawer.append(note);}
  }
@@ -1076,8 +1118,8 @@ function renderCharacterInventory(snapshot){
 function actionFormulaPreviews(snapshot,actionID){
  return (snapshot.actionPreviews||[]).filter(preview=>preview.actionId===actionID);
 }
-function renderActionFormula(preview,compact=false){
- const row=document.createElement('div');row.className='character-formula'+(compact?' character-formula-compact':'');
+function renderActionFormula(preview){
+ const row=document.createElement('span');row.className='character-formula character-formula-compact';
  if(!preview){const unknown=document.createElement('span');unknown.className='muted';unknown.textContent='Без броска';row.append(unknown);return row;}
  if(!preview.parts?.length){const unknown=document.createElement('span');unknown.className='muted';unknown.textContent='Расчёт при выполнении';row.append(unknown);}
  for(const [index,part] of (preview.parts||[]).entries()){
@@ -1090,6 +1132,9 @@ function renderActionFormula(preview,compact=false){
  if(preview.notes?.length){const warn=document.createElement('span');warn.className='character-formula-uncertain';warn.textContent='Частично';warn.title=preview.notes.join(' · ');row.append(warn);}
  return row;
 }
+function canInspectAction(snapshot){
+ return isEditorView()&&!!snapshot?.permissions?.manage;
+}
 function characterSelectAction(snapshot,id,open=true){
  characterBrowseAction=id;characterBrowseOpen=open;
  const action=snapshot.actions?.[id],detail=characterInspectorFrame(action?.name||id||'Действие',snapshot.actionGroups?.[id]||action?.group||'Действия');if(!detail)return;
@@ -1097,19 +1142,6 @@ function characterSelectAction(snapshot,id,open=true){
  for(const row of $('characterLayoutContent').querySelectorAll('.character-action-card[data-action-id]'))row.setAttribute('aria-selected',String(row.dataset.actionId===id));
  if(!action)return;
  const desc=document.createElement('p');desc.className='character-table-full-description';desc.textContent=action.description||'Описание действия отсутствует.';detail.append(desc);
- const choices=(snapshot.effective?.actionSources||[]).filter(choice=>choice.actionId===id&&Object.hasOwn(snapshot.actionSelectors||{},id));
- if(choices.length){const heading=document.createElement('strong');heading.textContent='Расчёт и выполнение';detail.append(heading);
-  for(const choice of choices){
-   if(choice.sourceId){const source=document.createElement('small');source.className='character-formula-source';source.textContent=snapshot.itemNames?.[choice.sourceId]||choice.sourceId;detail.append(source);}
-   const preview=(snapshot.actionPreviews||[]).find(row=>row.actionId===id&&(row.sourceId||'')===(choice.sourceId||''));
-   detail.append(renderActionFormula(preview));
-   if(preview?.notes?.length){const note=document.createElement('p');note.className='character-formula-notes';note.textContent=preview.notes.join('. ');detail.append(note);
-    if(preview.formula){const original=document.createElement('code');original.className='character-formula-original';original.textContent=preview.formula;detail.append(original);}}
-
-   renderRulesetActionChoice(detail,snapshot,choice);
-  }
- }
- else if(action.v04){const note=document.createElement('p');note.className='muted';note.textContent='Для выполнения действия нет доступного источника.';detail.append(note);}
 }
 function executeRulesetActionChoice(snapshot,choice){
  const source=choice.sourceId,actionName=snapshot.actions[choice.actionId]?.name||choice.actionId;
@@ -1121,26 +1153,40 @@ function executeRulesetActionChoice(snapshot,choice){
  if(selector==='select(character)'||selector==='select(object)')actionTargetPicker.open(sceneId,action,title);
  else if(!enqueueAction(sceneId,action))toast('Действие недоступно');
 }
-function renderRulesetActionChoice(row,snapshot,choice){
- const button=document.createElement('button');
- button.type='button';button.className='subtle character-roll';
- button.dataset.actionId=choice.actionId;
- button.dataset.sourceId=choice.sourceId||'';
- const source=choice.sourceId,actionName=snapshot.actions[choice.actionId]?.name||choice.actionId;
- const title=source?`${actionName} · ${snapshot.itemNames?.[source]||source} (${source})`:actionName;
- button.textContent=source?`${snapshot.itemNames?.[source]||source} · ${source}`:'Выполнить';
- button.setAttribute('aria-label',title);
- const selector=snapshot.actionSelectors[choice.actionId];
- button.disabled=!snapshot.permissions?.edit||state?.playerPreview||sheetEdit;
- button.onclick=()=>executeRulesetActionChoice(snapshot,choice);
- row.append(button);
-}
-// The browser groups by the inventory item instance, not the action's name or ID.
-// A hit and a damage action sharing the same sourceId become two real buttons
-// inside one item card; the existing action executor remains unchanged.
 const expandedActionSources=new Map();
 const actionItemSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3 21 10 11 20 4 21l1-7L15 4m-9 10 4 4"/></svg>';
 const actionDiceSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8" cy="8" r="1"/><circle cx="16" cy="16" r="1"/><circle cx="12" cy="12" r="1"/></svg>';
+function renderActionChoiceCard(snapshot,choice,item){
+ const inspect=canInspectAction(snapshot),id=choice.actionId,name=snapshot.actions?.[id]?.name||id;
+ const preview=(snapshot.actionPreviews||[]).find(row=>row.actionId===id&&(row.sourceId||'')===(choice.sourceId||''));
+ const unequipped=!!item&&!item.equipped;
+ const row=document.createElement(inspect?'div':'button');
+ row.className='character-source-roll'+(id.endsWith('.damage')?' damage':'');
+ const heading=document.createElement('span');heading.className='character-source-roll-name';heading.innerHTML=actionDiceSvg;
+ const title=document.createElement(inspect?'button':'span');title.textContent=name;
+ if(inspect){
+  title.type='button';title.className='action-reference-trigger';
+  title.setAttribute('aria-label',`Открыть инспектор действия «${name}»`);
+  title.onclick=()=>openActionReference(snapshot,id);
+ }
+ heading.append(title);
+
+ const content=document.createElement(inspect?'button':'span');content.className='character-source-roll-content';
+ const formula=renderActionFormula(preview);if(unequipped&&!preview)formula.textContent='Доступно после экипировки';content.append(formula);
+ const summary=shortActionFormula(preview);
+ if(summary){const total=document.createElement('strong');total.className='character-source-roll-total';total.textContent=summary;content.append(total);}
+ const execute=inspect?content:row;
+ execute.type='button';execute.disabled=unequipped||!snapshot.permissions?.edit||state?.playerPreview||!!previewSwitchPending||sheetEdit;
+ const source=choice.sourceId?snapshot.itemNames?.[choice.sourceId]||choice.sourceId:'';
+ execute.setAttribute('aria-label',`Выполнить ${name}${source?` · ${source}`:''}`);
+ if(!execute.disabled){
+  row.classList.add('is-runnable');
+  execute.onclick=()=>executeRulesetActionChoice(snapshot,choice);
+  if(inspect)row.onclick=event=>{if(!event.target.closest('button'))execute.click();};
+ }
+ row.append(heading,content);
+ return row;
+}
 function renderSourceActionGroup(snapshot,group){
  const item=group.sourceId?(snapshot.instance?.inventory||[]).find(row=>row.id===group.sourceId):null;
  const first=group.choices[0];
@@ -1158,18 +1204,7 @@ function renderSourceActionGroup(snapshot,group){
  head.append(toggle);
  if(item){const badge=document.createElement('span');badge.className='character-source-equipped'+(item.equipped?'':' off');badge.textContent=item.equipped?'Экипирован':'Не экипирован';head.append(badge);}
  root.append(head);
- for(const choice of group.choices){
-  const action=snapshot.actions?.[choice.actionId],preview=(snapshot.actionPreviews||[]).find(row=>row.actionId===choice.actionId&&(row.sourceId||'')===(choice.sourceId||''));
-  const button=document.createElement('button');button.type='button';button.className='character-source-roll'+(choice.actionId.endsWith('.damage')?' damage':'');
-  button.disabled=!!item&&!item.equipped||!snapshot.permissions?.edit||state?.playerPreview||sheetEdit;
-  button.setAttribute('aria-label',`${label}: ${action?.name||choice.actionId}`);
-  const title=document.createElement('strong');title.className='character-source-roll-name';title.innerHTML=actionDiceSvg;title.append(document.createTextNode(action?.name||choice.actionId));button.append(title);
-  const formula=renderActionFormula(preview,true);if(item&&!item.equipped&&!preview)formula.textContent='Доступно после экипировки';button.append(formula);
-  const summary=shortActionFormula(preview);
-  if(summary){const output=document.createElement('strong');output.className='character-source-roll-total';output.textContent=summary;button.append(output);}
-  button.onclick=()=>executeRulesetActionChoice(snapshot,choice);
-  body.append(button);
- }
+ for(const choice of group.choices)body.append(renderActionChoiceCard(snapshot,choice,item));
  root.append(body);return root;
 }
 function sheetActionIDs(snapshot){
@@ -1179,30 +1214,29 @@ function sheetActionIDs(snapshot){
 }
 function renderCharacterActions(snapshot){
  const container=$('characterActions'),removal=$('characterActionRemoveList');container.replaceChildren();removal.replaceChildren();
- const choicesByAction=new Map();
- for(const choice of snapshot.effective?.actionSources||[]){
-  if(!Object.hasOwn(snapshot.actionSelectors||{},choice.actionId))continue;
-  if(!choicesByAction.has(choice.actionId))choicesByAction.set(choice.actionId,[]);
-  choicesByAction.get(choice.actionId).push(choice);
- }
+ const inspect=canInspectAction(snapshot);
  const ids=sheetActionIDs(snapshot).sort((a,b)=>(snapshot.actions?.[a]?.name||a).localeCompare(snapshot.actions?.[b]?.name||b)||a.localeCompare(b));
  for(const actionID of ids){
   const action=snapshot.actions?.[actionID],row=document.createElement('section');
   row.className='character-action-card character-action-table-row';row.dataset.sheetItem=`action:${actionID}`;row.dataset.actionId=actionID;
   row.setAttribute('aria-selected',String(characterBrowseAction===actionID));
   const main=document.createElement('div');main.className='character-action-main';
-  const title=document.createElement('button');title.type='button';title.className='character-action-pick';title.textContent=action?.name||actionID;title.onclick=()=>characterSelectAction(snapshot,actionID);
+  const title=document.createElement(inspect?'button':'span');title.className='character-action-pick';title.textContent=action?.name||actionID;
+  if(inspect){
+   title.type='button';
+   if(action?.v04){title.classList.add('action-reference-trigger');title.onclick=()=>openActionReference(snapshot,actionID);}
+   else title.onclick=()=>characterSelectAction(snapshot,actionID);
+  }
   main.append(title);
   const group=snapshot.actionGroups?.[actionID]||action?.group||'';
   if(group){const breadcrumb=document.createElement('small');breadcrumb.className='muted';breadcrumb.textContent=group;main.append(breadcrumb);}
   row.append(main);
   const previews=actionFormulaPreviews(snapshot,actionID);
   const note=document.createElement('div');note.className='character-action-note';
-  if(action?.v04){note.append(renderActionFormula(previews[0],true));if(previews.length>1){const more=document.createElement('small');more.textContent=`Ещё источников: ${previews.length-1}`;note.append(more);}}
+  if(action?.v04){note.append(renderActionFormula(previews[0]));if(previews.length>1){const more=document.createElement('small');more.textContent=`Ещё источников: ${previews.length-1}`;note.append(more);}}
   else {note.textContent=action?.description||'Описание отсутствует';note.title=action?.description||'';}
   row.append(note);
   const controls=document.createElement('div');controls.className='character-action-buttons';
-  if(action?.v04){for(const choice of choicesByAction.get(actionID)||[])renderRulesetActionChoice(controls,snapshot,choice);}
   if(characterEditSession?.actionIds.includes(actionID))controls.append(editRemoveButton(actionID,'action'));
   row.append(controls);
   container.append(row);
@@ -1253,6 +1287,32 @@ function appendCatalogFormula(target,formula,definitions,owner){
   target.append(ref);from=pattern.lastIndex;
  }
  if(from<expression.length)target.append(document.createTextNode(expression.slice(from)));
+}
+// The floating inspector uses authoritative server traces and persists edits in
+// one atomic, GM-only character command. The small hover tooltip is unchanged.
+const characterTracePanel=new CharacterTracePanel({save:(snapshot,changes)=>{
+ if(!isEditorView()||!snapshot.permissions?.manage||characterWatch.snapshot?.characterId!==snapshot.characterId)return false;
+ return queueCommand('characterTraceEdit',{
+  characterId:snapshot.characterId,
+  traceEdit:{expectedInstance:snapshot.instance,expectedRegistryRevision:snapshot.registryRevision,changes}
+ });
+}});
+const actionReferencePanel=new ActionReferencePanel();
+function actionReferenceGroup(snapshot,id){
+ const known=catalogActionEntries(actionDefinitionRegistry||{}).find(row=>row.def.id===id)?.group;
+ if(known)return known;
+ const name=snapshot.actionGroups?.[id];
+ return name?{id:id.slice(0,id.lastIndexOf('.')),name}:null;
+}
+function openActionReference(snapshot,id){
+ if(!canInspectAction(snapshot))return;
+ const definition=snapshot.actions?.[id]||actionDefinitionRegistry?.[id];
+ if(!definition)return;
+ hideStatInspection();
+ if(inventoryDrawer.hidden){
+  characterBrowseOpen=false;$('characterTableInspector')?.closest('.character-table-browser')?.classList.remove('detail-open');
+ }
+ actionReferencePanel.open(snapshot,definition,actionReferenceGroup(snapshot,id));
 }
 // GM-only read-only stat inspection, including outside the editing mode.
 const statInspectTip=document.createElement('aside');
@@ -1349,38 +1409,25 @@ function renderStatCatalog(){
  }else for(const button of list.querySelectorAll('[data-catalog-id]')){
   const active=button.dataset.catalogId===catalogState.selected;button.classList.toggle('selected',active);button.setAttribute('aria-selected',String(active));
  }
- const detail=catalogEl('[data-catalog-detail]');detail.replaceChildren();
+ const detail=catalogEl('[data-catalog-detail]');detail.replaceChildren();detail.classList.toggle('action-reference-catalog',catalogState.kind==='action');
  const def=items.find(row=>row.id===catalogState.selected);if(!def)return;
- const title=document.createElement('h3');title.textContent=def.name||def.id;detail.append(title);
- const technical=document.createElement('p');technical.className='character-stat-catalog-id';technical.textContent=catalogFullPath(def.id,catalogState.kind);detail.append(technical);
- const info=document.createElement('div');info.className='character-stat-catalog-info';detail.append(info);
- const parent=catalogState.kind==='stat'?catalogParentPath(def.id):'';
- if(parent){const group=document.createElement('div');group.className='character-stat-catalog-group';group.append(document.createTextNode('Группа '));const crumb=document.createElement('strong');crumb.textContent=parent;group.append(crumb);detail.insertBefore(group,info);}
  if(catalogState.kind==='action'){
+  detail.classList.add('action-reference-catalog');
   const group=catalogCache.actionGroups.get(def.id);
-  if(group){const affiliation=document.createElement('div');affiliation.className='character-stat-catalog-action-group';
-   affiliation.append(document.createTextNode('Группа действий '));
-   const path=document.createElement('strong');path.textContent=catalogFullPath(group.id,'action');affiliation.append(path);
-   if(group.name){const name=document.createElement('span');name.textContent=group.name;affiliation.append(name);}info.append(affiliation);
-  }
-  const description=catalogDefinitionFields(def).description||def.description;
-  if(description){const note=document.createElement('p');note.className='character-stat-catalog-description';note.textContent=description;info.append(note);}
-  const source=catalogActionSource(def);
-  if(source){const heading=document.createElement('h4');heading.textContent='Полное определение действия';info.append(heading);
-   const pre=document.createElement('pre');pre.className='character-stat-catalog-action-source';
-   const code=document.createElement('code');code.textContent=`[${catalogFullPath(def.id,'action')}]\n${source}`;pre.append(code);info.append(pre);
-  }
-  const rules=catalogActionRules(def);
-  if(rules.length){const heading=document.createElement('h4');heading.textContent='Формулы и условия действия';info.append(heading);
-   for(const rule of rules){const row=document.createElement('div');row.className='character-stat-catalog-derived';const name=document.createElement('span');name.textContent=rule.path;const code=document.createElement('code');code.textContent=rule.value;row.append(name,code);info.append(row);}
-  }
+  detail.append(renderActionReference(def,group));
   const deps=dependencyStatus(def,editSnapshot(snapshot));
-  for(const dependency of deps.missing){const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=`Необходимо добавить зависимость «${dependency.definition.name||dependency.id}» для работы «${def.name||def.id}».`;info.append(p);}
-  for(const error of deps.errors){const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=error;info.append(p);}
+  for(const dependency of deps.missing){const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=`Необходимо добавить зависимость «${dependency.definition.name||dependency.id}» для работы «${def.name||def.id}».`;detail.append(p);}
+  for(const error of deps.errors){const p=document.createElement('p');p.className='character-stat-catalog-dependency';p.textContent=error;detail.append(p);}
   const present=d?.actionIds.includes(def.id);
   const add=document.createElement('button');add.type='button';add.className=present?'subtle':'primary';add.textContent=present?'Убрать у персонажа':'Добавить действие';
   add.onclick=()=>{statCatalogDialog.close();if(present){if(confirm(`Убрать «${def.name||def.id}» у персонажа?`))removeEditItem(def.id,'action');}else assignActionToEdit(def.id);};detail.append(add);return;
  }
+ detail.classList.remove('action-reference-catalog');
+ const title=document.createElement('h3');title.textContent=def.name||def.id;detail.append(title);
+ const technical=document.createElement('p');technical.className='character-stat-catalog-id';technical.textContent=catalogFullPath(def.id,catalogState.kind);detail.append(technical);
+ const info=document.createElement('div');info.className='character-stat-catalog-info';detail.append(info);
+ const parent=catalogParentPath(def.id);
+ if(parent){const group=document.createElement('div');group.className='character-stat-catalog-group';group.append(document.createTextNode('Группа '));const crumb=document.createElement('strong');crumb.textContent=parent;group.append(crumb);detail.insertBefore(group,info);}
  const parsed=catalogDefinitionFields(def);
  const kind=document.createElement('p');kind.className='muted';kind.textContent=`${def.kind==='resource'||parsed.resource?'Ресурс':'Стат'} · ${def.type||parsed.type||'integer'}`;info.append(kind);
  const statDescription=parsed.description||def.description;
@@ -1832,10 +1879,9 @@ function renderSheetLayout(snapshot){
  const selected=full.tabs.find(t=>t.id===characterActiveTab);
  if(!selected)return;
  if(selected.id!=='inventory'&&!inventoryDrawer.hidden)closeInventoryDrawer();
-  const actionInTab=selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')));
-  const legacyActionInTab=actionInTab&&selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')&&!snapshot.actions?.[key.slice(7)]?.v04));
+  const legacyActionInTab=selected.sections.some(section=>section.items.some(key=>key.startsWith('action:')&&!snapshot.actions?.[key.slice(7)]?.v04));
   const sourceGroups=groupSheetActionSources(snapshot,selected.sections);
-  const useBrowser=!sheetEdit&&legacyActionInTab;
+  const useBrowser=!sheetEdit&&legacyActionInTab&&canInspectAction(snapshot);
   const browser=useBrowser?document.createElement('div'):null;
   const sheetMain=useBrowser?document.createElement('div'):body;
   if(browser){browser.className='character-table-browser';sheetMain.className='character-table-main';browser.append(sheetMain);const detail=document.createElement('aside');detail.className='character-table-detail';detail.id='characterTableInspector';browser.append(detail);body.append(browser);}
@@ -1883,7 +1929,7 @@ function renderSheetLayout(snapshot){
   const wrapper=document.createElement('section');wrapper.className='character-section sheet-section';wrapper.dataset.section=section.id;
   const heading=document.createElement('div');heading.className='sheet-heading';if(sheetEdit){heading.draggable=canReorderSheet();heading.ondragend=clearSheetDrag;heading.ondragstart=event=>{if(!canReorderSheet()){event.preventDefault();return;}clearSheetDrag();sheetDrag={kind:'section',id:section.id,tab:selected.id};event.dataTransfer.setData('text/plain',section.id);};heading.ondragover=event=>event.preventDefault();heading.ondrop=event=>{event.preventDefault();if(sheetDrag?.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===sheetDrag.tab),to=layout.tabs.find(t=>t.id===selected.id);let moving=from?.sections.find(s=>s.id===sheetDrag.id);if(!moving){moving=buildSheet(layout,entries).tabs.find(t=>t.id===sheetDrag.tab)?.sections.find(s=>s.id===sheetDrag.id);if(moving)moving={...moving,items:[...moving.items]};}if(!moving||!to)return layout;for(const t of layout.tabs)t.sections=t.sections.filter(s=>s.id!==moving.id);const index=to.sections.findIndex(s=>s.id===section.id);to.sections.splice(index<0?to.sections.length:index,0,moving);return layout;});sheetDrag=null;};}const collapse=document.createElement('button');collapse.type='button';collapse.className='subtle';collapse.textContent=`${section.collapsed?'▸':'▾'} ${section.name}`;collapse.onclick=()=>sheetMutate(layout=>{const target=layout.tabs.find(t=>t.id===selected.id)?.sections.find(s=>s.id===section.id);if(!target){const targetSection={...section,collapsed:!section.collapsed};layout.tabs.find(t=>t.id===selected.id).sections.push(targetSection);}else target.collapsed=!target.collapsed;return layout;});heading.append(collapse);
   if(sheetEdit){const more=document.createElement('button');more.type='button';more.textContent='⋯';more.className='subtle';more.onclick=()=>sheetSectionMenu(selected,section,entries);heading.append(more);heading.oncontextmenu=event=>{event.preventDefault();sheetSectionMenu(selected,section,entries);};}
-  if(!sectionTabsActive)wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=sheetEdit?'sheet-list':hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА','ВЫПОЛНИТЬ']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=sectionTabsActive?false:section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
+  if(!sectionTabsActive)wrapper.append(heading);const listing=document.createElement('div');const hasGroups=section.items.some(key=>sourceGroups?.handled.has(key));const tableActions=!sheetEdit&&!hasGroups&&section.items.length>0&&section.items.every(key=>key.startsWith('action:'));listing.className=sheetEdit?'sheet-list':hasGroups?'sheet-source-actions':tableActions?'sheet-action-table':section.view==='grid'?'sheet-grid':'sheet-list';if(tableActions){const header=document.createElement('div');header.className='character-action-columns';for(const label of ['ДЕЙСТВИЕ','ФОРМУЛА']){const cell=document.createElement('span');cell.textContent=label;header.append(cell);}listing.append(header);}listing.hidden=sectionTabsActive?false:section.collapsed;if(sheetEdit)listing.style.minHeight='28px';
   if(sheetEdit){
    listing.ondragover=event=>previewSheetDrop(event,listing);
    listing.ondrop=event=>{if(sheetDrag?.kind!=='item')return;event.preventDefault();event.stopPropagation();finishSheetDrop(selected,section);};
@@ -1914,7 +1960,7 @@ function renderSheetLayout(snapshot){
   wrapper.append(listing);
   if(!(hasGroups&&!sheetEdit&&!listing.children.length))sheetMain.append(wrapper);
  }
- if(useBrowser&&actionInTab&&selected.id!=='inventory'){const ids=selected.sections.flatMap(section=>section.items.filter(key=>key.startsWith('action:')).map(key=>key.slice(7)));if(!ids.includes(characterBrowseAction))characterBrowseAction=ids[0]||'';characterSelectAction(snapshot,characterBrowseAction,characterBrowseOpen);}
+ if(useBrowser&&selected.id!=='inventory'){const ids=selected.sections.flatMap(section=>section.items.filter(key=>key.startsWith('action:')&&!snapshot.actions?.[key.slice(7)]?.v04).map(key=>key.slice(7)));if(!ids.includes(characterBrowseAction))characterBrowseAction=ids[0]||'';characterSelectAction(snapshot,characterBrowseAction,characterBrowseOpen);}
 }
 function updateCharacterPanelMode(){
  $('characterStatsTab').hidden=true;$('characterActionsTab').hidden=true;
@@ -1935,7 +1981,15 @@ $('characterMechanicsToggle').onclick=()=>{
 };
 function renderCharacterPanel(){
  hideStatInspection();
+ if(characterTracePanel.openId&&characterTracePanel.openId!==characterWatch.snapshot?.characterId)characterTracePanel.close(true);
+ if(actionReferencePanel.openId){
+  const current=characterWatch.snapshot;
+  if(!canInspectAction(current)||current.characterId!==actionReferencePanel.characterId||!current.actions?.[actionReferencePanel.openId])actionReferencePanel.close();
+  else if(current.registryRevision!==actionReferencePanel.registryRevision)actionReferencePanel.refresh(current,current.actions[actionReferencePanel.openId],actionReferenceGroup(current,actionReferencePanel.openId));
+  else actionReferencePanel.position();
+ }
  const token=navigationToken(selected),snapshot=characterWatch.snapshot,linkedID=token?.characterInstanceId||'',gm=isEditorView(),ready=!!linkedID&&snapshot?.characterId===linkedID;
+ if(actionReferencePanel.openId&&actionReferencePanel.characterId!==linkedID)actionReferencePanel.close();
  if(!gm)characterSettingsOpen=false;
  if(actionTargetPicker.request?.action.characterId!==linkedID)actionTargetPicker.close();
  const loading=!!linkedID&&!ready&&(characterWatchReason==='pending'||characterWatchReason==='replaced'),retainDisplayed=!!token&&loading&&!!characterDisplayedID&&!$('characterSummary').hidden,deferInitial=!!token&&loading&&!characterDisplayedID;

@@ -15,7 +15,7 @@ func characterCommandType(commandType string) bool {
 	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
 		"characterStatSet", "characterStatReset", "characterResourceCurrentSet", "characterResourceCurrentReset",
 		"characterResourceInitialSet", "characterResourceAdd", "characterParameterAdd", "characterParameterRemove", "characterAvatarSet", "characterAvatarReset",
-		"characterActionAdd", "characterActionRemove", "characterEdit", "characterItemEquip":
+		"characterActionAdd", "characterActionRemove", "characterEdit", "characterItemEquip", "characterTraceEdit":
 		return true
 	default:
 		return false
@@ -214,7 +214,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
 		command.Type == "characterSetPersistent" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" ||
 		command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" || command.Type == "characterEdit" ||
-		command.Type == "characterActionAdd" || command.Type == "characterActionRemove"
+		command.Type == "characterActionAdd" || command.Type == "characterActionRemove" || command.Type == "characterTraceEdit"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
 	}
@@ -224,6 +224,10 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		return err
 	}
 	switch command.Type {
+	case "characterTraceEdit":
+		if err := applyCharacterTraceEdit(session, command, registry, mutation); err != nil {
+			return err
+		}
 	case "characterEdit":
 		if err := applyCharacterEdit(session, command, registry, mutation); err != nil {
 			return err
@@ -651,7 +655,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 	}
 
 	switch command.Type {
-	case "characterCreate", "characterEdit", "characterNameSet", "characterStatSet", "characterStatReset", "characterItemEquip",
+	case "characterCreate", "characterEdit", "characterNameSet", "characterStatSet", "characterStatReset", "characterItemEquip", "characterTraceEdit",
 		"characterResourceInitialSet", "characterResourceCurrentSet", "characterResourceCurrentReset":
 		if registry.statPlan == nil {
 			break
@@ -754,7 +758,7 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" || command.Type == "characterEdit" {
 			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
-		derivedResourcesChanged := session.Ruleset.Registry.statPlan != nil && (command.Type == "characterStatSet" || command.Type == "characterStatReset" || command.Type == "characterNameSet" || command.Type == "characterItemEquip")
+		derivedResourcesChanged := session.Ruleset.Registry.statPlan != nil && (command.Type == "characterStatSet" || command.Type == "characterStatReset" || command.Type == "characterNameSet" || command.Type == "characterItemEquip" || command.Type == "characterTraceEdit")
 		if derivedResourcesChanged || command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" || command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" || command.Type == "characterEdit" {
 			s.publishCharacterDisplayChanged(session, mutation.changedCharacters)
 		}

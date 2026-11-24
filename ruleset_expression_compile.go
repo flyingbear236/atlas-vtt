@@ -412,7 +412,18 @@ func (s RulesetSnapshot) actionFrameWithEffects(id string, bindings map[string]a
 		frame.Locals["roll"] = roll
 		if entries := effects.forTarget(owner + "roll"); len(entries) != 0 {
 			ctx := actionEffectContext(bindings)
+			ctx.trace = func(e *activeDefinition, g EffectGrant, before, after exprValue) {
+				if frame.traceEffect != nil {
+					frame.traceEffect(e, g, before, after)
+				}
+			}
+			ctx.skip = func(e *activeDefinition, reason string) {
+				if frame.traceSkip != nil {
+					frame.traceSkip(e, reason)
+				}
+			}
 			frame.modifyRoll = func(base exprValue) (exprValue, error) {
+				ctx.overrides = frame.effectOverrides
 				return applyEffects(entries, base, frame, ctx, true)
 			}
 		}

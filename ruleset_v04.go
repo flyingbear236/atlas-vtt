@@ -145,7 +145,7 @@ var rulesetReservedFields = map[string][]string{
 	"effect":    {"name", "description", "target", "formula", "priority", "when", "scope", "stack"},
 	"action":    {"name", "description", "target", "roll", "var", "success", "message", "apply", "on"},
 	"object":    {"name", "description", "actions", "effects"},
-	"character": {"name", "actions", "effects", "stat", "inventory"},
+	"character": {"name", "actions", "effects", "stat", "inventory", "stat_field_overrides"},
 }
 
 // Reserved subtables can imply a containing entity when the author uses only

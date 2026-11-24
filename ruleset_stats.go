@@ -51,16 +51,21 @@ func (effects *ActiveEffects) CharacterState(instance CharacterInstance, preset 
 }
 
 type statPass struct {
-	instance CharacterInstance
-	registry EffectiveRegistry
-	state    EffectiveCharacter
-	effects  *ActiveEffects
-	values   map[string]any
-	visiting map[string]bool
-	frame    ExpressionFrame
+	instance  CharacterInstance
+	registry  EffectiveRegistry
+	state     EffectiveCharacter
+	effects   *ActiveEffects
+	values    map[string]any
+	visiting  map[string]bool
+	frame     ExpressionFrame
+	trace     map[string]*statCalculationTrace
+	overrides map[string]map[string]int64
 }
 
 func projectCharacterStats(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, effects *ActiveEffects, actorFields map[string]any, resourcesOnly bool) (EffectiveCharacter, error) {
+	return projectCharacterStatsWithTrace(instance, preset, registry, effects, actorFields, resourcesOnly, nil)
+}
+func projectCharacterStatsWithTrace(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, effects *ActiveEffects, actorFields map[string]any, resourcesOnly bool, trace map[string]*statCalculationTrace) (EffectiveCharacter, error) {
 	state := characterSourceState(instance, preset, registry)
 	if registry.mechanics != nil {
 		actions, active, err := registry.characterGrants(instance, state.ActionIDs, resourcesOnly)
@@ -80,7 +85,7 @@ func projectCharacterStats(instance CharacterInstance, preset *CharacterPresetDe
 	if plan == nil {
 		return state, nil
 	}
-	pass := statPass{instance: instance, registry: registry, state: state, effects: effects, values: map[string]any{}, visiting: map[string]bool{}}
+	pass := statPass{instance: instance, registry: registry, state: state, effects: effects, values: map[string]any{}, visiting: map[string]bool{}, trace: trace, overrides: itemEffectOverrides(instance)}
 	pass.frame = ExpressionFrame{Bindings: map[string]any{"actor": actorFields, "actor.id": instance.ID, "actor.name": instance.Name}, readStat: pass.read}
 	outputs := plan.outputs
 	if resourcesOnly {
@@ -125,6 +130,11 @@ func (p *statPass) compute(address string) (any, error) {
 		raw, found := plan.constants[address]
 		if !found {
 			return nil, fmt.Errorf("unknown stat address")
+		}
+		if override, present := p.instance.StatFieldOverrides[address]; present {
+			if _, integer := raw.(int64); integer {
+				raw = override
+			}
 		}
 		return p.modify(address, raw, false)
 	}
@@ -203,16 +213,51 @@ func (p *statPass) formula(step statStep) (any, error) {
 
 func (p *statPass) modify(address string, raw any, integerDestination bool) (any, error) {
 	entries := p.effects.forTarget(address)
+	var record *statCalculationTrace
+	if p.trace != nil {
+		record = &statCalculationTrace{Initial: raw}
+		p.trace[address] = record
+	}
 	if len(entries) == 0 {
+		if record != nil {
+			record.Result = raw
+		}
 		return raw, nil
 	}
 	v, err := exprScalar(raw)
 	if err != nil {
 		return nil, err
 	}
-	v, err = applyEffects(entries, v, &p.frame, effectContext{}, integerDestination)
+	ctx := effectContext{overrides: p.overrides}
+	if record != nil {
+		ctx.skip = func(effect *activeDefinition, reason string) {
+			if len(record.Skipped) < 16 {
+				record.Skipped = append(record.Skipped, statEffectSkip{EffectID: effect.id, Reason: reason})
+			}
+		}
+		ctx.trace = func(effect *activeDefinition, grant EffectGrant, before, after exprValue) {
+			entry := statEffectTrace{EffectID: effect.id, SourceID: grant.SourceID, Item: grant.Item, Before: before.scalar(), After: after.scalar(), Formula: effect.formulaSource}
+			if grant.Item && effect.additiveEditable && before.typ == exprNumber && after.typ == exprNumber {
+				entry.Editable = true
+				entry.Value = effect.additiveValue
+				if override, ok := p.overrides[grant.SourceID][effect.id]; ok {
+					entry.Value = override
+				}
+				if entry.Value >= 0 {
+					entry.Formula = fmt.Sprintf("target + %d", entry.Value)
+				} else {
+					entry.Formula = fmt.Sprintf("target - %d", -entry.Value)
+				}
+			}
+			record.Effects = append(record.Effects, entry)
+		}
+	}
+	v, err = applyEffects(entries, v, &p.frame, ctx, integerDestination)
 	if err != nil {
 		return nil, err
+	}
+	if record != nil {
+		record.Result = v.scalar()
 	}
 	return v.scalar(), nil
 }

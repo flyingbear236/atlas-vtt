@@ -376,6 +376,10 @@ type ExpressionFrame struct {
 	valueAddress       string
 	intermediate       *exprValue
 	modifyRoll         func(exprValue) (exprValue, error)
+	observeRead        func(string, exprValue)
+	traceEffect        func(*activeDefinition, EffectGrant, exprValue, exprValue)
+	traceSkip          func(*activeDefinition, string)
+	effectOverrides    map[string]map[string]int64
 	diceTrace          *[]DiceGroup
 	Bindings           map[string]any
 	RNG                DiceRNG
@@ -584,6 +588,9 @@ func (f *ExpressionFrame) read(n *exprNode) (exprValue, error) {
 	v, err := exprScalar(raw)
 	if err != nil {
 		return exprValue{}, err
+	}
+	if f.observeRead != nil {
+		f.observeRead(n.address, v)
 	}
 	return f.chargeRead(n, v)
 }

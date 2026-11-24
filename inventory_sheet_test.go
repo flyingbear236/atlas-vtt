@@ -32,3 +32,18 @@ func TestInventoryDetailsForSheetNestedFields(t *testing.T) {
 		t.Fatal("internal action grants leaked into item properties")
 	}
 }
+
+func TestInventoryDetailsForSheetItemEffectOverrides(t *testing.T) {
+	registry := EffectiveRegistry{
+		Objects:   map[string]*RulesetFields{"ring": {values: map[string]any{"name": "Кольцо силы"}}},
+		Effects:   map[string]*RulesetFields{"strength": {values: map[string]any{"name": "Усиление", "formula": "target + 2", "target": "stat.strength"}}},
+		mechanics: &rulesetMechanics{objects: map[string]objectMechanics{"ring": {effects: []string{"strength"}}}, effects: map[string]*compiledEffect{"strength": {id: "strength", formulaSource: "target + 2", targets: []string{"stat.strength"}, additiveEditable: true, additiveValue: 2}}},
+	}
+	fields, _ := newRulesetFields(map[string]any{"effect_overrides": map[string]any{"strength": int64(5)}})
+	items := []InventoryItem{{ID: "ring-a", ObjectID: "ring", Equipped: true, Fields: fields}, {ID: "ring-b", ObjectID: "ring", Equipped: true}}
+	result := inventoryDetailsForSheet(registry, items)
+	if len(result["ring-a"].Effects) != 1 || result["ring-a"].Effects[0].Value == nil || *result["ring-a"].Effects[0].Value != 5 ||
+		len(result["ring-b"].Effects) != 1 || result["ring-b"].Effects[0].Value == nil || *result["ring-b"].Effects[0].Value != 2 {
+		t.Fatalf("instance override leaked into template: %+v", result)
+	}
+}
