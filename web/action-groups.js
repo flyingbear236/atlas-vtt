@@ -53,3 +53,24 @@ export function shortActionFormula(preview) {
   }
   return dice.join(' + ') + (modifier > 0 ? `${dice.length ? ' + ' : ''}${modifier}` : modifier < 0 ? ` − ${-modifier}` : '') || '0';
 }
+
+// Display only the additive part known before choosing targets and rolling.
+// Notes mean the final result may differ; the server remains authoritative.
+export function knownActionFormula(preview) {
+ if(!preview?.parts?.length)return null;
+ const dice=[];let modifier=0,partial=!!preview.notes?.length;
+ for(const part of preview.parts){
+  const sign=part.sign==='-'?-1:1;
+  if(part.value==null||part.value===''){
+   if(!/^\d+d\d+$/i.test(part.label)||sign<0)return null;
+   dice.push(part.label.replace(/^1d/i,'d'));
+  }else{
+   const number=Number(part.value);
+   if(!Number.isFinite(number)){partial=true;continue;}
+   modifier+=sign*number;
+  }
+ }
+ if(!dice.length)return null;
+ const total=dice.join(' + ')+(modifier>0?' + '+modifier:modifier<0?' − '+(-modifier):'');
+ return {text:total,partial};
+}

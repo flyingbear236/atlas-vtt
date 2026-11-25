@@ -43,6 +43,7 @@ type DefinitionOperationReceipt struct {
 }
 
 type definitionRegistryResponse struct {
+	ObjectCatalog       objectCatalog     `json:"objectCatalog"`
 	RegistryRevision    uint64            `json:"registryRevision"`
 	Ruleset             RulesetSnapshot   `json:"ruleset"`
 	ArtworkWarnings     []ArtworkWarning  `json:"artworkWarnings,omitempty"`
@@ -764,6 +765,7 @@ func (s *Server) readDefinitions(w http.ResponseWriter, request *http.Request) {
 	}
 	reply(w, definitionRegistryResponse{
 		RegistryRevision:    session.RegistryRevision,
+		ObjectCatalog:       objectCatalogForEditor(effective),
 		Ruleset:             ruleset,
 		ArtworkWarnings:     rulesetArtworkWarnings(session.Ruleset, session.Assets),
 		Campaign:            emptyCampaignRegistry(),

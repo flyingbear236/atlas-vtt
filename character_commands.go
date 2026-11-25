@@ -15,7 +15,7 @@ func characterCommandType(commandType string) bool {
 	case "characterCreate", "characterLink", "characterSetPersistent", "characterNameSet",
 		"characterStatSet", "characterStatReset", "characterResourceCurrentSet", "characterResourceCurrentReset",
 		"characterResourceInitialSet", "characterResourceAdd", "characterParameterAdd", "characterParameterRemove", "characterAvatarSet", "characterAvatarReset",
-		"characterActionAdd", "characterActionRemove", "characterEdit", "characterItemEquip", "characterTraceEdit":
+		"characterActionAdd", "characterActionRemove", "characterEdit", "characterItemEquip", "characterItemAdd", "characterItemCreate", "characterTraceEdit":
 		return true
 	default:
 		return false
@@ -214,7 +214,8 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 	admin := command.Type == "characterCreate" || command.Type == "characterLink" ||
 		command.Type == "characterSetPersistent" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" ||
 		command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" || command.Type == "characterEdit" ||
-		command.Type == "characterActionAdd" || command.Type == "characterActionRemove" || command.Type == "characterTraceEdit"
+		command.Type == "characterActionAdd" || command.Type == "characterActionRemove" || command.Type == "characterTraceEdit" ||
+		command.Type == "characterItemAdd" || command.Type == "characterItemCreate"
 	if admin && !memberIsGM(member) {
 		return errors.New("action is available to the GM")
 	}
@@ -224,6 +225,14 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		return err
 	}
 	switch command.Type {
+	case "characterItemAdd", "characterItemCreate":
+		if err := applyCharacterItemAdd(session, command, mutation); err != nil {
+			return err
+		}
+		registry, err = MergeDefinitionRegistries(sessionRegistries(session))
+		if err != nil {
+			return err
+		}
 	case "characterTraceEdit":
 		if err := applyCharacterTraceEdit(session, command, registry, mutation); err != nil {
 			return err
@@ -655,7 +664,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 	}
 
 	switch command.Type {
-	case "characterCreate", "characterEdit", "characterNameSet", "characterStatSet", "characterStatReset", "characterItemEquip", "characterTraceEdit",
+	case "characterCreate", "characterEdit", "characterNameSet", "characterStatSet", "characterStatReset", "characterItemEquip", "characterItemAdd", "characterItemCreate", "characterTraceEdit",
 		"characterResourceInitialSet", "characterResourceCurrentSet", "characterResourceCurrentReset":
 		if registry.statPlan == nil {
 			break
@@ -758,7 +767,7 @@ func (s *Server) characterCommand(session *Session, peer *peer, command Command)
 		if command.Type == "characterAvatarSet" || command.Type == "characterAvatarReset" || command.Type == "characterEdit" {
 			s.publishCharacterTokens(session, mutation.changedCharacters)
 		}
-		derivedResourcesChanged := session.Ruleset.Registry.statPlan != nil && (command.Type == "characterStatSet" || command.Type == "characterStatReset" || command.Type == "characterNameSet" || command.Type == "characterItemEquip" || command.Type == "characterTraceEdit")
+		derivedResourcesChanged := session.Ruleset.Registry.statPlan != nil && (command.Type == "characterStatSet" || command.Type == "characterStatReset" || command.Type == "characterNameSet" || command.Type == "characterItemEquip" || command.Type == "characterItemAdd" || command.Type == "characterItemCreate" || command.Type == "characterTraceEdit")
 		if derivedResourcesChanged || command.Type == "characterResourceCurrentSet" || command.Type == "characterResourceCurrentReset" || command.Type == "characterResourceInitialSet" || command.Type == "characterResourceAdd" || command.Type == "characterParameterAdd" || command.Type == "characterParameterRemove" || command.Type == "characterEdit" {
 			s.publishCharacterDisplayChanged(session, mutation.changedCharacters)
 		}

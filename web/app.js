@@ -1,5 +1,6 @@
 import {loadLayout,saveLayout,buildSheet,moveEntry,normalizeLayout,sheetStatGroup} from './character-sheet-layout.js';
-import {groupSheetActionSources,shortActionFormula} from './action-groups.js';
+import {groupSheetActionSources,knownActionFormula} from './action-groups.js';
+import {createInventoryCreator} from './inventory-creator.js';
 import {itemActionsForInventory,nestInventoryFields} from './inventory-presentation.js';
 import {SpatialIndex,ArtworkCache,LimitedMap,MetadataTouchTracker,decodedSize,fitImageSize,fitPlansToBudget,resolveImageMemoryBudgetMiB,planLRUEviction} from './rendering.js';
 import {drawTokens,shortCharacterID} from './token-renderer.js';
@@ -16,6 +17,7 @@ import {collectStatDependencies,catalogDefinitionFields,catalogDerivedFields,cat
 import {ActionVisualGate} from './action-visual-gate.js';
 import {ActionTraceJournal} from './action-trace-journal.js';
 import {ActionReferencePanel,renderActionReference} from './action-reference.js';
+import {EffectReferencePanel,effectCounts,effectMatches,effectStatus,renderEffectCard,renderEffectRow} from './character-effects.js';
 import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
 import {createDicePanel,DiceAnimator,DiceRuntime} from './dice.js';
@@ -235,6 +237,7 @@ const actionTargetPicker=new ActionTargetPicker(send,enqueueAction);
 actionTargetPicker.onChange=()=>{targetHover=null;dirty=true;};
 function refreshCharacterCatalog(){if(!credentials||!isGM(state?.you||campaign?.you))return Promise.resolve();return characterCatalog.reload().catch(error=>toast(error.message));}
 async function loadDefinitions(){const query=new URLSearchParams({session:credentials.session});const response=await fetch(`/api/definitions?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error(await response.text());return response.json();}
+const inventoryCreator=createInventoryCreator({loadCatalog:loadDefinitions,submit:queueCommand,toast});
 async function downloadDefinitionsFile(endpoint, filename, params={}){
  const query=new URLSearchParams({session:credentials.session,...params});const response=await fetch(`${endpoint}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});
  if(!response.ok)throw new Error(await response.text());const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');
@@ -940,6 +943,7 @@ function renderCharacterResources(snapshot){
 // be added when the object snapshot exposes public media and descriptions.
 let characterBrowseID='',characterBrowseAction='',characterBrowseItem='',characterBrowseOpen=false;
 let characterInventoryFilter='all',characterInventoryQuery='';
+let characterEffectFilter='active',characterEffectQuery='';
 const characterBrowserIcon=()=>{
  const icon=document.createElement('span');icon.className='character-table-icon';
  icon.innerHTML='<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 9 5-9 5-9-5 9-5Zm-9 5v10l9 5 9-5V7M12 12v10"/></svg>';
@@ -1051,19 +1055,7 @@ function characterSelectInventory(snapshot,id,open=true){
  if(itemEffects.length){
   const effectsHeading=document.createElement('h3');effectsHeading.textContent='Эффекты предмета';inventoryDrawer.append(effectsHeading);
   const effectList=document.createElement('div');effectList.className='character-item-effects';
-  for(const effect of itemEffects){
-   const row=document.createElement('div');row.className='character-item-effect';
-   const heading=document.createElement('div');heading.className='character-item-effect-heading';
-   const name=document.createElement('strong');name.textContent=effect.name||effect.id;
-   const value=document.createElement('b');if(effect.value!==undefined&&effect.value!==null){const n=Number(effect.value);value.textContent=(n>=0?'+':'')+n;}else value.textContent='';
-   heading.append(name,value);row.append(heading);
-   const id=document.createElement('small');id.textContent=effect.id;row.append(id);
-   const status=document.createElement('span');status.className='character-item-effect-status';status.textContent=effect.status;row.append(status);
-   if(effect.targets?.length){const targets=document.createElement('div');targets.textContent=effect.targets.join(' · ');row.append(targets);}
-   if(effect.formula){const formula=document.createElement('code');formula.textContent=effect.formula;row.append(formula);}
-   if(effect.condition){const condition=document.createElement('small');condition.textContent=`Условие: ${effect.condition}`;row.append(condition);}
-   effectList.append(row);
-  }
+  for(const effect of itemEffects)effectList.append(renderEffectCard(effect,entry=>openEffectReference(snapshot,entry),snapshot));
   inventoryDrawer.append(effectList);
  }
  const choices=itemActionsForInventory(snapshot,item.id);
@@ -1115,6 +1107,44 @@ function renderCharacterInventory(snapshot){
  const empty=document.createElement('p');empty.className='character-table-empty muted';empty.textContent=items.length?'Ничего не найдено.':'Инвентарь пуст.';host.append(empty);
  updateInventoryVisibility();characterSelectInventory(snapshot,characterBrowseItem,characterBrowseOpen);
 }
+// The fourth tab is a read-only view of the same effects already exposed by
+// inventory item details. Filtering is client-side; state is refreshed by the
+// existing character watch whenever equipment or direct grants change.
+function renderCharacterEffects(snapshot){
+ const section=document.createElement('section');section.className='character-section character-effects-section';
+ const all=snapshot.characterEffects||[],counts=effectCounts(all);
+ const head=document.createElement('div');head.className='character-effects-header';
+ const title=document.createElement('h3');title.textContent='Наложенные эффекты';
+ const subtitle=document.createElement('p');subtitle.textContent='Источники, формулы и состояния конкретного персонажа';head.append(title,subtitle);
+ const filters=document.createElement('div');filters.className='character-effects-filters';
+ const options=[['active','Действуют и условные',counts.active+counts.conditional],['inactive','Не действуют',counts.inactive]];
+ for(const [value,label,total] of options){const button=document.createElement('button');button.type='button';button.dataset.effectFilter=value;
+  button.append(document.createTextNode(label),document.createElement('strong'));button.lastElementChild.textContent=total;
+  button.onclick=()=>{characterEffectFilter=value;update();};filters.append(button);}
+ head.append(filters);section.append(head);
+ const search=document.createElement('input');search.type='search';search.className='character-effects-search';search.value=characterEffectQuery;search.placeholder='Поиск по эффекту, предмету, ID…';search.setAttribute('aria-label','Поиск эффектов');section.append(search);
+ const rows=[];const buckets=[];
+ for(const [kind,label] of [['item','От предметов'],['character','Назначены персонажу']]){
+  const entries=all.filter(entry=>entry.sourceKind===kind);
+  if(!entries.length)continue;
+  const group=document.createElement('section');group.className='character-effects-group';
+  const heading=document.createElement('h4');heading.textContent=`${label} · ${entries.length}`;
+  const listing=document.createElement('div');listing.className='character-effects-list';
+  for(const effect of entries){const row=renderEffectRow(effect,entry=>openEffectReference(snapshot,entry),snapshot);listing.append(row);rows.push({row,effect});}
+  group.append(heading,listing);buckets.push({group,entries});
+ }
+ const empty=document.createElement('p');empty.className='muted character-effects-empty';empty.textContent=all.length?'По заданным фильтрам эффектов нет.':'У персонажа пока нет эффектов.';
+ const update=()=>{
+  let visible=0;
+  for(const item of rows){const shown=effectMatches(item.effect,characterEffectQuery,characterEffectFilter);item.row.hidden=!shown;if(shown)visible++;}
+  for(const bucket of buckets)bucket.group.hidden=!bucket.entries.some(entry=>effectMatches(entry,characterEffectQuery,characterEffectFilter));
+  empty.hidden=visible>0;
+  for(const button of filters.children){button.setAttribute('aria-pressed',String(button.dataset.effectFilter===characterEffectFilter));}
+ };
+ search.oninput=()=>{characterEffectQuery=search.value;update();};
+ section.append(...buckets.map(bucket=>bucket.group),empty);update();return section;
+}
+
 function actionFormulaPreviews(snapshot,actionID){
  return (snapshot.actionPreviews||[]).filter(preview=>preview.actionId===actionID);
 }
@@ -1172,9 +1202,16 @@ function renderActionChoiceCard(snapshot,choice,item){
  heading.append(title);
 
  const content=document.createElement(inspect?'button':'span');content.className='character-source-roll-content';
- const formula=renderActionFormula(preview);if(unequipped&&!preview)formula.textContent='Доступно после экипировки';content.append(formula);
- const summary=shortActionFormula(preview);
- if(summary){const total=document.createElement('strong');total.className='character-source-roll-total';total.textContent=summary;content.append(total);}
+ const summary=knownActionFormula(preview);
+ if(summary){
+  const headline=document.createElement('span');headline.className='character-action-preview-head';
+  const total=document.createElement('strong');total.className='character-source-roll-total';total.textContent=summary.text;headline.append(total);
+  if(summary.partial){const partial=document.createElement('small');partial.className='character-formula-uncertain';partial.textContent='Частично';partial.title=(preview.notes||[]).join(' · ')||'Есть неизвестные слагаемые';headline.append(partial);}
+  content.append(headline);
+ }
+ const formula=renderActionFormula(preview);
+ if(summary)formula.querySelector('.character-formula-uncertain')?.remove();
+ if(unequipped&&!preview)formula.textContent='Доступно после экипировки';content.append(formula);
  const execute=inspect?content:row;
  execute.type='button';execute.disabled=unequipped||!snapshot.permissions?.edit||state?.playerPreview||!!previewSwitchPending||sheetEdit;
  const source=choice.sourceId?snapshot.itemNames?.[choice.sourceId]||choice.sourceId:'';
@@ -1233,7 +1270,7 @@ function renderCharacterActions(snapshot){
   row.append(main);
   const previews=actionFormulaPreviews(snapshot,actionID);
   const note=document.createElement('div');note.className='character-action-note';
-  if(action?.v04){note.append(renderActionFormula(previews[0]));if(previews.length>1){const more=document.createElement('small');more.textContent=`Ещё источников: ${previews.length-1}`;note.append(more);}}
+  if(action?.v04){const known=knownActionFormula(previews[0]);if(known){const headline=document.createElement('strong');headline.className='character-action-preview-headline';headline.textContent=known.text+(known.partial?' · Частично':'');note.append(headline);}note.append(renderActionFormula(previews[0]));if(previews.length>1){const more=document.createElement('small');more.textContent=`Ещё источников: ${previews.length-1}`;note.append(more);}}
   else {note.textContent=action?.description||'Описание отсутствует';note.title=action?.description||'';}
   row.append(note);
   const controls=document.createElement('div');controls.className='character-action-buttons';
@@ -1298,14 +1335,24 @@ const characterTracePanel=new CharacterTracePanel({save:(snapshot,changes)=>{
  });
 }});
 const actionReferencePanel=new ActionReferencePanel();
+const effectReferencePanel=new EffectReferencePanel({openItem:itemID=>{
+ const snapshot=characterWatch.snapshot;if(!snapshot?.instance?.inventory?.some(item=>item.id===itemID))return;
+ characterActiveTab='inventory';renderCharacterPanel();characterSelectInventory(snapshot,itemID);
+}});
+
 function actionReferenceGroup(snapshot,id){
  const known=catalogActionEntries(actionDefinitionRegistry||{}).find(row=>row.def.id===id)?.group;
  if(known)return known;
  const name=snapshot.actionGroups?.[id];
  return name?{id:id.slice(0,id.lastIndexOf('.')),name}:null;
 }
+function openEffectReference(snapshot,effect){
+ actionReferencePanel.close();hideStatInspection();
+ effectReferencePanel.open(snapshot,effect);
+}
 function openActionReference(snapshot,id){
  if(!canInspectAction(snapshot))return;
+ effectReferencePanel.close();
  const definition=snapshot.actions?.[id]||actionDefinitionRegistry?.[id];
  if(!definition)return;
  hideStatInspection();
@@ -1686,9 +1733,13 @@ function horizontalSheetTabs(host,kind,allowDrag){
  if(registeredSheetTabs.has(host))return;
  registeredSheetTabs.add(host);host.addEventListener('scroll',remember,{passive:true});
  host.addEventListener('wheel',event=>{
-  if(host.scrollWidth<=host.clientWidth||Math.abs(event.deltaY)<Math.abs(event.deltaX))return;
-  const before=host.scrollLeft;host.scrollLeft+=event.deltaY;
-  if(host.scrollLeft!==before){event.preventDefault();remember();}
+  // The whole tab strip owns wheel input, including at either scroll edge.
+  // Never let it scroll the character panel vertically on any sheet tab.
+  event.preventDefault();
+  if(host.scrollWidth>host.clientWidth){
+   host.scrollLeft+=Math.abs(event.deltaX)>Math.abs(event.deltaY)?event.deltaX:event.deltaY;
+   remember();
+  }
  },{passive:false});
  let drag=null,suppressClick=false;
  host.addEventListener('pointerdown',event=>{
@@ -1845,7 +1896,7 @@ function queueSheetDragPreview(tabID,sectionID=''){
  sheetDragPending={key,timer:setTimeout(()=>{sheetDragPending=null;openSheetDragPreview(tabID,sectionID);},160)};
 }
 function renderSheetLayout(snapshot){
- if(characterBrowseID!==snapshot.characterId){characterBrowseID=snapshot.characterId;characterBrowseAction='';characterBrowseItem='';closeInventoryDrawer();characterInventoryQuery='';characterInventoryFilter='all';selectedSheetSections.clear();actionSectionScroll=0;}
+ if(characterBrowseID!==snapshot.characterId){characterBrowseID=snapshot.characterId;characterBrowseAction='';characterBrowseItem='';closeInventoryDrawer();characterInventoryQuery='';characterInventoryFilter='all';characterEffectQuery='';characterEffectFilter='active';effectReferencePanel.close();selectedSheetSections.clear();actionSectionScroll=0;}
  const scope=sheetSavedScope();if(scope!==sheetScope){sheetScope=scope;sheetLayout=loadLayout(scope);characterActiveTab='stats';selectedSheetSections.clear();sheetTabScroll=0;actionSectionScroll=0;}
  const entries=sheetEntryList(snapshot);
  const full=buildSheet(sheetLayout,entries);
@@ -1859,18 +1910,18 @@ function renderSheetLayout(snapshot){
   const button=document.createElement('button');button.type='button';button.textContent=tab.name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(characterActiveTab===tab.id));button.onclick=()=>{characterActiveTab=tab.id;closeInventoryDrawer();renderCharacterPanel();};
   button.dataset.tabId=tab.id;
   if(sheetEdit){
-   button.draggable=canReorderSheet();button.ondragend=clearSheetDrag;
-   button.ondragstart=event=>{if(!canReorderSheet()){event.preventDefault();return;}clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};
-   button.ondragover=event=>{if(!sheetDrag)return;event.preventDefault();if(sheetDrag.kind==='item')queueSheetDragPreview(tab.id);};
+   button.draggable=tab.id!=='effects'&&canReorderSheet();button.ondragend=clearSheetDrag;
+   button.ondragstart=event=>{if(tab.id==='effects'||!canReorderSheet()){event.preventDefault();return;}clearSheetDrag();sheetDrag={kind:'tab',id:tab.id};event.dataTransfer.setData('text/plain',tab.id);};
+   button.ondragover=event=>{if(tab.id==='effects'||!sheetDrag)return;event.preventDefault();if(sheetDrag.kind==='item')queueSheetDragPreview(tab.id);};
    button.ondrop=event=>{
-    if(!sheetDrag)return;event.preventDefault();event.stopPropagation();
+    if(tab.id==='effects'||!sheetDrag)return;event.preventDefault();event.stopPropagation();
     if(sheetDrag.kind==='item'){const dest=sheetDragDestination?.tabID===tab.id?sheetDragDestination:null;const section=tab.sections.find(s=>s.id===dest?.sectionID)||sheetTargetSection(tab);commitSheetItemDrop(tab,section);return;}
     sheetDropMarker?.remove();sheetDropMarker=null;
     const moving={...sheetDrag};clearSheetDrag();
     if(moving.kind==='section')sheetMutate(layout=>{const from=layout.tabs.find(t=>t.id===moving.tab),to=layout.tabs.find(t=>t.id===tab.id);const section=from?.sections.find(s=>s.id===moving.id);if(section&&to&&from!==to){from.sections=from.sections.filter(s=>s!==section);to.sections.push(section);}characterActiveTab=tab.id;return layout;});
     else if(moving.kind==='tab')sheetMutate(layout=>{const before=layout.tabs.findIndex(t=>t.id===tab.id),from=layout.tabs.findIndex(t=>t.id===moving.id);if(from>=0&&before>=0)layout.tabs.splice(before,0,...layout.tabs.splice(from,1));return layout;});
    };
-   button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions','inventory'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
+   button.oncontextmenu=event=>{event.preventDefault();if(['stats','actions','inventory','effects'].includes(tab.id))return;const answer=prompt('1. Переименовать\n2. Удалить вкладку');if(answer==='1'){const name=prompt('Новое название',tab.name);if(name?.trim())sheetMutate(layout=>{layout.tabs.find(t=>t.id===tab.id).name=name.trim().slice(0,120);return layout;});}if(answer==='2')sheetMutate(layout=>{const removed=layout.tabs.find(t=>t.id===tab.id);layout.tabs=layout.tabs.filter(t=>t!==removed);for(const section of removed.sections)for(const key of section.items){const target=key.startsWith('action:')?'actions':'stats';let bucket=layout.tabs.find(t=>t.id===target).sections.find(s=>s.id===`auto:${target}:${encodeURIComponent('Восстановлено')}`);if(!bucket){bucket={id:`auto:${target}:${encodeURIComponent('Восстановлено')}`,name:'Восстановлено',view:'list',collapsed:false,items:[]};layout.tabs.find(t=>t.id===target).sections.push(bucket);}bucket.items.push(key);}return layout;});};}
 
   tabs.append(button);
  }
@@ -1885,9 +1936,16 @@ function renderSheetLayout(snapshot){
   const browser=useBrowser?document.createElement('div'):null;
   const sheetMain=useBrowser?document.createElement('div'):body;
   if(browser){browser.className='character-table-browser';sheetMain.className='character-table-main';browser.append(sheetMain);const detail=document.createElement('aside');detail.className='character-table-detail';detail.id='characterTableInspector';browser.append(detail);body.append(browser);}
+  if(selected.id==='effects'){
+   sheetMain.append(renderCharacterEffects(snapshot));
+   return;
+  }
   if(selected.id==='inventory'){
    const section=document.createElement('section');section.className='character-section character-inventory-section';
-   const title=document.createElement('h3');title.textContent='Инвентарь';section.append(title);
+   const title=document.createElement('h3');title.textContent='Инвентарь';
+   const heading=document.createElement('div');heading.className='character-inventory-title';heading.append(title);
+   if(snapshot.permissions?.manage&&isEditorView()&&!characterEditSession){const grant=document.createElement('button');grant.type='button';grant.className='subtle';grant.textContent='+ Предмет';grant.onclick=()=>inventoryCreator.open(snapshot.characterId);heading.append(grant);}
+   section.append(heading);
    const browse=document.createElement('div');browse.id='characterInventoryBrowse';section.append(browse);sheetMain.append(section);
   }
  // In normal play action sections become a separate horizontal tab strip.
@@ -1982,6 +2040,7 @@ $('characterMechanicsToggle').onclick=()=>{
 function renderCharacterPanel(){
  hideStatInspection();
  if(characterTracePanel.openId&&characterTracePanel.openId!==characterWatch.snapshot?.characterId)characterTracePanel.close(true);
+ if(!effectReferencePanel.host.hidden)effectReferencePanel.refresh(characterWatch.snapshot);
  if(actionReferencePanel.openId){
   const current=characterWatch.snapshot;
   if(!canInspectAction(current)||current.characterId!==actionReferencePanel.characterId||!current.actions?.[actionReferencePanel.openId])actionReferencePanel.close();
@@ -1989,13 +2048,15 @@ function renderCharacterPanel(){
   else actionReferencePanel.position();
  }
  const token=navigationToken(selected),snapshot=characterWatch.snapshot,linkedID=token?.characterInstanceId||'',gm=isEditorView(),ready=!!linkedID&&snapshot?.characterId===linkedID;
+ const scrollOwner=characterPanel.closest('.inspector'),savedScrollTop=scrollOwner?.scrollTop;
+ const preserveScroll=ready&&characterPanel.dataset.characterId===linkedID&&characterPanel.dataset.renderedTab===characterActiveTab;
  if(actionReferencePanel.openId&&actionReferencePanel.characterId!==linkedID)actionReferencePanel.close();
  if(!gm)characterSettingsOpen=false;
  if(actionTargetPicker.request?.action.characterId!==linkedID)actionTargetPicker.close();
  const loading=!!linkedID&&!ready&&(characterWatchReason==='pending'||characterWatchReason==='replaced'),retainDisplayed=!!token&&loading&&!!characterDisplayedID&&!$('characterSummary').hidden,deferInitial=!!token&&loading&&!characterDisplayedID;
  characterPanel.hidden=!token||deferInitial;
  characterPanel.inert=retainDisplayed;if(retainDisplayed)characterPanel.setAttribute('aria-busy','true');else characterPanel.removeAttribute('aria-busy');
- if(!token){closeInventoryDrawer();if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
+ if(!token){effectReferencePanel.close();closeInventoryDrawer();if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
  if(retainDisplayed||deferInitial)return;
  if(characterDisplayedID!==linkedID){if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';sheetEdit=false;$('characterMechanicsSection').open=false;}
  characterPanel.dataset.characterId=linkedID;
@@ -2040,6 +2101,8 @@ function renderCharacterPanel(){
  $('characterPresetMore').hidden=!gm||!characterCatalog.next.presets;$('characterPresetMore').disabled=characterCatalog.loading.has('presets');
  $('characterRosterMore').hidden=!gm||!characterCatalog.next.roster;$('characterRosterMore').disabled=characterCatalog.loading.has('roster');
  $('characterPersistentToggle').hidden=!gm||!ready;$('characterPersistentToggle').classList.toggle('active',!!instance?.persistent);$('characterPersistentToggle').textContent=instance?.persistent?'✓ Сохранён в кампании':'＋ Сохранить в кампании';
+ // Snapshot updates replace action nodes; keep the current vertical scroll.
+ if(ready){if(preserveScroll&&scrollOwner)scrollOwner.scrollTop=savedScrollTop;characterPanel.dataset.renderedTab=characterActiveTab;}
 }
 function hasTransitionSelection(){return isEditorView()&&!!state?.transitions?.[selectedTransition];}
 function updateInspectorState(){renderCharacterPanel();const tokenVisible=!!navigationToken(selected)&&!characterPanel.hidden,heading=document.querySelector('.inspector .panel-heading');heading.hidden=tokenVisible;heading.textContent='СВОЙСТВА ОБЪЕКТА';const visible=tokenVisible||!!state?.elements?.[selectedElement]||isEditorView()&&!!state?.elementCatalog?.[selectedElement]||hasTransitionSelection();$('noSelection').hidden=visible;document.querySelector('.inspector').classList.toggle('has-selection',visible);inspectorFrame.classList.toggle('has-selection',visible);}

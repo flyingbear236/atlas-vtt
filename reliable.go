@@ -182,6 +182,9 @@ type Command struct {
 	CharacterWatch           uint64                     `json:"characterWatch,omitempty"`
 	CharacterName            string                     `json:"characterName,omitempty"`
 	ItemID                   string                     `json:"itemId,omitempty"`
+	ObjectID                 string                     `json:"objectId,omitempty"`
+	ItemCount                int                        `json:"itemCount,omitempty"`
+	ObjectDraft              *CharacterObjectDraft      `json:"objectDraft,omitempty"`
 	Equipped                 *bool                      `json:"equipped,omitempty"`
 	PresetID                 string                     `json:"presetId,omitempty"`
 	TokenID                  string                     `json:"tokenId,omitempty"`

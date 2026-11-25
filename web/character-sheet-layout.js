@@ -1,7 +1,7 @@
 // Character-sheet presentation preferences. No mechanical character state is stored here.
 export const LAYOUT_VERSION = 1;
 const MAX_TABS = 32, MAX_SECTIONS = 128, MAX_ITEMS = 2048;
-const builtin = [{id:'stats',name:'Статы'},{id:'actions',name:'Действия'},{id:'inventory',name:'Инвентарь'}];
+const builtin = [{id:'stats',name:'Статы'},{id:'actions',name:'Действия'},{id:'inventory',name:'Инвентарь'},{id:'effects',name:'Эффекты'}];
 const keyFor = (scope) => `atlas-character-sheet:v1:${encodeURIComponent(String(scope).slice(0,256))}`;
 const validItem = value => typeof value === 'string' && /^(stat|action):/.test(value) && value.length <= 150 && !/[\u0000-\u001f]/.test(value) && value.slice(value.indexOf(':')+1).trim().length > 0;
 const cleanID = value => typeof value === 'string' && /^[^\s\u0000-\u001f]{1,180}$/.test(value) ? value : '';

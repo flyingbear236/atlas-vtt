@@ -60,14 +60,19 @@ type inventorySheetField struct {
 	Value string   `json:"value"`
 }
 type inventorySheetEffect struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Targets   []string `json:"targets,omitempty"`
-	Formula   string   `json:"formula,omitempty"`
-	Condition string   `json:"condition,omitempty"`
-	Stack     string   `json:"stack,omitempty"`
-	Value     *int64   `json:"value,omitempty"`
-	Status    string   `json:"status"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Targets    []string `json:"targets,omitempty"`
+	Formula    string   `json:"formula,omitempty"`
+	Condition  string   `json:"condition,omitempty"`
+	Stack      string   `json:"stack,omitempty"`
+	Scope      string   `json:"scope,omitempty"`
+	Value      *int64   `json:"value,omitempty"`
+	Status     string   `json:"status"`
+	State      string   `json:"state"` // active, conditional, inactive
+	SourceID   string   `json:"sourceId,omitempty"`
+	SourceName string   `json:"sourceName,omitempty"`
+	SourceKind string   `json:"sourceKind,omitempty"` // item or character
 }
 type inventorySheetDetail struct {
 	Effects     []inventorySheetEffect `json:"effects,omitempty"`
@@ -136,7 +141,7 @@ func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem,
 							name = raw
 						}
 					}
-					entry := inventorySheetEffect{ID: "effect." + id, Name: name, Targets: append([]string(nil), effect.targets...), Formula: effect.formulaSource, Status: "Активен"}
+					entry := inventorySheetEffect{ID: "effect." + id, Name: name, Targets: append([]string(nil), effect.targets...), Formula: effect.formulaSource, Status: "Активен", State: "active", SourceID: item.ID, SourceName: inventoryItemName(registry.Objects, item), SourceKind: "item"}
 					if def != nil {
 						entry.Condition, _ = def.values["when"].(string)
 					}
@@ -144,14 +149,14 @@ func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem,
 						entry.Stack = "unique"
 					}
 					if effect.sourceScope {
-						entry.Stack = "source"
+						entry.Scope = "source"
 					}
 					if !item.Equipped {
-						entry.Status = "Снят"
+						entry.Status, entry.State = "Снят", "inactive"
 					} else if effect.unique && !effect.sourceScope && firstSource[id] != item.ID {
-						entry.Status = "Не складывается (unique)"
-					} else if entry.Condition != "" {
-						entry.Status = "Условие проверяется при расчёте"
+						entry.Status, entry.State = "Не складывается (unique)", "inactive"
+					} else if entry.Condition != "" || effect.needsSource || effect.needsTarget || effect.sourceScope {
+						entry.Status, entry.State = "Условие проверяется при расчёте", "conditional"
 					}
 					if effect.additiveEditable {
 						value := effect.additiveValue
@@ -207,6 +212,71 @@ func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem,
 	return result
 }
 
+// The same inventory effect entries power both the item drawer and the
+// character-wide view. A direct character effect has no inventory source.
+func characterEffectsForSheet(registry EffectiveRegistry, instance CharacterInstance, details map[string]inventorySheetDetail) []inventorySheetEffect {
+	var result []inventorySheetEffect
+	for _, item := range instance.Inventory {
+		result = append(result, details[item.ID].Effects...)
+	}
+	if registry.mechanics == nil {
+		return result
+	}
+	// The same sorted first-source rule is used by ActiveEffects for unique.
+	firstItemSource := make(map[string]string)
+	for _, item := range instance.Inventory {
+		if !item.Equipped {
+			continue
+		}
+		for _, entry := range details[item.ID].Effects {
+			if firstItemSource[entry.ID] == "" || item.ID < firstItemSource[entry.ID] {
+				firstItemSource[entry.ID] = item.ID
+			}
+		}
+	}
+	for _, id := range instance.EffectIDs {
+		effect := registry.mechanics.effects[id]
+		if effect == nil {
+			continue
+		}
+		name := id
+		if definition := registry.Effects[id]; definition != nil {
+			if title, ok := definition.values["name"].(string); ok && title != "" {
+				name = title
+			}
+		}
+		entry := inventorySheetEffect{
+			ID: "effect." + id, Name: name,
+			Targets: append([]string(nil), effect.targets...),
+			Formula: effect.formulaSource, Status: "Активен", State: "active",
+			SourceID: instance.ID, SourceName: "У персонажа", SourceKind: "character",
+		}
+		if definition := registry.Effects[id]; definition != nil {
+			entry.Condition, _ = definition.values["when"].(string)
+		}
+		if effect.unique {
+			entry.Stack = "unique"
+		}
+		if effect.sourceScope {
+			entry.Scope = "source"
+		}
+		if effect.additiveEditable {
+			value := effect.additiveValue
+			entry.Value = &value
+		}
+		// ActiveEffects selects the lowest source ID for stack=unique,
+		// regardless of whether the grant came from an item or directly.
+		if effect.unique && !effect.sourceScope && firstItemSource[entry.ID] != "" && firstItemSource[entry.ID] < instance.ID {
+			entry.Status, entry.State = "Не складывается (unique)", "inactive"
+		}
+		if entry.State == "active" && (entry.Condition != "" || effect.needsSource || effect.needsTarget || effect.sourceScope) {
+			entry.Status, entry.State = "Условие проверяется при расчёте", "conditional"
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
 type characterPermissions struct {
 	Edit   bool `json:"edit"`
 	Manage bool `json:"manage"`
@@ -219,6 +289,7 @@ type characterSnapshot struct {
 	InactiveActionSources []ActionSource                   `json:"inactiveActionSources,omitempty"`
 	ItemNames             map[string]string                `json:"itemNames,omitempty"`
 	ItemDetails           map[string]inventorySheetDetail  `json:"itemDetails,omitempty"`
+	CharacterEffects      []inventorySheetEffect           `json:"characterEffects,omitempty"`
 	StatFields            map[string]statFieldsView        `json:"statFields,omitempty"`
 	StatTraces            map[string]*statCalculationTrace `json:"statTraces,omitempty"`
 	ExecutionID           string                           `json:"executionId,omitempty"`
@@ -337,9 +408,11 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	for _, id := range instance.EffectIDs {
 		directEffects = append(directEffects, EffectGrant{EffectID: id, SourceID: instance.ID})
 	}
+	itemDetails := inventoryDetailsForSheet(registry, instance.Inventory, directEffects...)
 	return characterSnapshot{
 		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
-		ItemDetails:           inventoryDetailsForSheet(registry, instance.Inventory, directEffects...),
+		ItemDetails:           itemDetails,
+		CharacterEffects:      characterEffectsForSheet(registry, instance, itemDetails),
 		ActionPreviews:        actionPreviewsForSheet(session.Ruleset, instance, effective, registry),
 		InactiveActionSources: inactiveSources,
 		StatFields:            statFieldsForSheet(registry, effective),
