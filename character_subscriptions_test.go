@@ -180,3 +180,47 @@ func TestCharacterWatchClosesWhenTransientCharacterIsDeleted(t *testing.T) {
 		t.Fatal(issue)
 	}
 }
+
+func TestCharacterSnapshotEffectWireDoesNotDuplicateItemGrants(t *testing.T) {
+	snapshot, err := ParseRulesetTOML([]byte(inventoryRules + inventoryHero))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{Ruleset: snapshot, RegistryRevision: 1, CharacterInstances: map[string]CharacterInstance{}, CharacterSources: map[string]CharacterTOMLSource{}}
+	registry, err := MergeDefinitionRegistries(sessionRegistries(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := createCharacterInstance(session, Command{CharacterDefinitionID: "hero"}, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := make([]EffectGrant, 0, len(instance.EffectIDs))
+	for _, id := range instance.EffectIDs {
+		grants = append(grants, EffectGrant{EffectID: id, SourceID: instance.ID})
+	}
+	items := inventoryDetailsForSheet(registry, instance.Inventory, grants...)
+	direct := directCharacterEffectsForSheet(registry, instance, items)
+	var itemCount int
+	for _, detail := range items {
+		itemCount += len(detail.Effects)
+	}
+	if itemCount == 0 || len(direct) != 1 || direct[0].ID != "effect.direct" || direct[0].SourceKind != "character" {
+		t.Fatalf("unexpected item/direct effects: items=%d direct=%+v", itemCount, direct)
+	}
+	encoded, err := json.Marshal(characterSnapshot{Type: "characterSnapshot", ItemDetails: items, DirectEffects: direct})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, old := wire["characterEffects"]; old {
+		t.Fatal("duplicated inventory effects reappeared in snapshot")
+	}
+	var sentDirect []inventorySheetEffect
+	if err := json.Unmarshal(wire["directEffects"], &sentDirect); err != nil || len(sentDirect) != 1 {
+		t.Fatalf("direct-only wire entries: %s / %v", wire["directEffects"], err)
+	}
+}

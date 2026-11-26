@@ -53,3 +53,23 @@ export function shortActionFormula(preview) {
   }
   return dice.join(' + ') + (modifier > 0 ? `${dice.length ? ' + ' : ''}${modifier}` : modifier < 0 ? ` − ${-modifier}` : '') || '0';
 }
+
+// Show the known additive portion separately from terms that require execution.
+// Preserve the strict shortActionFormula contract for callers that need a total.
+export function knownActionFormula(preview) {
+  if (!preview?.parts?.length) return null;
+  const parts = [];
+  let partial = Boolean(preview.notes?.length);
+  for (const part of preview.parts) {
+    const isDice = part.value == null || part.value === '';
+    if (isDice ? /^\d+d\d+$/i.test(part.label) && part.sign !== '-'
+               : Number.isSafeInteger(Number(part.value)) && /^-?\d+$/.test(String(part.value))) {
+      parts.push(part);
+    } else {
+      partial = true;
+    }
+  }
+  if (!parts.length) return null;
+  const text = shortActionFormula({parts});
+  return text ? {text, partial} : null;
+}

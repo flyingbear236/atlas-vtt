@@ -1,4 +1,4 @@
-const MAX_ENTRIES=100;
+const PAGE_SIZE=100,MAX_ENTRIES=500;
 
 export function actionTraceSummary(event){
  if(!event?.trace||!event.executionId)return null;
@@ -8,6 +8,7 @@ export function actionTraceSummary(event){
   title:event.actionName||event.actionId||'Действие',
   actor:event.characterName||event.characterId||'',
   time:event.timestamp||'',
+  revision:event.actionRevision||0,
   roll:event.roll||null,
   success:event.success,
   trace:event.trace,
@@ -21,14 +22,16 @@ function section(title,container){const s=document.createElement('section');s.cl
 function valueText(value){if(value&&typeof value==='object')return value.value??JSON.stringify(value);return String(value??'—');}
 
 export class ActionTraceJournal {
- constructor(mount=document.body){
+ constructor(mount=document.body,sendPage=()=>false){
   this.sceneId='';this.enabled=false;this.events=new Map();this.selected='';
+  this.sendPage=sendPage;this.historyCursor=0;this.hasMore=false;this.loading=false;this.requestedCursor=0;this.loadedPages=1;
   this.toggle=document.createElement('button');this.toggle.type='button';this.toggle.className='subtle gm action-trace-toggle';this.toggle.textContent='Трассировка';this.toggle.title='Журнал вычислений действий (ГМ)';this.toggle.hidden=true;this.toggle.setAttribute('aria-expanded','false');
   document.getElementById('diceJournalToggle')?.after(this.toggle);
   this.panel=document.createElement('aside');this.panel.className='action-trace-panel';this.panel.hidden=true;this.panel.setAttribute('aria-label','Журнал трассировки действий');
   const header=document.createElement('header');header.className='action-trace-header';header.append(text('strong','Трассировка действий'));
   this.closeButton=document.createElement('button');this.closeButton.type='button';this.closeButton.className='subtle action-trace-close';this.closeButton.textContent='×';this.closeButton.setAttribute('aria-label','Закрыть журнал');header.append(this.closeButton);
   this.list=document.createElement('div');this.list.className='action-trace-list';this.list.setAttribute('aria-label','Выполненные действия');
+  this.list.addEventListener('scroll',()=>{if(!this.panel.hidden&&this.list.scrollTop+this.list.clientHeight>=this.list.scrollHeight-24)this.loadMore();});
   this.detail=document.createElement('div');this.detail.className='action-trace-detail';
   this.panel.append(header,this.list,this.detail);mount.append(this.panel);
   this.toggle.onclick=()=>this.setOpen(this.panel.hidden);this.closeButton.onclick=()=>this.setOpen(false);
@@ -37,21 +40,46 @@ export class ActionTraceJournal {
  }
  setContext(sceneId,enabled){
   sceneId=String(sceneId||'');enabled=!!enabled&&!!sceneId;
-  if(this.sceneId!==sceneId||this.enabled!==enabled){this.events.clear();this.selected='';this.sceneId=sceneId;this.enabled=enabled;this.setOpen(false);this.render();}
+  if(this.sceneId!==sceneId||this.enabled!==enabled){this.events.clear();this.selected='';this.historyCursor=0;this.hasMore=false;this.loading=false;this.requestedCursor=0;this.loadedPages=1;this.sceneId=sceneId;this.enabled=enabled;this.setOpen(false);this.render();}
   this.toggle.hidden=!enabled;
+ }
+ loadMore(){
+  if(!this.enabled||!this.hasMore||!this.historyCursor||this.loading)return;
+  const cursor=this.historyCursor;
+  if(this.sendPage({type:'actionHistoryPage',sceneId:this.sceneId,beforeActionRevision:cursor})===false)return;
+  this.loading=true;this.requestedCursor=cursor;this.render();
  }
  setOpen(open){this.panel.hidden=!open||!this.enabled;this.toggle.classList.toggle('active',!this.panel.hidden);this.toggle.setAttribute('aria-expanded',String(!this.panel.hidden));if(!this.panel.hidden)this.render();}
  handle(message){
   if(!this.enabled)return false;
   if(message?.type==='rollHistory'&&message.sceneId===this.sceneId){
    const next=new Map();for(const event of message.actions||[]){const row=actionTraceSummary(event);if(row&&row.sceneId===this.sceneId)next.set(row.id,row);}
-   this.events=new Map([...next.entries()].slice(-MAX_ENTRIES));this.selected=this.events.has(this.selected)?this.selected:[...this.events.keys()].at(-1)||'';
+   this.loadedPages=1;this.events=new Map([...next.entries()].slice(-PAGE_SIZE));this.selected=this.events.has(this.selected)?this.selected:[...this.events.keys()].at(-1)||'';
+   this.historyCursor=message.actions?.[0]?.actionRevision||0;this.hasMore=!!message.actionHistoryHasMore;this.loading=false;this.requestedCursor=0;
+   if(!this.panel.hidden)this.render();return true;
+  }
+  if(message?.type==='actionHistoryPage'&&message.sceneId===this.sceneId){
+   if(!this.loading||message.beforeActionRevision!==this.requestedCursor)return true;
+   const rows=[...this.events.values()];
+   for(const event of message.actions||[]){const row=actionTraceSummary(event);if(row)rows.push(row);}
+   rows.sort((a,b)=>a.revision-b.revision);
+   this.loadedPages=Math.min(MAX_ENTRIES/PAGE_SIZE,this.loadedPages+1);
+   this.events=new Map(rows.slice(-PAGE_SIZE*this.loadedPages).map(row=>[row.id,row]));
+   this.historyCursor=message.actions?.[0]?.actionRevision||0;this.hasMore=!!message.actionHistoryHasMore;this.loading=false;this.requestedCursor=0;
    if(!this.panel.hidden)this.render();return true;
   }
   if(message?.type==='actionTrace'){
    const row=actionTraceSummary(message.event);if(!row||row.sceneId!==this.sceneId)return true;
    this.events.delete(row.id);this.events.set(row.id,row);
-   while(this.events.size>MAX_ENTRIES)this.events.delete(this.events.keys().next().value);
+   // While an older page is in flight, keep a bounded overlap. Otherwise
+   // pruning the oldest displayed record would create a gap at the cursor.
+   const limit=this.loading?MAX_ENTRIES:PAGE_SIZE*this.loadedPages;
+   let pruned=false;
+   while(this.events.size>limit){this.events.delete(this.events.keys().next().value);pruned=true;}
+   if(pruned&&!this.loading){
+    this.historyCursor=[...this.events.values()].reduce((min,event)=>Math.min(min,event.revision||Infinity),Infinity);
+    this.hasMore=true;
+   }
    this.selected=row.id;
    if(!this.panel.hidden)this.render();return true;
   }
@@ -59,6 +87,7 @@ export class ActionTraceJournal {
  }
  render(){
   if(this.panel.hidden)return;
+  const scrollTop=this.list.scrollTop;
   this.list.replaceChildren();
   const rows=[...this.events.values()].reverse();
   if(!rows.length)this.list.append(text('p','Выполненных действий пока нет. Журнал обновляется автоматически.','action-trace-empty'));
@@ -68,6 +97,8 @@ export class ActionTraceJournal {
    if(row.roll)btn.append(text('b',`Бросок: ${row.roll.total}`));
    btn.onclick=()=>{this.selected=row.id;this.render();};this.list.append(btn);
   }
+  if(this.hasMore){const more=document.createElement('button');more.type='button';more.className='subtle action-trace-more';more.textContent=this.loading?'Загрузка…':'Показать более ранние';more.disabled=this.loading;more.onclick=()=>this.loadMore();this.list.append(more);}
+  this.list.scrollTop=scrollTop;
   this.renderDetail(this.events.get(this.selected));
  }
  renderDetail(entry){

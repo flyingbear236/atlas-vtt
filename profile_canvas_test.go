@@ -49,75 +49,27 @@ type canvasMemoryPoint struct {
 }
 
 type canvasProfileBrowser struct {
-	cmd     *exec.Cmd
-	log     *os.File
-	profile string
+	chrome  *testChrome
 	control *profileCDP
 	page    *profileCDP
 }
 
 func startCanvasProfileBrowser(t *testing.T, chrome, output, name, hostURL string) *canvasProfileBrowser {
 	t.Helper()
-	profile, err := os.MkdirTemp(output, ".canvas-"+name+"-")
-	if err != nil {
-		t.Fatal(err)
+	browser := &canvasProfileBrowser{
+		chrome: startTestChrome(t, chrome, output, "browser-"+name+".log", 15*time.Second,
+			append([]string{"--no-sandbox"}, profileChromeArgs...)...),
 	}
-	logFile, err := os.Create(filepath.Join(output, "browser-"+name+".log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := []string{"--no-sandbox", "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"}
-	cmd := exec.Command(chrome, args...)
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	if err = cmd.Start(); err != nil {
-		logFile.Close()
-		os.RemoveAll(profile)
-		t.Fatal(err)
-	}
-	browser := &canvasProfileBrowser{cmd: cmd, log: logFile, profile: profile}
-	var port, endpoint string
-	for i := 0; i < 150; i++ {
-		if data, readErr := os.ReadFile(filepath.Join(profile, "DevToolsActivePort")); readErr == nil {
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			port, endpoint = strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if port == "" {
-		browser.close()
-		t.Fatal("browser startup")
-	}
-	browser.control = profileDial(t, "ws://127.0.0.1:"+port+endpoint)
-	target := browser.control.call("Target.createTarget", map[string]any{"url": "about:blank"})
-	var targetID struct {
-		ID string `json:"targetId"`
-	}
-	json.Unmarshal(target, &targetID)
-	var tabs []struct {
-		ID  string `json:"id"`
-		URL string `json:"webSocketDebuggerUrl"`
-	}
-	data := profileJSON(t, "http://127.0.0.1:"+port+"/json", "GET", nil)
-	json.Unmarshal(data, &tabs)
-	for _, tab := range tabs {
-		if tab.ID == targetID.ID {
-			browser.page = profileDial(t, tab.URL)
-			break
-		}
-	}
-	if browser.page == nil {
-		browser.close()
-		t.Fatal("profile target missing")
-	}
-	page := browser.page
+	browser.control = profileDial(t, browser.chrome.wsURL)
+	page := browser.chrome.newPage(browser.control)
+	browser.page = page
 	page.call("Runtime.enable", map[string]any{})
 	page.call("Network.enable", map[string]any{})
 	page.call("Page.enable", map[string]any{})
 	page.call("Performance.enable", map[string]any{})
 	page.call("HeapProfiler.enable", map[string]any{})
 	page.call("Emulation.setDeviceMetricsOverride", map[string]any{"width": 1440, "height": 1000, "deviceScaleFactor": 1, "mobile": false})
-	page.call("Page.navigate", map[string]any{"url": hostURL})
+	page.navigate(hostURL)
 	ready := page.eval(`(async()=>{for(let i=0;i<200&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));if(!window.__atlasProbe)return false;__atlasProbe.enter({session:'load',key:'load-key'});for(let i=0;i<200&&!__atlasProbe.connected();i++)await new Promise(r=>setTimeout(r,50));return __atlasProbe.connected()})()`)
 	if string(ready) != "true" {
 		browser.close()
@@ -133,16 +85,7 @@ func (b *canvasProfileBrowser) close() {
 	if b.control != nil {
 		b.control.c.Close()
 	}
-	if b.cmd != nil && b.cmd.Process != nil {
-		b.cmd.Process.Kill()
-		b.cmd.Wait()
-	}
-	if b.log != nil {
-		b.log.Close()
-	}
-	if b.profile != "" {
-		os.RemoveAll(b.profile)
-	}
+	b.chrome.close()
 }
 
 func canvasBrowserStats(control *profileCDP) canvasBrowserMemory {
@@ -312,7 +255,7 @@ func TestProfileCanvasLifecycle(t *testing.T) {
 		case "context-replacement":
 			strategyResult = page.eval(`__atlasProbe.replaceSurface()`)
 		case "reload":
-			page.call("Page.reload", map[string]any{})
+			page.reload()
 			strategyResult = page.eval(`(async()=>{for(let i=0;i<200&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));return {kind:'reload',ready:!!window.__atlasProbe}})()`)
 		}
 		time.Sleep(time.Second)

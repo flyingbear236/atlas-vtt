@@ -136,20 +136,22 @@ type Session struct {
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
 }
 type peer struct {
-	conn            *websocket.Conn
-	member          *Member
-	session         string
-	out             chan any
-	sceneID         string
-	floorID         string
-	activeTokenID   string
-	region          *SceneRegion
-	delivery        uint64
-	playerPreview   bool
-	previewRevision uint64
-	previewAssetKey string
-	characterID     string
-	characterWatch  uint64
+	conn              *websocket.Conn
+	member            *Member
+	session           string
+	out               chan any
+	sceneID           string
+	floorID           string
+	activeTokenID     string
+	region            *SceneRegion
+	delivery          uint64
+	playerPreview     bool
+	previewRevision   uint64
+	previewAssetKey   string
+	characterID       string
+	characterWatch    uint64
+	characterDelta    bool
+	characterBaseline *characterSnapshot
 }
 type Server struct {
 	mu              sync.Mutex
@@ -754,10 +756,16 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				s.send(p, s.snapshotSceneForPeer(ss, p))
 				s.sendRollHistory(ss, p)
 			}
+		} else if msg.Type == "actionHistoryPage" {
+			if msg.SceneID == p.sceneID && p.sceneID != "" {
+				s.sendActionHistoryPage(ss, p, msg.BeforeActionRevision)
+			}
 		} else if msg.Type == "actionTargets" {
 			s.sendActionTargets(ss, p, msg)
 		} else if msg.Type == "characterWatch" {
-			s.watchCharacter(ss, p, msg.CharacterID, msg.CharacterWatch)
+			s.watchCharacter(ss, p, msg.CharacterID, msg.CharacterWatch, msg.CharacterDelta)
+		} else if msg.Type == "characterStatTrace" {
+			s.sendCharacterStatTrace(ss, p, msg)
 		} else if msg.Type == "characterUnwatch" {
 			s.unwatchCharacter(p, msg.CharacterID, msg.CharacterWatch)
 		} else {

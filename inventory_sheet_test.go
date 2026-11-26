@@ -47,3 +47,81 @@ func TestInventoryDetailsForSheetItemEffectOverrides(t *testing.T) {
 		t.Fatalf("instance override leaked into template: %+v", result)
 	}
 }
+
+func TestCharacterEffectsForSheetIncludesDirectAndItemSources(t *testing.T) {
+	registry := EffectiveRegistry{
+		Objects: map[string]*RulesetFields{"ring": {values: map[string]any{"name": "Кольцо испытателя"}}},
+		Effects: map[string]*RulesetFields{
+			"strength": {values: map[string]any{"name": "Сила", "formula": "target + 2"}},
+			"focus":    {values: map[string]any{"name": "Фокус", "formula": "target + 3"}},
+			"training": {values: map[string]any{"name": "Подготовка", "formula": "target + 1", "when": "actor.ready"}},
+		},
+		mechanics: &rulesetMechanics{
+			objects: map[string]objectMechanics{"ring": {effects: []string{"strength", "focus"}}},
+			effects: map[string]*compiledEffect{
+				"strength": {id: "strength", targets: []string{"stat.strength"}, formulaSource: "target + 2", additiveEditable: true, additiveValue: 2},
+				"focus":    {id: "focus", targets: []string{"stat.focus"}, formulaSource: "target + 3", unique: true, additiveEditable: true, additiveValue: 3},
+				"training": {id: "training", targets: []string{"action.hit.roll"}, formulaSource: "target + 1"},
+			},
+		},
+	}
+	fields, err := newRulesetFields(map[string]any{"effect_overrides": map[string]any{"strength": int64(5)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hero := CharacterInstance{ID: "hero", EffectIDs: []string{"training"}, Inventory: []InventoryItem{
+		{ID: "ring-a", ObjectID: "ring", Equipped: true, Fields: fields},
+		{ID: "ring-b", ObjectID: "ring", Equipped: true},
+		{ID: "ring-c", ObjectID: "ring", Equipped: false},
+	}}
+	direct := []EffectGrant{{EffectID: "training", SourceID: "hero"}}
+	details := inventoryDetailsForSheet(registry, hero.Inventory, direct...)
+	// Item effects are sent once in itemDetails; only direct grants have a
+	// separate wire field. Reconstruct the combined view as the client does.
+	combined := func(details map[string]inventorySheetDetail) []inventorySheetEffect {
+		var entries []inventorySheetEffect
+		for _, item := range hero.Inventory {
+			entries = append(entries, details[item.ID].Effects...)
+		}
+		return append(entries, directCharacterEffectsForSheet(registry, hero, details)...)
+	}
+	entries := combined(details)
+	if len(entries) != 7 {
+		t.Fatalf("effect count %d: %+v", len(entries), entries)
+	}
+	byKey := map[string]inventorySheetEffect{}
+	for _, entry := range entries {
+		byKey[entry.SourceID+":"+entry.ID] = entry
+	}
+	a := byKey["ring-a:effect.strength"]
+	b := byKey["ring-b:effect.strength"]
+	if a.Value == nil || *a.Value != 5 || b.Value == nil || *b.Value != 2 || a.SourceKind != "item" || a.SourceName != "Кольцо испытателя" {
+		t.Fatalf("instance-specific sources: %+v %+v", a, b)
+	}
+	if byKey["ring-b:effect.focus"].State != "inactive" || byKey["ring-c:effect.strength"].State != "inactive" || byKey["ring-c:effect.focus"].State != "inactive" {
+		t.Fatalf("expected suppressed and unequipped effects: %+v", entries)
+	}
+	if byKey["ring-a:effect.focus"].State != "active" {
+		t.Fatalf("first unique grant should be active: %+v", entries)
+	}
+	// Equipment changes update both status and machine-readable state; the
+	// remaining equipped ring becomes the first unique effect provider.
+	hero.Inventory[0].Equipped = false
+	details = inventoryDetailsForSheet(registry, hero.Inventory, direct...)
+	entries = combined(details)
+	byKey = map[string]inventorySheetEffect{}
+	for _, entry := range entries {
+		byKey[entry.SourceID+":"+entry.ID] = entry
+	}
+	if byKey["ring-a:effect.strength"].State != "inactive" || byKey["ring-a:effect.focus"].State != "inactive" || byKey["ring-b:effect.focus"].State != "active" {
+		t.Fatalf("unequip did not change effect states: %+v", entries)
+	}
+	training := byKey["hero:effect.training"]
+	if training.SourceKind != "character" || training.SourceName != "У персонажа" || training.State != "conditional" {
+		t.Fatalf("direct effect: %+v", training)
+	}
+	// A character without inventory still needs its direct effect list.
+	if alone := directCharacterEffectsForSheet(registry, CharacterInstance{ID: "hero", EffectIDs: []string{"training"}}, nil); len(alone) != 1 || alone[0].SourceID != "hero" {
+		t.Fatalf("direct-only: %+v", alone)
+	}
+}

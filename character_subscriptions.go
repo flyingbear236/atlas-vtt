@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -60,14 +62,19 @@ type inventorySheetField struct {
 	Value string   `json:"value"`
 }
 type inventorySheetEffect struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Targets   []string `json:"targets,omitempty"`
-	Formula   string   `json:"formula,omitempty"`
-	Condition string   `json:"condition,omitempty"`
-	Stack     string   `json:"stack,omitempty"`
-	Value     *int64   `json:"value,omitempty"`
-	Status    string   `json:"status"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Targets    []string `json:"targets,omitempty"`
+	Formula    string   `json:"formula,omitempty"`
+	Condition  string   `json:"condition,omitempty"`
+	Stack      string   `json:"stack,omitempty"`
+	Scope      string   `json:"scope,omitempty"`
+	Value      *int64   `json:"value,omitempty"`
+	Status     string   `json:"status"`
+	State      string   `json:"state"` // active, conditional, inactive
+	SourceID   string   `json:"sourceId,omitempty"`
+	SourceName string   `json:"sourceName,omitempty"`
+	SourceKind string   `json:"sourceKind,omitempty"` // item or character
 }
 type inventorySheetDetail struct {
 	Effects     []inventorySheetEffect `json:"effects,omitempty"`
@@ -136,7 +143,7 @@ func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem,
 							name = raw
 						}
 					}
-					entry := inventorySheetEffect{ID: "effect." + id, Name: name, Targets: append([]string(nil), effect.targets...), Formula: effect.formulaSource, Status: "Активен"}
+					entry := inventorySheetEffect{ID: "effect." + id, Name: name, Targets: append([]string(nil), effect.targets...), Formula: effect.formulaSource, Status: "Активен", State: "active", SourceID: item.ID, SourceName: inventoryItemName(registry.Objects, item), SourceKind: "item"}
 					if def != nil {
 						entry.Condition, _ = def.values["when"].(string)
 					}
@@ -144,14 +151,14 @@ func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem,
 						entry.Stack = "unique"
 					}
 					if effect.sourceScope {
-						entry.Stack = "source"
+						entry.Scope = "source"
 					}
 					if !item.Equipped {
-						entry.Status = "Снят"
+						entry.Status, entry.State = "Снят", "inactive"
 					} else if effect.unique && !effect.sourceScope && firstSource[id] != item.ID {
-						entry.Status = "Не складывается (unique)"
-					} else if entry.Condition != "" {
-						entry.Status = "Условие проверяется при расчёте"
+						entry.Status, entry.State = "Не складывается (unique)", "inactive"
+					} else if entry.Condition != "" || effect.needsSource || effect.needsTarget || effect.sourceScope {
+						entry.Status, entry.State = "Условие проверяется при расчёте", "conditional"
 					}
 					if effect.additiveEditable {
 						value := effect.additiveValue
@@ -207,6 +214,68 @@ func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem,
 	return result
 }
 
+// Only directly assigned effects need their own wire entries; item effects
+// already travel with itemDetails and are combined client-side.
+func directCharacterEffectsForSheet(registry EffectiveRegistry, instance CharacterInstance, details map[string]inventorySheetDetail) []inventorySheetEffect {
+	var result []inventorySheetEffect
+	if registry.mechanics == nil {
+		return result
+	}
+	// The same sorted first-source rule is used by ActiveEffects for unique.
+	firstItemSource := make(map[string]string)
+	for _, item := range instance.Inventory {
+		if !item.Equipped {
+			continue
+		}
+		for _, entry := range details[item.ID].Effects {
+			if firstItemSource[entry.ID] == "" || item.ID < firstItemSource[entry.ID] {
+				firstItemSource[entry.ID] = item.ID
+			}
+		}
+	}
+	for _, id := range instance.EffectIDs {
+		effect := registry.mechanics.effects[id]
+		if effect == nil {
+			continue
+		}
+		name := id
+		if definition := registry.Effects[id]; definition != nil {
+			if title, ok := definition.values["name"].(string); ok && title != "" {
+				name = title
+			}
+		}
+		entry := inventorySheetEffect{
+			ID: "effect." + id, Name: name,
+			Targets: append([]string(nil), effect.targets...),
+			Formula: effect.formulaSource, Status: "Активен", State: "active",
+			SourceID: instance.ID, SourceName: "У персонажа", SourceKind: "character",
+		}
+		if definition := registry.Effects[id]; definition != nil {
+			entry.Condition, _ = definition.values["when"].(string)
+		}
+		if effect.unique {
+			entry.Stack = "unique"
+		}
+		if effect.sourceScope {
+			entry.Scope = "source"
+		}
+		if effect.additiveEditable {
+			value := effect.additiveValue
+			entry.Value = &value
+		}
+		// ActiveEffects selects the lowest source ID for stack=unique,
+		// regardless of whether the grant came from an item or directly.
+		if effect.unique && !effect.sourceScope && firstItemSource[entry.ID] != "" && firstItemSource[entry.ID] < instance.ID {
+			entry.Status, entry.State = "Не складывается (unique)", "inactive"
+		}
+		if entry.State == "active" && (entry.Condition != "" || effect.needsSource || effect.needsTarget || effect.sourceScope) {
+			entry.Status, entry.State = "Условие проверяется при расчёте", "conditional"
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
 type characterPermissions struct {
 	Edit   bool `json:"edit"`
 	Manage bool `json:"manage"`
@@ -219,8 +288,11 @@ type characterSnapshot struct {
 	InactiveActionSources []ActionSource                   `json:"inactiveActionSources,omitempty"`
 	ItemNames             map[string]string                `json:"itemNames,omitempty"`
 	ItemDetails           map[string]inventorySheetDetail  `json:"itemDetails,omitempty"`
+	DirectEffects         []inventorySheetEffect           `json:"directEffects,omitempty"`
 	StatFields            map[string]statFieldsView        `json:"statFields,omitempty"`
 	StatTraces            map[string]*statCalculationTrace `json:"statTraces,omitempty"`
+	TraceAvailable        bool                             `json:"traceAvailable,omitempty"`
+	CharacterSequence     uint64                           `json:"characterSequence,omitempty"`
 	ExecutionID           string                           `json:"executionId,omitempty"`
 	Type                  string                           `json:"type"`
 	CharacterWatch        uint64                           `json:"characterWatch"`
@@ -237,6 +309,10 @@ type characterSnapshot struct {
 }
 
 func characterSnapshotForMember(session *Session, member *Member, characterID string, watch uint64) (characterSnapshot, error) {
+	return buildCharacterSnapshot(session, member, characterID, watch, true, nil)
+}
+
+func buildCharacterSnapshot(session *Session, member *Member, characterID string, watch uint64, includeTraces bool, previous *characterSnapshot) (characterSnapshot, error) {
 	if !memberCanAccessCharacter(session, member, characterID) {
 		return characterSnapshot{}, errors.New("character access denied")
 	}
@@ -251,7 +327,8 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 		preset = &copy
 	}
 	var traces map[string]*statCalculationTrace
-	if memberIsGM(member) && registry.statPlan != nil {
+	traceAvailable := memberIsGM(member) && registry.statPlan != nil
+	if includeTraces && traceAvailable {
 		traces = map[string]*statCalculationTrace{}
 	}
 	effective, err := projectCharacterStatsWithTrace(instance, preset, registry, nil, nil, false, traces)
@@ -262,6 +339,29 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	effective.Artwork = resolveCharacterArtwork(session, instance, preset, session.Ruleset)
 	effective.AvatarAssetID = effective.Artwork.AssetID
 	effective.HasAvatar = effective.Artwork.AssetID != ""
+	// Definitions and inventory presentation are independent of numeric values.
+	// Reuse the immutable previous projection only when all structural inputs agree.
+	if previous != nil && previous.RegistryRevision == session.RegistryRevision &&
+		previous.Instance.PresetID == instance.PresetID &&
+		reflect.DeepEqual(previous.Instance.Inventory, instance.Inventory) &&
+		slices.Equal(previous.Instance.EffectIDs, instance.EffectIDs) &&
+		sameSheetKeys(previous.Effective.Stats, effective.Stats) &&
+		sameSheetKeys(previous.Effective.Resources, effective.Resources) &&
+		slices.Equal(previous.Effective.ActionIDs, effective.ActionIDs) &&
+		slices.Equal(previous.Effective.ActionSources, effective.ActionSources) {
+		result := *previous
+		result.ExecutionID = ""
+		result.CharacterWatch, result.Revision = watch, session.CharacterRevision
+		result.Instance, result.Preset, result.PresetArtwork = instance, preset, presetArtwork
+		result.Effective, result.StatTraces, result.TraceAvailable = effective, traces, traceAvailable
+		result.Permissions = characterPermissions{Edit: true, Manage: memberIsGM(member)}
+		result.StatFields = statFieldsForSheet(registry, effective)
+		if !reflect.DeepEqual(previous.Effective.StatValues, effective.StatValues) ||
+			!reflect.DeepEqual(previous.Instance.V04, instance.V04) || previous.Instance.Name != instance.Name {
+			result.ActionPreviews = actionPreviewsForSheet(session.Ruleset, instance, effective, registry)
+		}
+		return result, nil
+	}
 	stats := make(map[string]StatDefinition, len(effective.Stats))
 	for statID := range effective.Stats {
 		if definition, ok := registry.Stats[statID]; ok {
@@ -337,13 +437,16 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	for _, id := range instance.EffectIDs {
 		directEffects = append(directEffects, EffectGrant{EffectID: id, SourceID: instance.ID})
 	}
+	itemDetails := inventoryDetailsForSheet(registry, instance.Inventory, directEffects...)
 	return characterSnapshot{
 		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
-		ItemDetails:           inventoryDetailsForSheet(registry, instance.Inventory, directEffects...),
+		ItemDetails:           itemDetails,
+		DirectEffects:         directCharacterEffectsForSheet(registry, instance, itemDetails),
 		ActionPreviews:        actionPreviewsForSheet(session.Ruleset, instance, effective, registry),
 		InactiveActionSources: inactiveSources,
 		StatFields:            statFieldsForSheet(registry, effective),
 		StatTraces:            traces,
+		TraceAvailable:        traceAvailable,
 		Type:                  "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
 		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, PresetArtwork: presetArtwork, Effective: effective,
 		StatDefinitions: stats, Actions: actions,
@@ -357,24 +460,27 @@ func (s *Server) closeCharacterWatch(peer *peer, revision uint64, reason string)
 	}
 	characterID, watch := peer.characterID, peer.characterWatch
 	peer.characterID = ""
+	peer.characterBaseline = nil
 	s.send(peer, map[string]any{
 		"type": "characterWatchClosed", "characterWatch": watch, "characterId": characterID,
 		"revision": revision, "reason": reason,
 	})
 }
 
-func (s *Server) watchCharacter(session *Session, peer *peer, characterID string, watch uint64) {
+func (s *Server) watchCharacter(session *Session, peer *peer, characterID string, watch uint64, delta bool) {
 	if watch == 0 || watch < peer.characterWatch {
 		return
 	}
 	peer.characterWatch = watch
 	peer.characterID = characterID
-	snapshot, err := characterSnapshotForMember(session, peer.member, characterID, watch)
+	peer.characterDelta = delta
+	peer.characterBaseline = nil
+	snapshot, err := buildCharacterSnapshot(session, peer.member, characterID, watch, !delta, nil)
 	if err != nil {
 		s.closeCharacterWatch(peer, session.CharacterRevision, "accessRevoked")
 		return
 	}
-	s.send(peer, snapshot)
+	s.sendCharacterProjection(peer, snapshot)
 }
 
 func (s *Server) unwatchCharacter(peer *peer, characterID string, watch uint64) {
@@ -384,6 +490,7 @@ func (s *Server) unwatchCharacter(peer *peer, characterID string, watch uint64) 
 	peer.characterWatch = watch
 	if characterID == "" || peer.characterID == characterID {
 		peer.characterID = ""
+		peer.characterBaseline = nil
 	}
 }
 
@@ -405,7 +512,7 @@ func (s *Server) refreshCharacterWatches(session *Session, changed map[string]bo
 				continue
 			}
 		}
-		snapshot, err := characterSnapshotForMember(session, peer.member, characterID, peer.characterWatch)
+		snapshot, err := buildCharacterSnapshot(session, peer.member, characterID, peer.characterWatch, !peer.characterDelta, peer.characterBaseline)
 		if err != nil {
 			s.closeCharacterWatch(peer, session.CharacterRevision, "unavailable")
 			continue
@@ -413,7 +520,7 @@ func (s *Server) refreshCharacterWatches(session *Session, changed map[string]bo
 		if len(executionID) > 0 {
 			snapshot.ExecutionID = executionID[0]
 		}
-		s.send(peer, snapshot)
+		s.sendCharacterProjection(peer, snapshot)
 	}
 }
 

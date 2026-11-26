@@ -380,3 +380,41 @@ func TestActionCommandRejectsForgedPayloadAtEveryLevel(t *testing.T) {
 		t.Fatal("forged data reached executor")
 	}
 }
+
+func TestActionHistoryPagesBoundedAndVisibilityFiltered(t *testing.T) {
+	fixture := newActionFixture(t)
+	fixture.session.ActionHistory = nil
+	for i := 1; i <= 251; i++ {
+		sceneID := fixture.sceneA.ID
+		if i == 121 {
+			sceneID = fixture.sceneB.ID
+		}
+		fixture.session.ActionHistory = append(fixture.session.ActionHistory, actionJournalEntry{ActionEvent: ActionEvent{
+			ExecutionID: fmt.Sprintf("execution-%d", i), SceneID: sceneID, ActionID: "weapon.hit",
+			CharacterID: "hero", Revision: uint64(i), Trace: &ActionTrace{RollFormula: "1d20 + 3"},
+		}})
+	}
+	gm := &peer{member: &Member{GM: true}, sceneID: fixture.sceneA.ID}
+	first, hasMore := actionHistoryPageForPeer(fixture.session, gm, 0)
+	if len(first) != actionHistoryPageSize || !hasMore || first[0].Revision != 152 || first[len(first)-1].Revision != 251 {
+		t.Fatalf("first page: len=%d more=%v first=%d last=%d", len(first), hasMore, first[0].Revision, first[len(first)-1].Revision)
+	}
+	second, hasMore := actionHistoryPageForPeer(fixture.session, gm, first[0].Revision)
+	if len(second) != actionHistoryPageSize || !hasMore || second[0].Revision != 51 || second[len(second)-1].Revision != 151 {
+		t.Fatalf("second page: len=%d more=%v first=%d last=%d", len(second), hasMore, second[0].Revision, second[len(second)-1].Revision)
+	}
+	third, hasMore := actionHistoryPageForPeer(fixture.session, gm, second[0].Revision)
+	if len(third) != 50 || hasMore || third[0].Revision != 1 || third[len(third)-1].Revision != 50 {
+		t.Fatalf("third page: len=%d more=%v", len(third), hasMore)
+	}
+	gm.playerPreview = true
+	preview, _ := actionHistoryPageForPeer(fixture.session, gm, 0)
+	if len(preview) == 0 {
+		t.Fatal("player preview test has no visible history")
+	}
+	for _, event := range preview {
+		if event.Trace != nil {
+			t.Fatalf("player preview leaked GM trace: %+v", event)
+		}
+	}
+}

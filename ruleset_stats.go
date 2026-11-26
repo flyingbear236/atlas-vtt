@@ -51,21 +51,25 @@ func (effects *ActiveEffects) CharacterState(instance CharacterInstance, preset 
 }
 
 type statPass struct {
-	instance  CharacterInstance
-	registry  EffectiveRegistry
-	state     EffectiveCharacter
-	effects   *ActiveEffects
-	values    map[string]any
-	visiting  map[string]bool
-	frame     ExpressionFrame
-	trace     map[string]*statCalculationTrace
-	overrides map[string]map[string]int64
+	instance       CharacterInstance
+	registry       EffectiveRegistry
+	state          EffectiveCharacter
+	effects        *ActiveEffects
+	values         map[string]any
+	visiting       map[string]bool
+	frame          ExpressionFrame
+	trace          map[string]*statCalculationTrace
+	traceAddresses map[string]bool
+	overrides      map[string]map[string]int64
 }
 
 func projectCharacterStats(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, effects *ActiveEffects, actorFields map[string]any, resourcesOnly bool) (EffectiveCharacter, error) {
 	return projectCharacterStatsWithTrace(instance, preset, registry, effects, actorFields, resourcesOnly, nil)
 }
 func projectCharacterStatsWithTrace(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, effects *ActiveEffects, actorFields map[string]any, resourcesOnly bool, trace map[string]*statCalculationTrace) (EffectiveCharacter, error) {
+	return projectCharacterStatsWithSelectedTrace(instance, preset, registry, effects, actorFields, resourcesOnly, trace, nil)
+}
+func projectCharacterStatsWithSelectedTrace(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry, effects *ActiveEffects, actorFields map[string]any, resourcesOnly bool, trace map[string]*statCalculationTrace, addresses map[string]bool) (EffectiveCharacter, error) {
 	state := characterSourceState(instance, preset, registry)
 	if registry.mechanics != nil {
 		actions, active, err := registry.characterGrants(instance, state.ActionIDs, resourcesOnly)
@@ -85,7 +89,7 @@ func projectCharacterStatsWithTrace(instance CharacterInstance, preset *Characte
 	if plan == nil {
 		return state, nil
 	}
-	pass := statPass{instance: instance, registry: registry, state: state, effects: effects, values: map[string]any{}, visiting: map[string]bool{}, trace: trace, overrides: itemEffectOverrides(instance)}
+	pass := statPass{instance: instance, registry: registry, state: state, effects: effects, values: map[string]any{}, visiting: map[string]bool{}, trace: trace, traceAddresses: addresses, overrides: itemEffectOverrides(instance)}
 	pass.frame = ExpressionFrame{Bindings: map[string]any{"actor": actorFields, "actor.id": instance.ID, "actor.name": instance.Name}, readStat: pass.read}
 	outputs := plan.outputs
 	if resourcesOnly {
@@ -214,7 +218,7 @@ func (p *statPass) formula(step statStep) (any, error) {
 func (p *statPass) modify(address string, raw any, integerDestination bool) (any, error) {
 	entries := p.effects.forTarget(address)
 	var record *statCalculationTrace
-	if p.trace != nil {
+	if p.trace != nil && (p.traceAddresses == nil || p.traceAddresses[address]) {
 		record = &statCalculationTrace{Initial: raw}
 		p.trace[address] = record
 	}

@@ -179,9 +179,13 @@ type Command struct {
 	CharacterDefinitionID    string                     `json:"characterDefinitionId,omitempty"`
 	CharacterEdit            *CharacterEditPayload      `json:"characterEdit,omitempty"`
 	TraceEdit                *characterTraceEdit        `json:"traceEdit,omitempty"`
+	CharacterDelta           bool                       `json:"characterDelta,omitempty"`
+	CharacterSequence        uint64                     `json:"characterSequence,omitempty"`
 	CharacterWatch           uint64                     `json:"characterWatch,omitempty"`
 	CharacterName            string                     `json:"characterName,omitempty"`
 	ItemID                   string                     `json:"itemId,omitempty"`
+	ObjectID                 string                     `json:"objectId,omitempty"`
+	ItemCount                int                        `json:"itemCount,omitempty"`
 	Equipped                 *bool                      `json:"equipped,omitempty"`
 	PresetID                 string                     `json:"presetId,omitempty"`
 	TokenID                  string                     `json:"tokenId,omitempty"`
@@ -194,6 +198,7 @@ type Command struct {
 	Roll                     *RollRequest               `json:"roll,omitempty"`
 	Action                   *ActionExecutionRequest    `json:"action,omitempty"`
 	ActionGeneration         uint64                     `json:"actionGeneration,omitempty"`
+	BeforeActionRevision     uint64                     `json:"beforeActionRevision,omitempty"`
 	invalidActionDigest      string
 	wireBytes                int
 }
