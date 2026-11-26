@@ -34,6 +34,9 @@ func (r *actionExecution) apply(apply *actionApply) error {
 	if !ok {
 		return fmt.Errorf("no instance at %s", address)
 	}
+	if ref.ElementID != "" {
+		return fmt.Errorf("scene object fields are read-only")
+	}
 	draft, ok := r.plan.replacements[ref.CharacterID]
 	if !ok {
 		draft = cloneCharacterInstance(r.session.CharacterInstances[ref.CharacterID])

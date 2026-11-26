@@ -62,8 +62,9 @@ export class ViewportPreviews {
   }
   observe(el,assetId){el.dataset.previewAsset=assetId;if(this.observer)this.observer.observe(el);else{this.visible.add(el);if(!this.queued.has(el)){if(this.pending.length>=64)this.queued.delete(this.pending.shift());this.pending.push(el);this.queued.add(el);}this.pump();}}
   pump(){if(this.closed)return;while(this.active.size<this.limit&&this.pending.length){const el=this.pending.shift();this.queued.delete(el);if(!el.isConnected||!this.visible.has(el)||this.active.has(el)||this.urls.has(el))continue;const controller=new AbortController();this.active.set(el,controller);
-      this.load(el.dataset.previewAsset,controller.signal).then(blob=>{if(this.closed||!this.visible.has(el)||!el.isConnected)return;const url=URL.createObjectURL(blob);this.urls.set(el,url);el.src=url;}).catch(()=>{if(!controller.signal.aborted&&el.isConnected)el.alt='Изображение недоступно';}).finally(()=>{this.active.delete(el);this.pump();});
+      this.load(el.dataset.previewAsset,controller.signal).then(blob=>{if(this.closed||controller.signal.aborted||!this.visible.has(el)||!el.isConnected)return;const url=URL.createObjectURL(blob);this.urls.set(el,url);el.src=url;}).catch(()=>{if(!controller.signal.aborted&&el.isConnected)el.alt='Изображение недоступно';}).finally(()=>{this.active.delete(el);this.pump();});
     }}
+  unobserve(el){this.observer?.unobserve(el);this.visible.delete(el);this.queued.delete(el);this.pending=this.pending.filter(item=>item!==el);this.release(el);}
   release(el){const controller=this.active.get(el);if(controller)controller.abort();const url=this.urls.get(el);if(url){URL.revokeObjectURL(url);this.urls.delete(el);el.removeAttribute('src');}}
   destroy(){this.closed=true;this.observer?.disconnect();for(const el of this.active.keys())this.active.get(el).abort();for(const el of this.urls.keys())this.release(el);this.pending=[];this.queued.clear();this.active.clear();this.visible.clear();}
 }

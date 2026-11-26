@@ -194,6 +194,7 @@ func TestActionCommandFailureIsAtomic(t *testing.T) {
 
 func TestActionCommandAuthorizationAndPrivateMessages(t *testing.T) {
 	f := newActionFixture(t)
+	addUploadedTestObject(t, f, f.gm, f.sceneA.ID, "Stone", 125, 125)
 	alice := actionConnection(t, f, f.alice)
 	bob := actionConnection(t, f, f.bob)
 	seq := uint64(0)
@@ -224,20 +225,32 @@ func TestActionCommandAuthorizationAndPrivateMessages(t *testing.T) {
 	}
 	seq++
 	cmd.Seq = seq
-	cmd.Action = &ActionExecutionRequest{CharacterID: "hero", ActionID: "inspect", Target: &ActionInstanceRef{CharacterID: "hero", ItemID: "spare"}}
+	sendCommand(t, alice, Command{Type: "view", SceneID: f.sceneA.ID, Region: &SceneRegion{Left: 0, Top: 0, Right: 1000, Bottom: 1000}})
+	read(t, alice, "snapshot")
+	f.server.mu.Lock()
+	var stone SceneElement
+	for _, e := range f.sceneA.Elements {
+		if e.Name == "Stone" {
+			stone = e
+			break
+		}
+	}
+	stone.Interaction = &ObjectInteraction{Reactions: map[string]ObjectReaction{"inspect": {Any: ObjectMessage{Text: "Secret clue"}}}}
+	f.sceneA.Elements[stone.ID] = stone
+	f.server.mu.Unlock()
+	cmd.Action = &ActionExecutionRequest{CharacterID: "hero", ActionID: "inspect", Target: &ActionInstanceRef{ElementID: stone.ID}}
 	sendCommand(t, alice, cmd)
 	msg := read(t, alice, "actionMessage")
 	event := actionACK(t, alice, false)
-	if event.Roll != nil || len(event.Messages) != 1 || string(msg["message"]) != "\"Inspect Sword: 8\"" {
+	if event.Roll != nil || len(event.Messages) != 2 || string(msg["message"]) != "\"Inspect Stone\"" || event.Messages[1] != "Secret clue" {
 		t.Fatalf("inspect: %s %+v", msg, event)
 	}
 	sendCommand(t, bob, Command{Type: "sync"})
-	var next map[string]json.RawMessage
-	if err := bob.ReadJSON(&next); err != nil || string(next["type"]) != "\"snapshot\"" {
-		t.Fatalf("private object leaked: %s %v", next, err)
+	if msg := read(t, bob, "snapshot"); strings.Contains(string(msgIntoJSON(t, msg)), "Secret clue") {
+		t.Fatal("private object leaked in snapshot")
 	}
-	if history := read(t, bob, "rollHistory"); string(history["actions"]) != "[]" {
-		t.Fatalf("private object leaked through history: %s", history)
+	if history := read(t, bob, "rollHistory"); strings.Contains(string(history["actions"]), "Secret clue") {
+		t.Fatal("private reaction leaked in history")
 	}
 	sendCommand(t, alice, cmd)
 	if got := actionACK(t, alice, true); !reflect.DeepEqual(got, event) {

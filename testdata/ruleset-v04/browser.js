@@ -88,7 +88,7 @@ async credentials => {
   // The selected actor remains selected. Center on the actor before entering
   // target mode; the fixture tokens have known x offsets in world coordinates.
   // Clicking a target's navigator would change the actor and cancel targeting.
-  const locations={'Герой':300,'Ученица':400,'Хранитель кинжала':500};
+  const locations={'Герой':300,'Ученица':400,'Камень':500};
   const perform = async (id, source, actor, target) => {
     const actorRow=await wait(()=>tokenRow(actor),actor);
     actorRow.querySelector('.token-row-focus').click();
@@ -106,11 +106,12 @@ async credentials => {
     const scale=Number.parseFloat(query('#zoom').textContent)/100;
     if(!Number.isFinite(scale)||scale<=0)throw Error('invalid camera scale');
     const offset=target?(locations[target]-locations[actor])*scale:0;
+    if(id==='inspect')await new Promise(r=>setTimeout(r,500));
     board.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:71,clientX:rect.left+rect.width/2+offset,clientY:rect.top+rect.height/2+(target?0:90*scale)}));
     await wait(()=>commands.filter(command=>command.type==='actionExecute').length===prior+1,id+' submitted');
     await wait(()=>query('.character-action-target-prompt').hidden,id+' target prompt closed');
     const action=commands.filter(command=>command.type==='actionExecute').at(-1).action;
-    if(target&&!action.target?.characterId)throw Error('target not selected');
+    if(target&&!(action.target?.characterId||action.target?.elementId))throw Error('target not selected');
     if(!target&&action.target)throw Error('optional target selected');
     return action;
   };
@@ -137,9 +138,9 @@ async credentials => {
   if (all('#characterLayoutContent [data-action-id="weapon.attack.hit"].is-runnable').length!==3) throw Error('equipment sources collapsed');
   const trainedInitial=received.find(m=>m.type==='characterSnapshot'&&m.characterId===trainee);
   if (!trainedInitial || Object.hasOwn(trainedInitial.actionSelectors||{},'weapon.attack') || query('#characterLayoutContent [data-action-id="weapon.attack"]')) throw Error('group is executable or trained snapshot missing');
-  const inspect=await perform('inspect','','Ученица','Хранитель кинжала');
-  if(inspect.target?.itemId!=='browser-dagger')throw Error('wrong item target');
-  await wait(() => journalLast().includes('Вы осматриваете Кинжал'), 'message-only action');
+  const inspect=await perform('inspect','','Ученица','Камень');
+  if(!inspect.target?.elementId)throw Error('wrong scene object target');
+  await wait(() => journalLast().includes('Вы осматриваете Камень'), 'message-only action');
   if (journalLast().includes('Результат')) throw Error('inspect rolled');
   await click('#diceJournalToggle');
   const rows = all('#diceJournal .roll-entry');

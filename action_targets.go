@@ -39,6 +39,18 @@ func (s *Server) sendActionTargets(session *Session, p *peer, command Command) {
 		return
 	}
 	options := []actionTargetOption{}
+	if selector == "select(object)" {
+		// The region is already spatially indexed and bounded by the current subscription.
+		if p.region != nil {
+			for _, e := range a.scene.ensureRuntime().queryElements(*p.region) {
+				if a.seesObject(e.ID) {
+					options = append(options, actionTargetOption{ActionInstanceRef: ActionInstanceRef{ElementID: e.ID}, Name: objectName(e)})
+				}
+			}
+		}
+		response["targets"] = options
+		return
+	}
 	seen := map[string]bool{}
 	for _, token := range a.scene.Tokens {
 		id := token.CharacterInstanceID
@@ -46,21 +58,14 @@ func (s *Server) sendActionTargets(session *Session, p *peer, command Command) {
 			continue
 		}
 		seen[id] = true
-		if !a.seesCharacter(id, selector == "select(object)") {
+		if !a.seesCharacter(id, false) {
 			continue
 		}
 		instance, ok := session.CharacterInstances[id]
 		if !ok {
 			continue
 		}
-		if selector == "select(character)" {
-			options = append(options, actionTargetOption{ActionInstanceRef{CharacterID: id}, instance.Name})
-			continue
-		}
-		for _, item := range instance.Inventory {
-			name := instance.Name + " · " + inventoryItemName(run.registry.Objects, item)
-			options = append(options, actionTargetOption{ActionInstanceRef{CharacterID: id, ItemID: item.ID}, name})
-		}
+		options = append(options, actionTargetOption{ActionInstanceRef{CharacterID: id}, instance.Name})
 	}
 	slices.SortFunc(options, func(a, b actionTargetOption) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.CharacterID, b.CharacterID), cmp.Compare(a.ItemID, b.ItemID))

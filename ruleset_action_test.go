@@ -67,7 +67,7 @@ message = "{target.name} {source.id}"
 
 [action.inspect]
 target = "select(object)"
-message = "Inspect {target.name}: {target.store.charges}"
+message = "Inspect {target.name}"
 
 [action.recover]
 target = "self"
@@ -155,10 +155,13 @@ func executorSession(t *testing.T) (*Session, *Member) {
 		t.Fatal(err)
 	}
 	member := &Member{ID: "player"}
-	scene := &Scene{ID: "arena", Published: true, Revision: 7, Tokens: map[string]Token{
+	scene := newScene("arena", "Arena")
+	scene.Published, scene.Revision = true, 7
+	scene.Tokens = map[string]Token{
 		"a": {ID: "a", CharacterInstanceID: "hero", OwnerIDs: []string{member.ID}},
 		"t": {ID: "t", CharacterInstanceID: "goblin"},
-	}}
+	}
+	addTestSceneObject(scene, "stone", "Stone")
 	session := &Session{ID: "session", Members: map[string]*Member{member.ID: member}, RegistryRevision: 3, CharacterRevision: 5, CampaignRevision: 2,
 		CharacterInstances: characters, Ruleset: snapshot, Scenes: map[string]*Scene{scene.ID: scene}}
 	rebuildCharacterReferences(session)
@@ -259,8 +262,8 @@ func TestRulesetActionOptionalTargetsAndSavedFields(t *testing.T) {
 	if session.CharacterInstances["hero"].V04.values["notes"].(map[string]any)["count"] != int64(5) {
 		t.Fatal("custom field leaked into session")
 	}
-	out, rng = run("inspect", "", &ActionInstanceRef{CharacterID: "hero", ItemID: "spare"})
-	if out.Roll != nil || rng.next != 0 || !slices.Equal(out.Messages, []string{"Inspect Sword: 8"}) {
+	out, rng = run("inspect", "", &ActionInstanceRef{ElementID: "stone"})
+	if out.Roll != nil || rng.next != 0 || !slices.Equal(out.Messages, []string{"Inspect Stone"}) {
 		t.Fatalf("inspect: %+v", out)
 	}
 	out, _ = run("inspect", "", nil)
@@ -299,7 +302,7 @@ func TestRulesetActionRejectsInvalidExecution(t *testing.T) {
 		{"bad_branch", "", "saved scalar", nil},
 		{"weapon.hit", "blade", "unavailable", &ActionInstanceRef{CharacterID: "missing"}},
 		{"inspect", "", "wrong instance type", &ActionInstanceRef{CharacterID: "goblin"}},
-		{"inspect", "", "unavailable", &ActionInstanceRef{CharacterID: "goblin", ItemID: "hidden_item"}},
+		{"inspect", "", "unavailable", &ActionInstanceRef{ElementID: "missing"}},
 		{"simple", "", "no target selector", &ActionInstanceRef{CharacterID: "hero"}},
 	} {
 		out, err := ExecuteRulesetAction(session, "arena", member, ActionExecutionRequest{"hero", tc.action, tc.source, tc.target}, nil)

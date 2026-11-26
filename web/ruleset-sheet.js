@@ -36,11 +36,11 @@ export class ActionTargetPicker {
     document.addEventListener('keydown',event=>{if(event.key==='Escape'&&this.request){event.preventDefault();this.close();}});
   }
 
-  open(sceneId,action,title){
+  open(sceneId,action,title,selector="select(character)"){
     this.close();
-    this.request={type:'actionTargets',sceneId,action,seq:++this.seq};
+    this.selector=selector;this.request={type:'actionTargets',sceneId,action,seq:++this.seq};
     this.targets=[];this.ready=false;this.pendingCharacter='';
-    this.status.textContent='Кликните по персонажу-цели или по карте, если не хотите выбирать цель. Esc — отмена.';
+    this.status.textContent=selector==='select(object)'?'Кликните по объекту на карте. Пустое место — без цели, Esc — отмена.':'Кликните по персонажу-цели или по карте, если не хотите выбирать цель. Esc — отмена.';
     this.banner.hidden=false;this.onChange?.();
     if(!this.send(this.request)){
       this.close();return false;
@@ -65,13 +65,13 @@ export class ActionTargetPicker {
       return true;
     }
     if(!this.ready){this.pendingCharacter=characterId;this.status.textContent='Проверяем доступность выбранной цели…';return true;}
-    const matches=this.targets.filter(target=>target.characterId===characterId);
+    const matches=this.targets.filter(target=>this.selector==='select(object)'?target.elementId===characterId:target.characterId===characterId);
     if(matches.length!==1){
-      this.status.textContent=matches.length?'У персонажа несколько доступных предметов. Выберите другую цель или пустое место карты.':'Этот персонаж недоступен как цель. Выберите другую цель или пустое место карты.';
+      this.status.textContent='Эта цель недоступна. Выберите другую цель или пустое место карты.';
       return true;
     }
     const target=matches[0];
-    const action={...this.request.action,target:{characterId:target.characterId,...(target.itemId?{itemId:target.itemId}:{})}};
+    const action={...this.request.action,target:this.selector==='select(object)'?{elementId:target.elementId}:{characterId:target.characterId}};
     if(this.execute(this.request.sceneId,action))this.close();
     return true;
   }

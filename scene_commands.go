@@ -329,12 +329,26 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				issue = "Лимит элементов сцены достигнут"
 				break
 			}
+			if command.CopyElementID != "" {
+				source, ok := scene.Elements[command.CopyElementID]
+				if !ok {
+					issue = "Элемент для копирования не найден"
+					break
+				}
+				source.Transform = command.Element.Transform
+				source.Name = command.Element.Name
+				command.Element = source
+			}
 			asset, ok := session.Assets[command.Element.AssetID]
 			if !ok {
 				issue = "Изображение не найдено"
 				break
 			}
 			element := command.Element
+			if err := validateObjectInteraction(session, element.Interaction); err != nil {
+				issue = err.Error()
+				break
+			}
 			element.ID = id()
 			if element.FloorID == "" {
 				element.FloorID = firstFloorID(scene)
@@ -372,6 +386,22 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 			}
 			old := element
 			props := command.ElementProperties
+			if props.AssetID != nil {
+				asset, ok := session.Assets[*props.AssetID]
+				if !ok || !isSceneRasterKind(asset.Kind) {
+					issue = "Изображение не найдено"
+					break
+				}
+				element.AssetID = asset.ID
+			}
+			if props.Interactive != nil {
+				interaction := ObjectInteraction{}
+				if element.Interaction != nil {
+					interaction = *element.Interaction
+				}
+				interaction.Disabled = !*props.Interactive
+				element.Interaction = &interaction
+			}
 			if props.Name != nil {
 				name := strings.TrimSpace(*props.Name)
 				if utf8.RuneCountInString(name) > 120 {
@@ -411,6 +441,7 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				scene.Elements[element.ID] = element
 				oldElement, nextElement, elementExisted, elementExists = old, element, true, true
 				changed = true
+				assetRefsChanged = old.AssetID != element.AssetID || old.Interaction != element.Interaction
 				restore = func() { scene.Elements[old.ID] = old }
 			}
 		case "elementPreview", "elementTransform":
@@ -643,7 +674,7 @@ func (s *Server) publishElement(session *Session, sceneID string, old SceneEleme
 			message["type"] = "elementTransform"
 			message["transform"] = next.Transform
 		case newLoaded:
-			message["element"] = next
+			message["element"] = projectObjectElement(next)
 			if asset, ok := session.Assets[next.AssetID]; ok {
 				message["asset"] = publicAsset(asset)
 			}

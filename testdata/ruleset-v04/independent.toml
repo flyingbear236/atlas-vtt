@@ -21,8 +21,8 @@ apply = { path = "target.stat.hp.current", formula = "value + 2" }
 [action.check_object]
 target = "select(object)"
 roll = "1d20"
-success = "roll >= target.dc"
-message = "{target.notes.formula}"
+success = "roll >= 5"
+message = "{target.name}"
 
 [action.use_axe]
 target = "source"

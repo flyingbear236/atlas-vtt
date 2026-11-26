@@ -108,13 +108,15 @@ type Properties struct {
 }
 
 type ElementProperties struct {
-	Name    *string  `json:"name,omitempty"`
-	FloorID *string  `json:"floorId,omitempty"`
-	LayerID *string  `json:"layerId,omitempty"`
-	ZOrder  *int     `json:"zOrder,omitempty"`
-	Visible *bool    `json:"visible,omitempty"`
-	Locked  *bool    `json:"locked,omitempty"`
-	Opacity *float64 `json:"opacity,omitempty"`
+	AssetID     *string  `json:"assetId,omitempty"`
+	Interactive *bool    `json:"interactive,omitempty"`
+	Name        *string  `json:"name,omitempty"`
+	FloorID     *string  `json:"floorId,omitempty"`
+	LayerID     *string  `json:"layerId,omitempty"`
+	ZOrder      *int     `json:"zOrder,omitempty"`
+	Visible     *bool    `json:"visible,omitempty"`
+	Locked      *bool    `json:"locked,omitempty"`
+	Opacity     *float64 `json:"opacity,omitempty"`
 }
 
 type LayerProperties struct {
@@ -153,6 +155,7 @@ type Command struct {
 	FloorProperties          FloorProperties            `json:"floorProperties,omitempty"`
 	Layer                    Layer                      `json:"layer,omitempty"`
 	LayerProperties          LayerProperties            `json:"layerProperties,omitempty"`
+	CopyElementID            string                     `json:"copyElementId,omitempty"`
 	Element                  SceneElement               `json:"element,omitempty"`
 	ElementProperties        ElementProperties          `json:"elementProperties,omitempty"`
 	Transition               Transition                 `json:"transition,omitempty"`

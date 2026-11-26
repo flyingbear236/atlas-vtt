@@ -9,11 +9,12 @@ type ActionExecutionRequest struct {
 	Target      *ActionInstanceRef `json:"target,omitempty"`
 }
 
-// An object instance is an inventory item. Its ID is scoped to its owning
-// character. Without ItemID the reference identifies the character itself.
+// A selected scene object uses ElementID. CharacterID and ItemID identify
+// character and inventory source instances; they are exclusive of ElementID.
 type ActionInstanceRef struct {
 	CharacterID string `json:"characterId"`
 	ItemID      string `json:"itemId,omitempty"`
+	ElementID   string `json:"elementId,omitempty"`
 }
 
 type ActionExecutionResult struct {
@@ -261,20 +262,33 @@ func (r *actionExecution) bindTarget(scene *Scene, member *Member, selector stri
 				return fmt.Errorf("action requires an item source")
 			}
 		}
-	case "select(character)", "select(object)":
+	case "select(object)":
 		if requested == nil {
 			r.missingOptionalTarget = true
 			return nil
 		}
 		ref = *requested
-		if (selector == "select(object)") != (ref.ItemID != "") {
+		if ref.ElementID == "" || ref.CharacterID != "" || ref.ItemID != "" {
 			return fmt.Errorf("selected target has the wrong instance type")
 		}
-		if selector == "select(object)" {
-			if !characterHasControllableToken(r.session, scene, member, ref.CharacterID) {
-				return fmt.Errorf("selected object is unavailable")
-			}
-		} else if !actionCharacterVisible(r.session, scene, member, ref.CharacterID) {
+		element, ok := scene.Elements[ref.ElementID]
+		if !ok || !activeObject(element) || !scene.ensureRuntime().elementPublic(element) {
+			return fmt.Errorf("selected object is unavailable")
+		}
+		bindings["target"] = map[string]any{"id": element.ID, "name": objectName(element)}
+		r.refs["target"] = ref
+		r.result.Target = &ref
+		return nil
+	case "select(character)":
+		if requested == nil {
+			r.missingOptionalTarget = true
+			return nil
+		}
+		ref = *requested
+		if ref.ItemID != "" || ref.ElementID != "" {
+			return fmt.Errorf("selected target has the wrong instance type")
+		}
+		if !actionCharacterVisible(r.session, scene, member, ref.CharacterID) {
 			return fmt.Errorf("selected character is unavailable")
 		}
 	default:

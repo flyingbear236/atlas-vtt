@@ -129,8 +129,10 @@ type Session struct {
 	CampaignDefinitions  CampaignRegistry                      `json:"-"`
 	CharacterInstances   map[string]CharacterInstance          `json:"characterInstances"`
 	CharacterSources     map[string]CharacterTOMLSource        `json:"characterSources,omitempty"`
+	MediaLibrary         CampaignMedia                         `json:"mediaLibrary,omitempty"`
 	LibraryDirectories   []string                              `json:"libraryDirectories,omitempty"`
 	UnknownTOML          map[string]string                     `json:"unknownToml,omitempty"`
+	ObjectGlow           ObjectGlowSettings                    `json:"objectGlow,omitempty"`
 	ResourceOverlays     []ResourceOverlayConfig               `json:"resourceOverlays,omitempty"`
 
 	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
@@ -316,6 +318,9 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 				return nil, fmt.Errorf("invalid member key in session %s", sessionID)
 			}
 		}
+		if err := validateCampaignMedia(ss); err != nil {
+			return nil, fmt.Errorf("invalid media library in session %s: %w", sessionID, err)
+		}
 		if err := validateLibrary(ss); err != nil {
 			return nil, fmt.Errorf("invalid library in session %s: %w", sessionID, err)
 		}
@@ -437,6 +442,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions", s.create)
 	mux.HandleFunc("POST /api/join", s.join)
 	mux.HandleFunc("POST /api/upload", s.uploadAsset)
+	mux.HandleFunc("GET /api/scene/object", s.readSceneObject)
+	mux.HandleFunc("POST /api/scene/object", s.saveSceneObject)
+	mux.HandleFunc("POST /api/scene/object/glow", s.setObjectGlow)
 	mux.HandleFunc("GET /api/definitions", s.readDefinitions)
 	mux.HandleFunc("GET /api/definitions/file", s.readCurrentRulesetFile)
 	mux.HandleFunc("GET /api/definitions/file/download", s.downloadCurrentDefinitionFile)
@@ -454,6 +462,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/definitions/ruleset/media/attach", s.attachRulesetMedia)
 	mux.HandleFunc("GET /api/characters", s.readCharacterCatalog)
 	mux.HandleFunc("GET /api/library", s.readLibrary)
+	mux.HandleFunc("GET /api/media-library", s.readCampaignMedia)
+	mux.HandleFunc("GET /api/media-library/image", s.readCampaignMediaImage)
+	mux.HandleFunc("POST /api/media-library/operation", s.operateCampaignMedia)
+	mux.HandleFunc("POST /api/media-library/import", s.importCampaignMedia)
+	mux.HandleFunc("POST /api/media-library/place", s.placeCampaignMedia)
 	mux.HandleFunc("GET /api/library/file/download", s.downloadLibraryFile)
 	mux.HandleFunc("GET /api/library/inspect", s.inspectLibraryFile)
 	mux.HandleFunc("POST /api/library/operation", s.libraryOperation)
@@ -760,6 +773,8 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 			if msg.SceneID == p.sceneID && p.sceneID != "" {
 				s.sendActionHistoryPage(ss, p, msg.BeforeActionRevision)
 			}
+		} else if msg.Type == "objectHover" {
+			s.sendObjectHover(ss, p, msg)
 		} else if msg.Type == "actionTargets" {
 			s.sendActionTargets(ss, p, msg)
 		} else if msg.Type == "characterWatch" {
@@ -857,7 +872,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		a.OrphanSince = oldAsset.OrphanSince
 	}
 	ss.Assets[a.ID] = a
-	if kind == assetKindScene {
+	if kind == assetKindScene && r.URL.Query().Get("objectMedia") != "1" {
 		floorID := r.URL.Query().Get("floor")
 		layerID := r.URL.Query().Get("layer")
 		if scene.Floors[floorID].ID == "" {
@@ -898,7 +913,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "Ошибка сохранения")
 		return
 	}
-	if kind == assetKindScene {
+	if kind == assetKindScene && r.URL.Query().Get("objectMedia") != "1" {
 		s.publishSceneSnapshot(ss, sceneID)
 	}
 	s.mu.Unlock()
@@ -924,12 +939,20 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if ss != nil && m != nil {
+		if r.URL.Query().Get("objectEditor") == "1" && memberIsGM(m) {
+			allowed = true
+		}
+		if validObjectMediaGrant(ss, m, parts[0], r.URL.Query().Get("objectGrant")) {
+			allowed = true
+		}
+	}
 	asset := Asset{}
 	if ss != nil {
 		asset = ss.Assets[parts[0]]
 	}
 	s.mu.Unlock()
-	if !allowed {
+	if !allowed || asset.ID == "" {
 		fail(w, 403, "Ассет недоступен")
 		return
 	}
@@ -943,7 +966,11 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	} else if name == "token.png" && asset.Kind == assetKindAvatar {
 		name = "avatar.png"
 	}
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if r.URL.Query().Get("objectGrant") != "" || r.URL.Query().Get("objectEditor") != "" {
+		w.Header().Set("Cache-Control", "private, no-store")
+	} else {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	}
 	http.ServeFile(w, r, filepath.Join(s.root, "assets", parts[0], name))
 }
 func main() {

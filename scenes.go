@@ -444,6 +444,7 @@ func (s *Server) snapshotCampaign(ss *Session, member *Member) any {
 		"id":               ss.ID,
 		"name":             ss.Name,
 		"campaignRevision": ss.CampaignRevision,
+		"objectGlow":       normalizedObjectGlow(ss.ObjectGlow),
 		"registryRevision": ss.RegistryRevision,
 		"scenes":           s.sceneList(ss, member),
 		"you":              *member,
@@ -636,7 +637,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 			if playerProjection && !runtime.elementPublic(element) {
 				continue
 			}
-			elements[element.ID] = element
+			elements[element.ID] = projectObjectElement(element)
 			if asset, ok := ss.Assets[element.AssetID]; ok {
 				assets[asset.ID] = publicAsset(asset)
 			}
@@ -696,6 +697,7 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 		"scene":             metadata,
 		"revision":          scene.Revision,
 		"currentFloorId":    floorID,
+		"objectGlow":        normalizedObjectGlow(ss.ObjectGlow),
 		"floors":            scene.Floors,
 		"layers":            layers,
 		"elements":          elements,
@@ -733,15 +735,14 @@ func (s *Server) snapshotSceneAtFloorProjection(ss *Session, member *Member, sce
 func sceneElementCatalog(scene *Scene) map[string]SceneElement {
 	catalog := make(map[string]SceneElement, len(scene.Elements))
 	for elementID, element := range scene.Elements {
-		element.AssetID = ""
-		catalog[elementID] = element
+		catalog[elementID] = catalogElement(element)
 	}
 	return catalog
 }
 
 func catalogElement(element SceneElement) SceneElement {
 	element.AssetID = ""
-	return element
+	return projectObjectElement(element)
 }
 
 // Delivery is local to one Scene subscription. Scene revision describes the

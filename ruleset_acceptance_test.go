@@ -195,16 +195,19 @@ func TestRulesetSpecExamplesThroughCommandsAndZIP(t *testing.T) {
 		t.Fatalf("replay %+v", replay)
 	}
 
+	stone := addUploadedTestObject(t, fixture, gm, scene, "Камень", 125, 125)
+	sendCommand(t, ws, Command{Type: "view", SceneID: scene, Region: &SceneRegion{Left: 0, Top: 0, Right: 1000, Bottom: 1000}})
+	read(t, ws, "snapshot")
 	request := &ActionExecutionRequest{CharacterID: "trained", ActionID: "inspect"}
 	sendCommand(t, ws, Command{Type: "actionTargets", SceneID: scene, Seq: 1, Action: request})
 	targets := read(t, ws, "actionTargets")
 	var choices []actionTargetOption
-	if err := json.Unmarshal(targets["targets"], &choices); err != nil || len(choices) != 6 {
+	if err := json.Unmarshal(targets["targets"], &choices); err != nil || len(choices) != 1 {
 		t.Fatalf("targets %s", targets)
 	}
-	request.Target = &ActionInstanceRef{CharacterID: "trained", ItemID: "training-dagger"}
+	request.Target = &ActionInstanceRef{ElementID: stone}
 	sendCommand(t, ws, actionCommandWire{Type: "actionExecute", Client: "examples", Seq: uint64(len(rows) + 1), SceneID: scene, Action: request})
-	if event := actionACK(t, ws, false); event.Roll != nil || strings.Join(event.Messages, "") != "Вы осматриваете Кинжал" {
+	if event := actionACK(t, ws, false); event.Roll != nil || strings.Join(event.Messages, "") != "Вы осматриваете КаменьКамень молчит." {
 		t.Fatalf("inspect %+v", event)
 	}
 
@@ -262,6 +265,7 @@ func msgIntoJSON(t *testing.T, value any) []byte {
 
 func TestRulesetSpecTargetChoicesVisibility(t *testing.T) {
 	f := newActionFixture(t)
+	stone := addUploadedTestObject(t, f, f.gm, f.sceneA.ID, "Stone", 125, 125)
 	f.server.mu.Lock()
 	target := f.sceneA.Tokens["token-goblin"]
 	target.Hidden = true
@@ -280,8 +284,10 @@ func TestRulesetSpecTargetChoicesVisibility(t *testing.T) {
 	if choices := string(read(t, alice, "actionTargets")["targets"]); !strings.Contains(choices, "bob-hero") || strings.Contains(choices, "goblin") {
 		t.Fatalf("character choices: %s", choices)
 	}
+	sendCommand(t, alice, Command{Type: "view", SceneID: f.sceneA.ID, Region: &SceneRegion{Left: 0, Top: 0, Right: 1000, Bottom: 1000}})
+	read(t, alice, "snapshot")
 	sendCommand(t, alice, Command{Type: "actionTargets", SceneID: f.sceneA.ID, Seq: 3, Action: &ActionExecutionRequest{CharacterID: "hero", ActionID: "inspect"}})
-	if choices := string(read(t, alice, "actionTargets")["targets"]); !strings.Contains(choices, "spare") || strings.Contains(choices, "bob-hero") {
+	if choices := string(read(t, alice, "actionTargets")["targets"]); !strings.Contains(choices, stone) || strings.Contains(choices, "bob-hero") {
 		t.Fatalf("object choices: %s", choices)
 	}
 	f.server.mu.Lock()
@@ -316,6 +322,7 @@ func TestRulesetSpecIndependentExamples(t *testing.T) {
 	}
 	member := &Member{ID: "gm", GM: true}
 	scene := newScene("room", "Room")
+	addTestSceneObject(scene, "stone", "verbatim user data")
 	for id := range characters {
 		scene.Tokens[id] = Token{ID: id, CharacterInstanceID: id}
 	}
@@ -338,7 +345,7 @@ func TestRulesetSpecIndependentExamples(t *testing.T) {
 	if r := execute("rest", "", nil, 0); r.Roll != nil || r.Plan == nil || r.Plan.Changes[0].After.Integer() != 32 {
 		t.Fatalf("self: %+v", r)
 	}
-	if r := execute("check_object", "", &ActionInstanceRef{CharacterID: "hero", ItemID: "axe"}, 0); r.Success == nil || *r.Success || strings.Join(r.Messages, "") != "verbatim user data" {
+	if r := execute("check_object", "", &ActionInstanceRef{ElementID: "stone"}, 0); r.Success == nil || *r.Success || strings.Join(r.Messages, "") != "verbatim user data" {
 		t.Fatalf("object DC: %+v", r)
 	}
 	if r := execute("use_axe", "axe", nil, 3); r.Roll == nil || r.Roll.Total != 9 || r.Plan == nil || r.Plan.Changes[0].After.Integer() != 2 {

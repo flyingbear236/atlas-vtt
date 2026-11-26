@@ -4,18 +4,23 @@ export function orderedLayers(state,floorId){return Object.values(state?.layers|
 // Keeps only render order. Element values are resolved from current state so
 // transform previews do not invalidate the index or retain stale objects.
 export class SceneRenderIndex {
-  constructor(){this.layers=new Map();this.rebuilds=0;}
-  clear(){this.layers.clear();}
+  constructor(){this.layers=new Map();this.objectLayers=new Map();this.rebuilds=0;}
+  clear(){this.layers.clear();this.objectLayers.clear();}
   reset(){this.clear();}
-  invalidateLayer(id){if(id)this.layers.delete(id);}
+  invalidateLayer(id){if(id){this.layers.delete(id);this.objectLayers.delete(id);}}
   elementChanged(previous,next){
     if(!previous||!next||previous.layerId!==next.layerId||previous.floorId!==next.floorId||previous.zOrder!==next.zOrder){
       this.invalidateLayer(previous?.layerId);this.invalidateLayer(next?.layerId);
-    }
+    }else if((!!previous.interaction&&!previous.interaction.disabled)!==(!!next.interaction&&!next.interaction.disabled)){this.objectLayers.delete(next.layerId);}
   }
   forLayer(state,layerId){
     let ids=this.layers.get(layerId);
     if(!ids){ids=Object.values(state?.elements||{}).filter(element=>element.layerId===layerId).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id)).map(element=>element.id);this.layers.set(layerId,ids);this.rebuilds++;}
+    return ids;
+  }
+  forObjectLayer(state,layerId){
+    let ids=this.objectLayers.get(layerId);
+    if(!ids){ids=this.forLayer(state,layerId).filter(id=>{const i=state.elements[id]?.interaction;return i&&!i.disabled;});this.objectLayers.set(layerId,ids);}
     return ids;
   }
 }
@@ -40,11 +45,11 @@ export function hitElement(state,floorId,x,y,renderIndex,skipLocked=false){
   return elementsAtPoint(state,floorId,x,y,renderIndex).find(element=>!skipLocked||!state.layers[element.layerId]?.locked)||null;
 }
 
-export function elementsAtPoint(state,floorId,x,y,renderIndex){
+export function elementsAtPoint(state,floorId,x,y,renderIndex,objectsOnly=false){
   const result=[],layers=orderedLayers(state,floorId).filter(layer=>layer.kind==='visual'&&layer.visible&&layer.opacity>0);
   for(let layerIndex=layers.length-1;layerIndex>=0;layerIndex--){
-    const layer=layers[layerIndex],elements=renderIndex?renderIndex.forLayer(state,layer.id):Object.values(state?.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
-    for(let elementIndex=elements.length-1;elementIndex>=0;elementIndex--){const element=renderIndex?state?.elements?.[elements[elementIndex]]:elements[elementIndex];if(!element||element.floorId!==floorId||!element.visible||element.opacity<=0)continue;const p=inversePoint(element.transform,x,y);if(p.x>=0&&p.y>=0&&p.x<=element.transform.width&&p.y<=element.transform.height)result.push(element);}
+    const layer=layers[layerIndex],elements=renderIndex?(objectsOnly?renderIndex.forObjectLayer(state,layer.id):renderIndex.forLayer(state,layer.id)):Object.values(state?.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
+    for(let elementIndex=elements.length-1;elementIndex>=0;elementIndex--){const element=renderIndex?state?.elements?.[elements[elementIndex]]:elements[elementIndex];if(!element||element.floorId!==floorId||!element.visible||element.opacity<=0||objectsOnly&&(!element.interaction||element.interaction.disabled))continue;const p=inversePoint(element.transform,x,y);if(p.x>=0&&p.y>=0&&p.x<=element.transform.width&&p.y<=element.transform.height)result.push(element);}
   }
   return result;
 }
@@ -154,16 +159,17 @@ function drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage,stat
   for(const key of prefetch){const [x,y]=key.split(':').map(Number),left=x*tileW,top=y*tileH,right=Math.min(t.width,left+tileW),bottom=Math.min(t.height,top+tileH);if(resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,`tile:${z}:${key}`,left,top,right,bottom))continue;if(tileAvailable(asset,z,x,y,nx))requestImage(`${asset.id}/${z}_${x}_${y}.png`,Math.max(1,512*screenScale*2**z),'prefetch');}
 }
 
-function drawElement(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds){
+function drawElement(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds,drawObjectOutline){
   if(!elementIntersectsView(element,view))return;const t=element.transform;if(resourceBounds&&!resourceBounds.intersectsRect(state,floor,element,'element',0,0,t.width,t.height))return;ctx.save();ctx.translate(t.x+t.width/2,t.y+t.height/2);ctx.rotate(t.rotation*Math.PI/180);ctx.translate(-t.width/2,-t.height/2);
+  if(element.interaction&&!element.interaction.disabled)drawObjectOutline?.(element,asset);
   if(asset?.renderMode==='tiled')drawTiled(ctx,element,asset,view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds);
   else if(asset){const edge=Math.max(t.width,t.height)*camera.scale*dpr,bitmap=requestImage(`${asset.id}/image.png`,edge);if(bitmap)ctx.drawImage(bitmap,0,0,t.width,t.height);else{ctx.fillStyle='#33413d';ctx.fillRect(0,0,t.width,t.height);}}
   else{ctx.fillStyle='#422';ctx.fillRect(0,0,t.width,t.height);}ctx.restore();
 }
 
-function drawVisualLayer({ctx,state,layer,floor,floorAlpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds}){
+function drawVisualLayer({ctx,state,layer,floor,floorAlpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds,drawObjectOutline}){
   if(!layer.visible||layer.opacity<=0)return;const elements=renderIndex?renderIndex.forLayer(state,layer.id):Object.values(state.elements||{}).filter(element=>element.layerId===layer.id).sort((a,b)=>a.zOrder-b.zOrder||a.id.localeCompare(b.id));
-  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds);}
+  for(const entry of elements){const element=renderIndex?state.elements?.[entry]:entry;if(!element||element.floorId!==layer.floorId||!element.visible||element.opacity<=0)continue;ctx.globalAlpha=floorAlpha*layer.opacity*element.opacity;drawElement(ctx,element,state.assets?.[element.assetId],view,camera,dpr,requestImage,peekImage,state,floor,resourceBounds,drawObjectOutline);}
 }
 
 function drawSelection(ctx,element,camera,showRotation){
@@ -250,11 +256,11 @@ export function drawRenderBoundsEditor(ctx,state,floorId,camera,{tool='',draft=n
   ctx.save();ctx.beginPath();traceRenderBounds(ctx,preview.outer,!incomplete);if(polygonDraft&&draft.cursor&&draft.points.length){ctx.moveTo(draft.points.at(-1).x,draft.points.at(-1).y);ctx.lineTo(draft.cursor.x,draft.cursor.y);if(draft.points.length>1)ctx.lineTo(draft.points[0].x,draft.points[0].y);}ctx.fillStyle=invalid?'#e66f6728':'#e2bf5b1f';ctx.strokeStyle=invalid?'#ff8178':'#e7c866';ctx.lineWidth=2/camera.scale;ctx.setLineDash((rectangle||edit||polygonDraft)?[8/camera.scale,5/camera.scale]:[]);if(!incomplete)ctx.fill('evenodd');ctx.stroke();ctx.setLineDash([]);if(tool&&preview.outer.length){const radius=4.5/camera.scale;for(let i=0;i<preview.outer.length;i++){const point=preview.outer[i];ctx.fillStyle=invalid?'#ff8178':i===selectedVertex?'#fff4c5':'#f3d77b';ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fill();}if(tool==='edit'){ctx.strokeStyle='#d7be71aa';ctx.lineWidth=1.5/camera.scale;const size=5/camera.scale;for(let i=0;i<preview.outer.length;i++){const a=preview.outer[i],b=preview.outer[(i+1)%preview.outer.length],x=(a.x+b.x)/2,y=(a.y+b.y)/2;ctx.strokeRect(x-size/2,y-size/2,size,size);}}}ctx.restore();
 }
 
-export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,resourceBounds,clipRenderBounds=!editor,showRotationHandle=true}){
+export function drawSceneStack({ctx,state,currentFloorId,view,camera,dpr,requestImage,peekImage,selectedElement,editor,drawTokenLayer,renderIndex,renderBoundsPaths,resourceBounds,clipRenderBounds=!editor,showRotationHandle=true,drawObjectOutline}){
   for(const {floor,alpha}of compositeFloors(state,currentFloorId)){
     if(alpha<=0)continue;const clipped=clipRenderBounds&&floor.renderBounds;if(clipped){ctx.save();clipFloorRenderBounds(ctx,state,floor,renderBoundsPaths);}
     for(const layer of orderedLayers(state,floor.id)){
-      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floor,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds:clipped?resourceBounds:null});
+      if(layer.kind==='visual')drawVisualLayer({ctx,state,layer,floor,floorAlpha:alpha,view,camera,dpr,requestImage,peekImage,renderIndex,resourceBounds:clipped?resourceBounds:null,drawObjectOutline});
       else if(layer.kind==='tokens')drawTokenLayer(floor.id,alpha);
     }
     if(clipped)ctx.restore();

@@ -165,7 +165,12 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 			e := receipt.Action
 			if public, ok := a.project(e); ok {
 				response["action"] = public
-				if a.seesCharacter(e.CharacterID, true) && (e.Target == nil || a.seesCharacter(e.Target.CharacterID, true)) {
+				if e.ObjectResponse != nil && e.UserID == peer.member.ID && e.ObjectResponse.ImageAssetID != "" {
+					if media := objectMediaPayload(session, peer.member, e.ObjectResponse.ImageAssetID); media != nil {
+						response["objectImage"] = map[string]any{"type": "objectImage", "sceneId": e.SceneID, "executionId": e.ExecutionID, "media": media}
+					}
+				}
+				if a.seesCharacter(e.CharacterID, true) && (e.Target == nil || e.Target.ElementID != "" && a.seesHistoricalTarget(*e.Target) || a.seesCharacter(e.Target.CharacterID, true)) {
 					response["details"] = e.Details
 				}
 			}

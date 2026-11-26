@@ -232,6 +232,9 @@ func (c *expressionCompiler) compile(key string) (*Expression, error) {
 		if err != nil {
 			return nil, err
 		}
+		if site.selector == "select(object)" && parts[0] == "target" {
+			return nil, fmt.Errorf("%s: scene object fields are read-only", key)
+		}
 		want, err := c.resolve(site, parts, exprDynamic)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
@@ -355,7 +358,13 @@ func (c *expressionCompiler) resolve(site expressionSite, p []string, targetType
 		if site.kind == "stat" {
 			break
 		}
-		if site.selector == "source" || site.selector == "select(object)" {
+		if site.selector == "select(object)" {
+			if len(p) == 2 && (p[1] == "name" || p[1] == "id") {
+				return exprText, nil
+			}
+			return "", fmt.Errorf("unknown scene object field %q", address)
+		}
+		if site.selector == "source" {
 			return c.instanceField("object", p[1:])
 		}
 		if site.selector == "self" || site.selector == "select(character)" {

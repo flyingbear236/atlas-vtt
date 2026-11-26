@@ -143,15 +143,15 @@ apply = { path = "target.stat.hp.current", formula = "value + 2" }
 message = "Испытатель восстановил 2 HP."
 
 [action.lab.inspect]
-name = "Осмотр предмета"
+name = "Осмотреть объект"
 target = "select(object)"
-message = "{target.name} · маркировка {target.notes.label} · заряды {target.state.charges}"
+message = "Осмотр: {target.name}"
 
 [action.lab.calibrate]
-name = "Калибровка предмета"
+name = "Исследовать объект"
 target = "select(object)"
-roll = "10"
-success = "roll >= target.dc"
+roll = "1d20"
+success = "roll >= 10"
 on.success = { message = "Калибровка прошла." }
 on.fail = { message = "Калибровка не прошла." }
 

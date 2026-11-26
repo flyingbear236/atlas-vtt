@@ -24,13 +24,14 @@ type actionCommandWire struct {
 // subscriber both on live delivery and on replay after permissions change.
 type actionJournalEntry struct {
 	ActionEvent
-	Details       json.RawMessage       `json:"details"`
-	Stream        string                `json:"stream"`
-	Seq           uint64                `json:"seq"`
-	Digest        string                `json:"digest"`
-	Target        *ActionInstanceRef    `json:"target,omitempty"`
-	GMOnly        bool                  `json:"gmOnly,omitempty"`
-	MessageAccess []actionMessageAccess `json:"messageAccess,omitempty"`
+	Details        json.RawMessage       `json:"details"`
+	Stream         string                `json:"stream"`
+	Seq            uint64                `json:"seq"`
+	Digest         string                `json:"digest"`
+	Target         *ActionInstanceRef    `json:"target,omitempty"`
+	GMOnly         bool                  `json:"gmOnly,omitempty"`
+	MessageAccess  []actionMessageAccess `json:"messageAccess,omitempty"`
+	ObjectResponse *ObjectMessage        `json:"objectResponse,omitempty"`
 }
 
 type ActionEvent struct {
@@ -131,18 +132,24 @@ func (a actionAudience) project(e *actionJournalEntry) (ActionEvent, bool) {
 		out.RollTotalText = strconv.FormatInt(out.Roll.Total, 10)
 	}
 	if !peerUsesPlayerProjection(a.peer) {
+		if e.ObjectResponse != nil && e.UserID == a.peer.member.ID && e.ObjectResponse.Text != "" {
+			out.Messages = append(append([]string(nil), out.Messages...), e.ObjectResponse.Text)
+		}
 		return out, true
 	}
-	if e.GMOnly || !a.seesCharacter(e.CharacterID, false) || e.Target != nil && !a.seesCharacter(e.Target.CharacterID, e.Target.ItemID != "") {
+	if e.GMOnly || !a.seesCharacter(e.CharacterID, false) || e.Target != nil && !a.seesHistoricalTarget(*e.Target) && !(e.Target.ElementID != "" && e.UserID == a.peer.member.ID) {
 		return ActionEvent{}, false
 	}
 	out.Messages = nil
 	for i, message := range e.Messages {
 		access := e.MessageAccess[i]
-		if access.Actor && !a.seesCharacter(e.CharacterID, true) || access.Target && (e.Target == nil || !a.seesCharacter(e.Target.CharacterID, true)) {
+		if access.Actor && !a.seesCharacter(e.CharacterID, true) || access.Target && (e.Target == nil || !a.seesHistoricalTarget(*e.Target) || e.Target.ElementID == "" && !a.seesCharacter(e.Target.CharacterID, true)) {
 			continue
 		}
 		out.Messages = append(out.Messages, message)
+	}
+	if e.ObjectResponse != nil && e.UserID == a.peer.member.ID && e.ObjectResponse.Text != "" {
+		out.Messages = append(out.Messages, e.ObjectResponse.Text)
 	}
 	return out, true
 }
@@ -203,7 +210,7 @@ func (s *Server) prepareAction(session *Session, p *peer, c Command, stream, dig
 
 	req := *c.Action
 	a := audienceForAction(session, p)
-	if !a.seesCharacter(req.CharacterID, true) || req.Target != nil && !a.seesCharacter(req.Target.CharacterID, req.Target.ItemID != "") {
+	if !a.seesCharacter(req.CharacterID, true) || req.Target != nil && !a.seesActionTarget(*req.Target) {
 		return nil, errors.New("actor or target unavailable")
 	}
 	result, err := ExecuteRulesetAction(session, p.sceneID, p.member, req, s.rollService.rng)
@@ -283,7 +290,12 @@ func (s *Server) prepareAction(session *Session, p *peer, c Command, stream, dig
 		Revision: session.ActionRevision + 1, Roll: result.Roll, Success: result.Success, Messages: result.Messages, Trace: result.Trace,
 	}, Details: encoded, Stream: stream, Seq: c.Seq, Digest: digest, Target: result.Target, MessageAccess: messageAccess(result)}
 	player := &Member{}
-	entry.GMOnly = !a.scene.Published || !actionCharacterVisible(session, a.scene, player, req.CharacterID) || result.Target != nil && !actionCharacterVisible(session, a.scene, player, result.Target.CharacterID)
+	entry.GMOnly = !a.scene.Published || !actionCharacterVisible(session, a.scene, player, req.CharacterID) || result.Target != nil && result.Target.ElementID == "" && !actionCharacterVisible(session, a.scene, player, result.Target.CharacterID)
+	if result.Target != nil && result.Target.ElementID != "" {
+		e := a.scene.Elements[result.Target.ElementID]
+		response := objectReaction(e, req.ActionID, result.Success)
+		entry.ObjectResponse = &response
+	}
 	return &actionCommit{entry: entry, plan: result.Plan}, nil
 }
 

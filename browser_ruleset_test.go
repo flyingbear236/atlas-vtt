@@ -15,17 +15,9 @@ func TestBrowserRulesetV04(t *testing.T) {
 	f := newDiceCommandFixture(t)
 	credentials := post(t, f.host.URL+"/api/sessions", map[string]string{"name": "Ruleset browser"})
 	_, source := specZIP(t)
-	// select(object) currently selects an unambiguous item via its owner's token.
-	// Keep the three-equipped-weapon fixture and add a dedicated single-item target.
 	archive := plainZIP(t, map[string][]byte{
 		"rules/examples.toml": source,
 		"party/trained.toml":  []byte(specSupplement),
-		"party/target.toml": []byte(`[character.browser_target]
-name = "Хранитель кинжала"
-[[character.browser_target.inventory]]
-id = "browser-dagger"
-object = "object.dagger"
-`),
 	})
 	importSpecZIP(t, f.host.URL, credentials, archive)
 	ws := dialRaw(t, f.host.URL, credentials)
@@ -37,7 +29,7 @@ object = "object.dagger"
 	subscribeDiceScene(t, ws, scenes[0].ID)
 	linkSpecCharacter(t, ws, scenes[0].ID, "hero", 1)
 	linkSpecCharacter(t, ws, scenes[0].ID, "trained", 2)
-	linkSpecCharacter(t, ws, scenes[0].ID, "browser_target", 3)
+	addUploadedTestObject(t, f, credentials, scenes[0].ID, "Камень", 500, 200)
 	ws.Close()
 	f.server.mu.Lock()
 	f.rng.values = []int{9, 3, 0}

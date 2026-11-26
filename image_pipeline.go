@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
@@ -98,6 +99,15 @@ func (r contextReader) Read(p []byte) (int, error) {
 // Compressed input goes straight to disk. Neither it nor a complete decoded
 // map is retained by Go. Only a completed pyramid is published under its hash.
 func prepareReader(ctx context.Context, root string, input io.Reader, kind string) (Asset, error) {
+	return prepareRasterReader(ctx, root, input, kind, false)
+}
+
+// The GM catalog accepts the additional raster formats supported by the installed
+// libvips build. Existing scene/token/avatar upload contracts remain unchanged.
+func prepareCampaignMediaReader(ctx context.Context, root string, input io.Reader) (Asset, error) {
+	return prepareRasterReader(ctx, root, input, assetKindScene, true)
+}
+func prepareRasterReader(ctx context.Context, root string, input io.Reader, kind string, mediaFormats bool) (Asset, error) {
 	var ok bool
 	if kind, ok = canonicalAssetKind(kind); !ok {
 		return Asset{}, errors.New("Неизвестный тип изображения")
@@ -138,7 +148,13 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	cfg, format, decodeErr := image.DecodeConfig(f)
 	f.Close()
 	if decodeErr != nil || (format != "png" && format != "jpeg") {
-		return Asset{}, errors.New("Поддерживаются PNG и JPEG")
+		if !mediaFormats {
+			return Asset{}, errors.New("Поддерживаются PNG и JPEG")
+		}
+		cfg, format, decodeErr = readAdditionalMediaConfig(ctx, uploadPath, assets)
+		if decodeErr != nil {
+			return Asset{}, decodeErr
+		}
 	}
 	if err = validateImageDimensions(kind, cfg.Width, cfg.Height); err != nil {
 		return Asset{}, err
@@ -146,9 +162,11 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 	sourceID := hex.EncodeToString(sourceHash.Sum(nil))
 	mimeType := "image/png"
 	filename := "image.png"
-	if format == "jpeg" {
-		mimeType = "image/jpeg"
-		filename = "image.jpg"
+	switch format {
+	case "jpeg":
+		mimeType, filename = "image/jpeg", "image.jpg"
+	case "webp", "gif", "avif", "bmp":
+		mimeType, filename = "image/"+format, "image."+format
 	}
 	if kind == assetKindAvatar {
 		mimeType = "image/png"
@@ -220,6 +238,89 @@ func prepareReader(ctx context.Context, root string, input io.Reader, kind strin
 		return a, fmt.Errorf("Не удалось опубликовать ассет: %w", err)
 	}
 	return a, nil
+}
+
+// Magic allowlist prevents libvips from being invoked on arbitrary document
+// loaders (SVG, PDF, etc.). Dimensions are checked before full conversion.
+func additionalMediaFormat(header []byte) string {
+	if len(header) >= 6 && (string(header[:6]) == "GIF87a" || string(header[:6]) == "GIF89a") {
+		return "gif"
+	}
+	if len(header) >= 12 && string(header[:4]) == "RIFF" && string(header[8:12]) == "WEBP" {
+		return "webp"
+	}
+	if len(header) >= 2 && string(header[:2]) == "BM" {
+		return "bmp"
+	}
+	if len(header) >= 16 && string(header[4:8]) == "ftyp" {
+		if brand := string(header[8:12]); brand == "avif" || brand == "avis" {
+			return "avif"
+		}
+		for i := 16; i+4 <= len(header); i += 4 {
+			if brand := string(header[i : i+4]); brand == "avif" || brand == "avis" {
+				return "avif"
+			}
+		}
+	}
+	return ""
+}
+func readAdditionalMediaConfig(ctx context.Context, filename, temp string) (image.Config, string, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return image.Config{}, "", err
+	}
+	defer f.Close()
+	var header [128]byte
+	n, _ := io.ReadFull(f, header[:])
+	format := additionalMediaFormat(header[:n])
+	if format == "" {
+		return image.Config{}, "", errors.New("Поддерживаются PNG, JPEG, WebP, GIF, AVIF и BMP")
+	}
+	if format == "gif" {
+		if _, err = f.Seek(0, 0); err != nil {
+			return image.Config{}, "", err
+		}
+		cfg, err := gif.DecodeConfig(f)
+		return cfg, format, err
+	}
+	tool, err := findVips()
+	if err != nil {
+		return image.Config{}, "", err
+	}
+	name := "vipsheader"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	headerTool := filepath.Join(filepath.Dir(tool), name)
+	if _, err = os.Stat(headerTool); err != nil {
+		headerTool, err = exec.LookPath(name)
+		if err != nil {
+			return image.Config{}, "", fmt.Errorf("Для формата %s нужен vipsheader из комплекта libvips", format)
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	field := func(key string) (int, error) {
+		cmd := exec.CommandContext(ctx, headerTool, "-f", key, filename, "--vips-concurrency=1", "--vips-cache-max=0")
+		configureImageProcess(cmd)
+		cmd.Env = append(os.Environ(), "TMPDIR="+temp, "TEMP="+temp, "TMP="+temp)
+		var stdout, stderr limitedOutput
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return 0, fmt.Errorf("Не удалось прочитать %s: %s (%w)", format, strings.TrimSpace(stderr.String()), err)
+		}
+		return strconv.Atoi(strings.TrimSpace(stdout.String()))
+	}
+	w, err := field("width")
+	if err != nil {
+		return image.Config{}, "", err
+	}
+	h, err := field("height")
+	if err != nil {
+		return image.Config{}, "", err
+	}
+	return image.Config{Width: w, Height: h}, format, nil
 }
 
 func prepareRepresentationFiles(ctx context.Context, tool, stage, original string, asset *Asset) error {

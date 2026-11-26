@@ -80,16 +80,17 @@ type Layer struct {
 }
 
 type SceneElement struct {
-	ID        string    `json:"id"`
-	FloorID   string    `json:"floorId"`
-	LayerID   string    `json:"layerId"`
-	AssetID   string    `json:"assetId"`
-	Name      string    `json:"name"`
-	Transform Transform `json:"transform"`
-	ZOrder    int       `json:"zOrder"`
-	Visible   bool      `json:"visible"`
-	Locked    bool      `json:"locked"`
-	Opacity   float64   `json:"opacity"`
+	ID          string             `json:"id"`
+	FloorID     string             `json:"floorId"`
+	LayerID     string             `json:"layerId"`
+	AssetID     string             `json:"assetId"`
+	Name        string             `json:"name"`
+	Transform   Transform          `json:"transform"`
+	ZOrder      int                `json:"zOrder"`
+	Visible     bool               `json:"visible"`
+	Locked      bool               `json:"locked"`
+	Opacity     float64            `json:"opacity"`
+	Interaction *ObjectInteraction `json:"interaction,omitempty"`
 }
 
 type TransitionEndpoint struct {
@@ -664,7 +665,13 @@ func refreshAssetOrphans(session *Session, now time.Time) bool {
 	for _, scene := range session.Scenes {
 		for _, element := range scene.Elements {
 			references[element.AssetID]++
+			for _, assetID := range objectMediaIDs(element.Interaction) {
+				references[assetID]++
+			}
 		}
+	}
+	for _, entry := range session.MediaLibrary.Files {
+		references[entry.AssetID]++
 	}
 	for _, assetID := range session.Ruleset.Media {
 		references[assetID]++
