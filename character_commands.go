@@ -295,7 +295,11 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 			return errors.New("character access denied")
 		}
 		instance := session.CharacterInstances[command.CharacterID]
-		if instance.Name != command.CharacterName {
+		descriptionChanged, err := setCharacterDescription(&instance, command.CharacterDescription)
+		if err != nil {
+			return err
+		}
+		if instance.Name != command.CharacterName || descriptionChanged {
 			instance.Name = command.CharacterName
 			mutation.setInstance(instance)
 		}
@@ -620,7 +624,7 @@ func applyCharacterCommand(session *Session, member *Member, sceneID string, com
 		if !memberCanAccessCharacter(session, member, command.CharacterID) {
 			return errors.New("character access denied")
 		}
-		if *command.AvatarAssetID != "" && (session.Assets[*command.AvatarAssetID].ID == "" || session.Assets[*command.AvatarAssetID].Kind != assetKindAvatar) {
+		if *command.AvatarAssetID != "" && (!isCharacterArtworkAsset(session.Assets[*command.AvatarAssetID]) || !avatarAssetVisibleTo(session, member, *command.AvatarAssetID)) {
 			return errors.New("avatar asset not found")
 		}
 		instance := session.CharacterInstances[command.CharacterID]

@@ -17,7 +17,7 @@ import {DefinitionsEditor} from './definitions.js';
 import {ActionTargetPicker,displayRulesetValue} from './ruleset-sheet.js';
 import {CharacterTracePanel} from './character-trace.js';
 import {collectStatDependencies,catalogDefinitionFields,catalogDerivedFields,catalogActionEntries,catalogFullPath,catalogParentPath} from './stat-catalog.js';
-import {ActionVisualGate} from './action-visual-gate.js';
+import {ActionVisualGate,ObjectReactionGate} from './action-visual-gate.js';
 import {ActionTraceJournal} from './action-trace-journal.js';
 import {ActionReferencePanel,renderActionReference} from './action-reference.js';
 import {EffectReferencePanel,characterEffectsFromSnapshot,effectCounts,effectMatches,renderEffectCard,renderEffectRow} from './character-effects.js';
@@ -25,8 +25,8 @@ import {ResourceOverlayEditor} from './resource-overlay-editor.js';
 import {PresetEditor} from './preset-editor.js';
 import {createDicePanel,DiceAnimator,DiceRuntime} from './dice.js';
 import {DiceRendererAdapter} from './dice-renderer.js';
-import {LibraryAssetPicker} from './library-explorer.js';
 import {CampaignMediaLibrary} from './media-library.js';
+import {ViewportPreviews} from './library-explorer.js';
 const $ = id => document.getElementById(id);
 const isGM=member=>!!(member?.gm||member?.role==='gm');
 const isEditorView=()=>!!state&&isGM(state.you)&&!state.playerPreview&&!previewSwitchPending;
@@ -40,7 +40,7 @@ characterPanel.innerHTML=`
   <div id="characterSummary" hidden>
     <div class="character-head">
       <div class="character-avatar"><img id="characterAvatar" alt="" hidden><span id="characterAvatarEmpty">◇</span></div>
-      <div class="character-head-text"><h2 id="characterName"></h2><p id="characterSubtitle" class="muted"></p></div>
+      <div class="character-head-text"><h2 id="characterName"></h2><p id="characterSubtitle" class="muted"></p><label id="characterDescriptionRow" hidden>Описание персонажа<textarea id="characterDescription" maxlength="2000" rows="2" placeholder="Описание персонажа" aria-label="Описание персонажа"></textarea></label></div>
       <div class="character-head-tools">
         <button id="characterLayoutToggle" type="button" class="subtle character-tool" hidden aria-hidden="true" tabindex="-1">☷</button>
         <button id="characterMechanicsToggle" type="button" class="subtle character-tool" title="Настроить персонажа" aria-label="Настроить персонажа" aria-expanded="false">✎</button>
@@ -71,7 +71,7 @@ characterPanel.innerHTML=`
       <h3>Настройки персонажа</h3>
       <details id="characterIdentitySection" class="character-settings-section"><summary>Персонаж</summary>
         <label id="characterRenameRow">Имя персонажа<input id="characterRename" maxlength="200"></label>
-        <div id="characterAvatarControls"><label class="file-button">Загрузить изображение<input id="characterAvatarUpload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><button id="characterMediaPick" class="subtle gm" type="button">Выбрать из галереи</button><button id="characterAvatarReset" class="subtle" type="button">Наследовать</button><button id="characterAvatarPlaceholder" class="subtle" type="button">Без изображения</button></div>
+        <div id="characterAvatarControls"><label class="file-button">Загрузить изображение<input id="characterAvatarUpload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><button id="characterMediaPick" class="subtle" type="button">Выбрать из галереи</button><button id="characterAvatarReset" class="subtle" type="button">Наследовать</button><button id="characterAvatarPlaceholder" class="subtle" type="button">Без изображения</button></div>
       </details>
       <details id="characterMechanicsSection" class="character-settings-section" hidden><summary>Редактирование механики</summary>
         <h4>Параметры персонажа</h4>
@@ -185,9 +185,9 @@ function initOutbox(){
     },updateCommandStatus,(cmd,error,errorCode,receipt)=>{
       dirty=true;
       dice.handleReceipt(cmd,receipt);
-      if(receipt.objectImage)objectPresentation.handle(receipt.objectImage);
+      if(receipt.objectReaction){const reaction=receipt.objectReaction;objectReactionGate.defer(reaction.executionId,()=>{if(reaction.sceneId!==objectContext())return;dice.showObjectReaction(reaction);if(reaction.media)objectPresentation.handle({...reaction,type:'objectImage'});});}
       if(Number.isSafeInteger(receipt.actionGeneration))actionGeneration=receipt.actionGeneration;
-      if(cmd.type==='actionExecute'&&!error){const result=receipt.action;if(result&&!result.roll&&!result.messages?.length&&!receipt.details?.changes?.length&&!receipt.objectImage)toast('Действие выполнено');}
+      if(cmd.type==='actionExecute'&&!error){const result=receipt.action;if(result&&!result.roll&&!result.messages?.length&&!receipt.details?.changes?.length&&!receipt.objectReaction)toast('Действие выполнено');}
       if(cmd.type==='characterItemEquip')renderCharacterPanel();
       definitionsEditor.handleCompleted(cmd,error);
       if(error){
@@ -224,11 +224,11 @@ let resourceDefinitionRegistry=null,actionDefinitionRegistry=null;const characte
 const characterWatch=new CharacterWatch(value=>send(value),onCharacterWatchChange,onCharacterTraceResponse);let characterWatchNeedsResume=true,characterCatalogSession='';
 async function loadCharacterCatalogPage(kind,cursor){const query=new URLSearchParams({session:credentials.session,kind,limit:'50'});if(cursor)query.set('cursor',cursor);const response=await fetch(`/api/characters?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`}});if(!response.ok)throw new Error(await response.text());return response.json();}
 const characterCatalog=new CharacterCatalog(loadCharacterCatalogPage,()=>{renderTokenCreateOptions();renderCharacterPanel();});
-const actionVisualGate=new ActionVisualGate();
+const actionVisualGate=new ActionVisualGate(),objectReactionGate=new ObjectReactionGate();
 const actionTraceJournal=new ActionTraceJournal(document.body,command=>send(command));
 const displayUpdateSeq=new Map();
 const diceAnimator=new DiceAnimator({createRenderer:()=>new DiceRendererAdapter(),onError:error=>toast(`3D-анимация кубиков недоступна: ${error.message}`),onFinished:event=>dice.finishAnimation(event)});
-const dice=new DiceRuntime(createDicePanel(),{queue:queueCommand,getCharacterId:()=>navigationToken(selected)?.characterInstanceId||'',toast,animator:diceAnimator,onActionPresented:id=>actionVisualGate.present(id)});
+const dice=new DiceRuntime(createDicePanel(),{queue:queueCommand,getCharacterId:()=>navigationToken(selected)?.characterInstanceId||'',toast,animator:diceAnimator,onActionPresented:id=>{actionVisualGate.present(id);objectReactionGate.present(id);}});
 let actionGeneration=null;
 function enqueueAction(sceneId,action){
  if(state?.scene.id!==sceneId||state.playerPreview||previewSwitchPending||actionGeneration===null)return false;
@@ -243,10 +243,10 @@ const objectMasks=new ObjectMasks();let hoveredObject='';
 const objectContext=()=>state?.scene?.id||'';
 async function readSceneObject(scene,id){const query=new URLSearchParams({session:credentials.session,scene,id});const res=await fetch(`/api/scene/object?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},cache:'no-store'});if(!res.ok)throw Error(await res.text());return res.json();}
 async function uploadObjectImage(scene,file){if(file.size>UPLOAD_LIMIT_BYTES)throw Error('Размер файла не должен превышать 256 МиБ');const controller=new AbortController();uploadControllers.add(controller);try{const query=new URLSearchParams({session:credentials.session,scene,kind:'scene',objectMedia:'1',name:file.name});return await api(`/api/upload?${query}`,file,true,controller.signal);}finally{uploadControllers.delete(controller);}}
-async function fetchObjectImagePart(media,file,signal){const query=new URLSearchParams({session:credentials.session,scene:objectContext()});if(media.editor)query.set('objectEditor','1');else query.set('objectGrant',media.grant||'');const res=await fetch(`/api/asset/${encodeURIComponent(media.asset.id)}/${file}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal,cache:'no-store'});if(!res.ok)throw Error('Изображение недоступно');return res.blob();}
+async function fetchObjectImagePart(media,file,signal){const query=new URLSearchParams({session:credentials.session,scene:objectContext()});if(media.editor)query.set('objectEditor','1');else if(!media.sheet)query.set('objectGrant',media.grant||'');const res=await fetch(`/api/asset/${encodeURIComponent(media.asset.id)}/${file}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal,cache:'no-store'});if(!res.ok)throw Error('Изображение недоступно');return res.blob();}
 function previewSceneObject(element,assets){if(!isEditorView())return;const old=state.elements?.[element.id],catalog=state.elementCatalog?.[element.id],interaction={disabled:!!element.interaction?.disabled};if(old){if(assets[element.assetId])state.assets[element.assetId]=assets[element.assetId];state.elements[element.id]={...old,name:element.name,assetId:element.assetId,interaction};sceneRenderIndex.elementChanged(old,state.elements[element.id]);if(old.assetId!==element.assetId)pruneAssetMetadata(old.assetId);}if(catalog){state.elementCatalog[element.id]={...catalog,name:element.name,interaction};state._catalogVersion=(state._catalogVersion||0)+1;}renderPanels();dirty=true;}
 async function saveSceneObject(scene,id,properties){const query=new URLSearchParams({session:credentials.session,scene,id});return api(`/api/scene/object?${query}`,properties);}
-const objectEditor=new SceneObjectEditor({read:readSceneObject,upload:uploadObjectImage,fetchPart:fetchObjectImagePart,context:objectContext,toast,optimistic:previewSceneObject,save:saveSceneObject});
+const objectEditor=new SceneObjectEditor({read:readSceneObject,pick:options=>mediaLibrary.openPicker(options),fetchPart:fetchObjectImagePart,context:objectContext,toast,optimistic:previewSceneObject,save:saveSceneObject});
 const objectPresentation=new ObjectPresentation({send,context:objectContext,fetchPart:fetchObjectImagePart,toast,onHover:id=>{if(hoveredObject!==id){hoveredObject=id;dirty=true;}}});
 function openObjectEditor(id,enable=false){if(isEditorView())objectEditor.open(id,enable);}
 
@@ -262,7 +262,7 @@ async function downloadDefinitionsFile(endpoint, filename, params={}){
  if(!response.ok)throw new Error(await response.text());const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');
  link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),0);
 }
-async function uploadPresetAvatar(presetID,file){const query=new URLSearchParams({session:credentials.session,kind:'avatar',presetId:presetID});return api(`/api/upload?${query}`,file,true);}
+async function uploadPresetAvatar(presetID,file){const query=new URLSearchParams({session:credentials.session,kind:'avatar',presetId:presetID,filename:file.name});return api(`/api/upload?${query}`,file,true);}
 async function loadDefinitionAvatar(assetID,signal){const response=await fetch(avatarPath(assetID),{headers:{Authorization:`Bearer ${credentials.key}`},signal});if(!response.ok)throw new Error(`Avatar: HTTP ${response.status}`);return response.blob();}
 async function presetAPI(path,body){
  const query=new URLSearchParams({session:credentials.session}),join=path.includes('?')?'&':'?',response=await fetch(`${path}${join}${query}`,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${credentials.key}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
@@ -290,10 +290,9 @@ const libraryTransport={
   applyImport:definitionDocuments.applyImport,
   openCharacter:id=>{const tokenID=Object.keys(state?.tokenCatalog||state?.tokens||{}).find(key=>navigationToken(key)?.characterInstanceId===id);if(tokenID){definitionsEditor.close(true);select(tokenID);}else toast('Для открытия чарлиста персонаж должен находиться на текущей сцене');},
 };
-const characterAssetPicker=new LibraryAssetPicker({list:libraryTransport.list,thumbnail:libraryTransport.thumbnail});
 const definitionsEditor=new DefinitionsEditor($('definitionsMount'),{load:loadDefinitions,queue:queueCommand,getCharacter:()=>characterWatch.snapshot,toast,documents:definitionDocuments,uploadPresetAvatar,loadAvatar:loadDefinitionAvatar,mediaTransport,libraryTransport});
 async function loadRulesetMediaThumbnail(assetID,signal){const query=new URLSearchParams({session:credentials.session}),response=await fetch(`/api/definitions/ruleset/media/asset/${encodeURIComponent(assetID)}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal});if(!response.ok)throw new Error('Изображение недоступно');return response.blob();}
-const presetEditor=new PresetEditor({request:presetAPI,upload:uploadSharedMedia,thumbnail:loadRulesetMediaThumbnail,toast,onSaved:()=>{definitionsEditor.registryChanged();refreshCharacterCatalog();}});
+const presetEditor=new PresetEditor({pick:options=>mediaLibrary.openPicker(options),request:presetAPI,upload:uploadSharedMedia,thumbnail:loadRulesetMediaThumbnail,toast,onSaved:()=>{definitionsEditor.registryChanged();refreshCharacterCatalog();}});
 $('characterLinkSection').append($('editCharacterPreset'));
 $('editCharacterPreset').onclick=()=>{const snapshot=characterWatch.snapshot;if(isGM(state?.you||campaign?.you)&&snapshot?.instance?.presetId)presetEditor.open(snapshot.instance.presetId);};
 // Reuse the existing ruleset editor dialog as the campaign settings window.
@@ -546,7 +545,7 @@ function pruneAssetMetadata(assetID){if(!assetID)return;for(const token of Objec
 function openScene(sceneID,preserveCharacterWatch=false){if(!sceneID||state?.scene?.id===sceneID)return;if(state&&outbox?.data.queue.some(command=>command.type==='actionExecute'))return toast('Дождитесь подтверждения действия');if(characterEditSession&&!confirmLeaveEdit())return;desiredSceneID=sceneID;clearSceneState(preserveCharacterWatch);$('connection').textContent='Открываем сцену…';send({type:'subscribe',sceneId:sceneID,activeTokenId:readSavedActiveToken(sceneID),enabled:isGM(campaign?.you)?preferredPlayerPreview:undefined});}
 function goCampaignHome(){if(outbox?.data.queue.some(command=>command.type==='actionExecute'))return toast('Дождитесь подтверждения действия');if(characterEditSession&&!confirmLeaveEdit())return;desiredSceneID='';clearSceneState();if(campaign)scenes.showHome();send({type:'subscribe',sceneId:''});}
 function connect(){
- mediaLibrary.close();actionVisualGate.clear();displayUpdateSeq.clear();characterWatchNeedsResume=true;
+ mediaLibrary.closeAll();actionVisualGate.clear();objectReactionGate.clear();displayUpdateSeq.clear();characterWatchNeedsResume=true;
  if(stopped)return;saveViewportNow();clearTimeout(reconnectTimer);storageDegraded='';updateCommandStatus();$('connection').textContent='Подключение…';$('connection').className='status';state=null;regionInFlight=false;sceneCameraInitialized=false;outboxNeedsResume=true;
  socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
  socket.onopen=()=>socket.send(JSON.stringify(credentials));
@@ -613,7 +612,7 @@ function connect(){
   }
   if(msg.type==='snapshot'){
    if(!desiredSceneID||msg.scene.id!==desiredSceneID)return;
-   actionVisualGate.clear();displayUpdateSeq.clear();
+   actionVisualGate.clear();objectReactionGate.clear();displayUpdateSeq.clear();
 	  const draggedFloor=drag?.type==='token'?state?.tokens?.[drag.id]?.floorId:'',priorCatalog=state?.elementCatalog,priorTokenCatalog=state?.tokenCatalog,priorCatalogVersion=state?._catalogVersion||0,wasPreview=!!state?.playerPreview;const initialRegion=msg.region==null;state=msg;if(isEditorView()&&!state.tokenCatalog)state.tokenCatalog=priorTokenCatalog||{};if(isGM(state.you)&&!state.playerPreview){if(state.elementCatalog)state._catalogVersion=priorCatalogVersion+1;else{state.elementCatalog=priorCatalog||{};state._catalogVersion=priorCatalogVersion;}}else{state.elementCatalog={};state._catalogVersion=0;}if(!initialRegion)regionInFlight=false;desiredSceneID=msg.scene.id;scenes.update(campaign);scenes.showScene();retry=0;
    preferredPlayerPreview=!!state.playerPreview;if(wasPreview!==preferredPlayerPreview)actionTargetPicker.close();if(previewSwitchPending&&previewSwitchPending.enabled===preferredPlayerPreview)previewSwitchPending=null;clearTimeout(previewSwitchTimer);previewSwitchTimer=null;$('connection').textContent='● В сети';$('connection').className='status connected';$('sessionTitle').textContent=msg.name;dice.setScene(msg.scene.id,msg.you.id);renderInteractionMode();
    if(!sceneCameraInitialized){initializeSceneCamera(msg);sceneCameraInitialized=true;}
@@ -662,7 +661,7 @@ function connect(){
   if(selected&&!navigationToken(selected))select(null);
   dirty=true;
  };
- socket.onclose=()=>{mediaLibrary.close();actionGeneration=null;actionTargetPicker.close();clearTimeout(commandTimer);clearTimeout(positionCommandTimer);abortUploads();characterWatch.disconnect();dice.disconnect();if(stopped)return;outbox.inflight=false;positionOutbox.inflight=false;if(drag?.type==='token'||drag?.type==='element')endDrag();drag=null;dirty=true;$('connection').textContent='● Нет связи · повтор…';$('connection').className='status';reconnectTimer=setTimeout(connect,Math.min(1000*2**retry++,10000));};
+ socket.onclose=()=>{mediaLibrary.closeAll();actionGeneration=null;actionTargetPicker.close();clearTimeout(commandTimer);clearTimeout(positionCommandTimer);abortUploads();characterWatch.disconnect();dice.disconnect();if(stopped)return;outbox.inflight=false;positionOutbox.inflight=false;if(drag?.type==='token'||drag?.type==='element')endDrag();drag=null;dirty=true;$('connection').textContent='● Нет связи · повтор…';$('connection').className='status';reconnectTimer=setTimeout(connect,Math.min(1000*2**retry++,10000));};
  socket.onerror=()=>socket.close();
 }
 $('leaveCampaign').onclick=()=>{saveViewportNow();stopped=true;socket?.close();location.href='/';};
@@ -681,9 +680,9 @@ function activatePlayerToken(token,focus){
 }
 function abortUploads(){for(const controller of uploadControllers)controller.abort();uploadControllers.clear();}
 function clearSceneState(preserveCharacterWatch=false){
- mediaLibrary.close();mediaLayersByFloor.clear();mediaLayerScene='';
+ mediaLibrary.closeAll();mediaLayersByFloor.clear();mediaLayerScene='';
  objectEditor.reset();objectPresentation.reset();objectMasks.clear();objectPointer=null;
- actionTraceJournal.setContext('',false);actionVisualGate.clear();displayUpdateSeq.clear();actionGeneration=null;actionTargetPicker.close();closeTokenContextMenu();closeTokenCreatePanel();saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);clearTimeout(transitionNameTimer);clearTimeout(previewSwitchTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;transitionNameTimer=null;transitionPropertyDrafts.clear();previewSwitchTimer=null;previewSwitchPending=null;viewportSaveDirty=false;abortUploads();dice.setScene('');if(preserveCharacterWatch){const previous=selected;selected=null;if(previous&&tokenRows.has(previous))tokenRows.get(previous).classList.remove('selected');fillProperties();}else{select(null);discardCharacterPanelDisplay();}selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;tokenIndex.clear();sceneRenderIndex.clear();renderBoundsPaths.clear();renderBoundsResources.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;renderInteractionMode();dirty=true;}
+ actionTraceJournal.setContext('',false);actionVisualGate.clear();objectReactionGate.clear();displayUpdateSeq.clear();actionGeneration=null;actionTargetPicker.close();closeTokenContextMenu();closeTokenCreatePanel();saveViewportNow();clearTimeout(viewportSaveTimer);clearTimeout(tokenAutosaveTimer);clearTimeout(elementAutosaveTimer);clearTimeout(transitionNameTimer);clearTimeout(previewSwitchTimer);viewportSaveTimer=null;tokenAutosaveTimer=null;elementAutosaveTimer=null;transitionNameTimer=null;transitionPropertyDrafts.clear();previewSwitchTimer=null;previewSwitchPending=null;viewportSaveDirty=false;abortUploads();dice.setScene('');if(preserveCharacterWatch){const previous=selected;selected=null;if(previous&&tokenRows.has(previous))tokenRows.get(previous).classList.remove('selected');fillProperties();}else{select(null);discardCharacterPanelDisplay();}selectElement(null);selectedTransition='';transitionDraft=null;transitionCursor=null;walkableTool='';selectedWalkableComponent='';renderBoundsTool='';renderBoundsDraft=null;selectedRenderBoundsVertex=-1;drag=null;state=null;currentFloorID='';pendingActiveFocus='';confirmedActiveTokenID='';confirmedFloorID='';pendingActiveSwitch=null;regionInFlight=false;sceneCameraInitialized=false;tokenIndex.clear();sceneRenderIndex.clear();renderBoundsPaths.clear();renderBoundsResources.clear();visuals.clear();movingTokens.clear();for(const id of [...tokenRows.keys()])removeTokenRow(id);wanted.clear();imagePlans.clear();for(const controller of pending.values())controller.abort();$('emptyMap').hidden=false;renderInteractionMode();dirty=true;}
 function rebuildTokenIndex(){tokenIndex.clear();movingTokens.clear();for(const t of Object.values(state.tokens)){tokenIndex.set(t);const v=visuals.get(t.id);if(v&&(v.x!==t.x||v.y!==t.y))movingTokens.add(t.id);}}
 function renderMembers(){
  $('members').replaceChildren();let online=0;
@@ -1002,12 +1001,27 @@ function characterInspectorFrame(title,subtitle){
  close.onclick=()=>{characterBrowseOpen=false;detail.closest('.character-table-browser')?.classList.remove('detail-open');};
  head.append(label,close);detail.append(head);return detail;
 }
+const sheetArtControllers=new Map();
+const sheetThumbLoaders=new Map();
+function fetchSheetThumbnail(assetId,signal){
+ const query=new URLSearchParams({session:credentials.session});
+ return fetch(`/api/asset/${encodeURIComponent(assetId)}/media-thumb.png?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal}).then(r=>{if(!r.ok)throw Error('Изображение недоступно');return r.blob();});
+}
+function releaseSheetThumbs(scope){sheetThumbLoaders.get(scope)?.destroy();sheetThumbLoaders.delete(scope);}
+function sheetThumbnail(assetId,scope){
+ const icon=characterBrowserIcon();if(!assetId)return icon;
+ let loader=sheetThumbLoaders.get(scope);if(!loader){loader=new ViewportPreviews(fetchSheetThumbnail);sheetThumbLoaders.set(scope,loader);}
+ const img=document.createElement('img');img.alt='';img.decoding='async';img.draggable=false;
+ img.onload=()=>img.classList.add('loaded');img.onerror=()=>img.classList.remove('loaded');icon.append(img);loader.observe(img,assetId);return icon;
+}
 const inventoryDrawer=document.createElement('aside');
 inventoryDrawer.className='character-item-drawer';inventoryDrawer.hidden=true;
+let inventoryDrawerHeight=null,inventoryDrawerItemKey='',inventoryDrawerMaxHeight=0;
 inventoryDrawer.setAttribute('aria-label','Просмотр предмета');
 document.body.append(inventoryDrawer);
 function closeInventoryDrawer(){
- characterBrowseOpen=false;inventoryDrawer.hidden=true;inventoryDrawer.style.transform='';
+ sheetArtControllers.get('item')?.abort();releaseSheetThumbs('drawer');inventoryDrawer.replaceChildren();
+ characterBrowseOpen=false;inventoryDrawer.hidden=true;inventoryDrawer.style.height='';inventoryDrawer.classList.remove('dragging');inventoryDrawerHeight=null;inventoryDrawerItemKey='';
 }
 function positionInventoryDrawer(){
  const panel=characterPanel.closest('.inspector')||characterPanel,rect=panel.getBoundingClientRect();
@@ -1016,13 +1030,17 @@ function positionInventoryDrawer(){
  if(!width){closeInventoryDrawer();return;}
  inventoryDrawer.style.left=`${left}px`;inventoryDrawer.style.width=`${width}px`;
  inventoryDrawer.style.bottom=`${Math.max(8,window.innerHeight-Math.min(rect.bottom,window.innerHeight)+8)}px`;
- inventoryDrawer.style.maxHeight=`${Math.max(180,Math.min(570,rect.height*0.74,window.innerHeight-24))}px`;
+ const bottom=Math.max(8,window.innerHeight-Math.min(rect.bottom,window.innerHeight)+8);
+ inventoryDrawerMaxHeight=Math.max(0,window.innerHeight-bottom-Math.max(8,rect.top+8));
+ if(inventoryDrawerMaxHeight<80){closeInventoryDrawer();return;}
+ inventoryDrawer.style.maxHeight=`${inventoryDrawerMaxHeight}px`;
+ inventoryDrawer.style.height=inventoryDrawerHeight===null?'':`${Math.min(inventoryDrawerHeight,inventoryDrawerMaxHeight)}px`;
 }
 window.addEventListener('resize',()=>{if(!inventoryDrawer.hidden)positionInventoryDrawer();});
  if(typeof ResizeObserver==='function')new ResizeObserver(()=>{if(!inventoryDrawer.hidden)positionInventoryDrawer();}).observe(characterPanel.closest('.inspector')||characterPanel);
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inventoryDrawer.hidden)closeInventoryDrawer();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inventoryDrawer.hidden&&!mediaLibrary.picker&&!objectPresentation.dialog.open)closeInventoryDrawer();});
 document.addEventListener('pointerdown',event=>{
- if(!inventoryDrawer.hidden&&!inventoryDrawer.contains(event.target)&&!event.target.closest('#characterInventoryBrowse'))closeInventoryDrawer();
+ if(!inventoryDrawer.hidden&&!mediaLibrary.picker&&!objectPresentation.dialog.open&&!inventoryDrawer.contains(event.target)&&!event.target.closest('#characterInventoryBrowse, .media-picker-dialog, .scene-object-image-dialog'))closeInventoryDrawer();
 });
 function inventoryFieldLabel(name){
  const aliases={state:'Состояние',notes:'Заметки'};
@@ -1044,51 +1062,72 @@ function renderInventoryFieldTree(container,tree){
  }
 }
 function bindInventoryDrawerSwipe(surface){
- let startY=null,dragId=null;
+ let startY=null,dragId=null,startHeight=0,previousHeight=null;
  surface.addEventListener('pointerdown',event=>{
   if(event.button!==0||startY!==null||event.target.closest('button'))return;
-  startY=event.clientY;dragId=event.pointerId;surface.setPointerCapture(event.pointerId);
+  startY=event.clientY;dragId=event.pointerId;startHeight=inventoryDrawer.getBoundingClientRect().height;previousHeight=inventoryDrawerHeight;surface.setPointerCapture(event.pointerId);
   inventoryDrawer.classList.add('dragging');
  });
  surface.addEventListener('pointermove',event=>{
   if(event.pointerId!==dragId||startY===null)return;
-  inventoryDrawer.style.transform=`translateY(${Math.max(0,event.clientY-startY)}px)`;
+  inventoryDrawerHeight=Math.max(0,Math.min(inventoryDrawerMaxHeight,startHeight+startY-event.clientY));
+  inventoryDrawer.style.height=`${inventoryDrawerHeight}px`;
  });
  const finish=event=>{
   if(event.pointerId!==dragId||startY===null)return;
-  const distance=Math.max(0,event.clientY-startY);startY=null;dragId=null;
+  const moved=event.clientY!==startY;startY=null;dragId=null;
   inventoryDrawer.classList.remove('dragging');
-  if(distance>=85)closeInventoryDrawer();else inventoryDrawer.style.transform='';
+  if(event.type==='pointercancel'||!moved){inventoryDrawerHeight=previousHeight;positionInventoryDrawer();return;}
+  if(inventoryDrawerHeight!==null&&inventoryDrawerHeight<80)closeInventoryDrawer();else positionInventoryDrawer();
  };
  surface.addEventListener('pointerup',finish);surface.addEventListener('pointercancel',finish);
+ surface.addEventListener('lostpointercapture',event=>{if(event.pointerId===dragId&&startY!==null){startY=null;dragId=null;inventoryDrawer.classList.remove('dragging');}});
 }
 function makeInventoryDrawerHandle(){
  const handle=document.createElement('div');handle.className='character-item-drawer-handle';
- handle.setAttribute('aria-label','Потяните вниз, чтобы закрыть карточку');
+ handle.setAttribute('aria-label','Потяните вверх или вниз, чтобы изменить высоту карточки');
  const bar=document.createElement('span');handle.append(bar);bindInventoryDrawerSwipe(handle);
  return handle;
 }
 
+
+function renderSheetArtwork(slot,snapshot,kind,id,assetId){
+ sheetArtControllers.get(kind)?.abort();const controller=new AbortController();sheetArtControllers.set(kind,controller);
+ const canEdit=isEditorView()&&snapshot.permissions?.manage;
+ if(!assetId&&!canEdit&&kind==='effect')return;
+ const art=document.createElement('button');art.type='button';art.className='character-artwork-preview subtle';art.title=assetId?'Просмотреть артворк':'Выбрать артворк';art.setAttribute('aria-label',art.title);
+ const edit=async()=>{if(!isEditorView()||!snapshot.permissions?.manage)return;try{const picked=await mediaLibrary.openPicker({title:kind==='item'?'Артворк предмета':'Артворк эффекта',variant:'artwork.png'});if(picked?.asset&&isEditorView()&&snapshot.characterId===characterWatch.snapshot?.characterId)await mediaRequest('/sheet-artwork',{kind,id,assetId:picked.asset.id});}catch(e){toast(e.message);}};
+ art.onclick=()=>assetId?objectPresentation.showImage({asset:{id:assetId,representationVersion:'raster-v3-shared-png-tile512'},sheet:true}):edit();
+ art.append(characterBrowserIcon());if(!assetId){const small=document.createElement('small');small.textContent='Нет артворка';art.append(small);art.disabled=!canEdit;}
+ slot.append(art);
+ if(assetId){slot.classList.add('has-artwork');fetchSheetThumbnail(assetId,controller.signal).then(async blob=>{if(controller.signal.aborted||!art.isConnected)return;const img=document.createElement('img'),url=URL.createObjectURL(blob);try{img.src=url;await img.decode();if(!controller.signal.aborted&&art.isConnected)art.replaceChildren(img);}finally{URL.revokeObjectURL(url);}}).catch(()=>{});
+  if(canEdit){const controls=document.createElement('div');controls.className='character-artwork-controls';
+   const change=document.createElement('button');change.type='button';change.className='subtle';change.textContent='✎';change.title='Заменить артворк';change.setAttribute('aria-label',change.title);change.onclick=edit;
+   const clear=document.createElement('button');clear.type='button';clear.className='subtle';clear.innerHTML='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3m4 0-1 15H6L5 6m5 4v7m4-7v7"/></svg>';clear.title='Убрать артворк';clear.setAttribute('aria-label',clear.title);clear.onclick=()=>mediaRequest('/sheet-artwork',{kind,id,assetId:''}).catch(e=>toast(e.message));controls.append(change,clear);slot.append(controls);}}
+}
 function characterSelectInventory(snapshot,id,open=true){
  characterBrowseItem=id;characterBrowseOpen=open;
  for(const row of $('characterInventoryBrowse')?.querySelectorAll('.character-table-row[data-inventory-id]')||[])row.setAttribute('aria-selected',String(row.dataset.inventoryId===id));
  if(!open){closeInventoryDrawer();return;}
  const item=(snapshot.instance.inventory||[]).find(item=>item.id===id);
  if(!item){closeInventoryDrawer();return;}
- const lastScroll=inventoryDrawer.hidden?0:inventoryDrawer.scrollTop;
- inventoryDrawer.replaceChildren(makeInventoryDrawerHandle());
+ const itemKey=`${snapshot.characterId}/${item.id}`;
+ const sameItem=inventoryDrawerItemKey===itemKey;
+ if(!sameItem){inventoryDrawerHeight=null;inventoryDrawerItemKey=itemKey;}
+ const lastScroll=inventoryDrawer.hidden||!sameItem?0:inventoryDrawer.scrollTop;
+ releaseSheetThumbs('drawer');inventoryDrawer.replaceChildren(makeInventoryDrawerHandle());
  const top=document.createElement('div');top.className='character-item-drawer-top';
  const title=document.createElement('strong');title.textContent=snapshot.itemNames?.[item.id]||item.objectId;
  const close=document.createElement('button');close.type='button';close.className='subtle character-item-drawer-close';close.textContent='×';close.setAttribute('aria-label','Закрыть карточку');close.onclick=closeInventoryDrawer;
  top.append(title,close);bindInventoryDrawerSwipe(top);inventoryDrawer.append(top);
  const intro=document.createElement('div');intro.className='character-item-intro';
- const art=document.createElement('div');art.className='character-item-square-art';art.append(characterBrowserIcon());
- const noArt=document.createElement('small');noArt.textContent='Нет артворка';art.append(noArt);
+ const art=document.createElement('div');art.className='character-item-square-art';renderSheetArtwork(art,snapshot,'item',item.objectId,snapshot.itemDetails?.[item.id]?.artworkAssetId);
  const about=document.createElement('div');about.className='character-item-about';
- const equipped=document.createElement('button');equipped.type='button';equipped.className='character-source-equipped'+(item.equipped?'':' off');equipped.textContent=item.equipped?'Экипирован':'Не экипирован';equipped.title='Изменить экипировку';
+ const equipment=document.createElement('div');equipment.className='character-item-equipment';const status=document.createElement('span');status.className='character-source-equipped'+(item.equipped?'':' off');status.textContent=item.equipped?'Экипирован':'Не экипирован';
+ const equipped=document.createElement('button');equipped.type='button';equipped.className=item.equipped?'subtle character-item-equip-action':'primary character-item-equip-action';equipped.textContent=item.equipped?'Снять':'Экипировать';equipped.title=equipped.textContent+' предмет';
  const pending=outbox?.data.queue.some(cmd=>cmd.type==='characterItemEquip'&&cmd.characterId===snapshot.characterId&&cmd.itemId===item.id);
  equipped.disabled=!!pending||!snapshot.permissions?.edit||!!characterEditSession||state?.playerPreview;
- equipped.onclick=()=>{if(queueCommand('characterItemEquip',{characterId:snapshot.characterId,itemId:item.id,equipped:!item.equipped}))equipped.disabled=true;};about.append(equipped);
+ equipped.onclick=()=>{if(queueCommand('characterItemEquip',{characterId:snapshot.characterId,itemId:item.id,equipped:!item.equipped}))equipped.disabled=true;};equipment.append(status,equipped);about.append(equipment);
  const description=document.createElement('p');description.textContent=snapshot.itemDetails?.[item.id]?.description||'Описание предмета не задано.';about.append(description);
  intro.append(art,about);inventoryDrawer.append(intro);
  const fields=snapshot.itemDetails?.[item.id]?.fields||[];
@@ -1098,7 +1137,7 @@ function characterSelectInventory(snapshot,id,open=true){
  if(itemEffects.length){
   const effectsHeading=document.createElement('h3');effectsHeading.textContent='Эффекты предмета';inventoryDrawer.append(effectsHeading);
   const effectList=document.createElement('div');effectList.className='character-item-effects';
-  for(const effect of itemEffects)effectList.append(renderEffectCard(effect,entry=>openEffectReference(characterWatch.snapshot||snapshot,entry),snapshot));
+  for(const effect of itemEffects)effectList.append(renderEffectCard(effect,entry=>openEffectReference(characterWatch.snapshot||snapshot,entry),snapshot,id=>sheetThumbnail(id,'drawer')));
   inventoryDrawer.append(effectList);
  }
  const choices=itemActionsForInventory(snapshot,item.id);
@@ -1109,7 +1148,7 @@ function characterSelectInventory(snapshot,id,open=true){
   inventoryDrawer.append(actions);
   if(!item.equipped){const note=document.createElement('p');note.className='character-item-hint';note.textContent='Экипируйте предмет, чтобы использовать его действия.';inventoryDrawer.append(note);}
  }
- inventoryDrawer.hidden=false;inventoryDrawer.style.transform='';positionInventoryDrawer();inventoryDrawer.scrollTop=lastScroll;
+ inventoryDrawer.hidden=false;positionInventoryDrawer();inventoryDrawer.scrollTop=lastScroll;
 }
 
 function updateInventoryVisibility(){
@@ -1138,7 +1177,7 @@ function renderCharacterInventory(snapshot){
  for(const item of items){
   const name=snapshot.itemNames?.[item.id]||item.objectId;
   const row=document.createElement('div');row.className='character-table-row character-inventory-row';row.dataset.inventoryId=item.id;row.dataset.search=`${name} ${item.objectId} ${item.id}`.toLocaleLowerCase();row.dataset.equipped=String(!!item.equipped);row.setAttribute('aria-selected',String(item.id===characterBrowseItem));
-  const pick=document.createElement('button');pick.type='button';pick.className='character-table-pick';pick.append(characterBrowserIcon());
+  const pick=document.createElement('button');pick.type='button';pick.className='character-table-pick';pick.append(sheetThumbnail(snapshot.itemDetails?.[item.id]?.artworkAssetId,'list'));
   const text=document.createElement('span'),strong=document.createElement('strong'),small=document.createElement('small');strong.textContent=name;small.textContent=item.objectId;text.append(strong,small);pick.append(text);pick.title=`Осмотреть: ${name}`;pick.onclick=()=>characterSelectInventory(characterWatch.snapshot||snapshot,item.id);row.append(pick);
   const control=document.createElement('label');control.className='character-table-equipped';
   const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=!!item.equipped;checkbox.setAttribute('aria-label',`Экипировать ${name}`);
@@ -1154,6 +1193,7 @@ function renderCharacterInventory(snapshot){
 // inventory item details. Filtering is client-side; state is refreshed by the
 // existing character watch whenever equipment or direct grants change.
 function renderCharacterEffects(snapshot){
+ releaseSheetThumbs('list');
  const section=document.createElement('section');section.className='character-section character-effects-section';
  const all=characterEffectsFromSnapshot(snapshot),counts=effectCounts(all);
  const head=document.createElement('div');head.className='character-effects-header';
@@ -1173,7 +1213,7 @@ function renderCharacterEffects(snapshot){
   const group=document.createElement('section');group.className='character-effects-group';
   const heading=document.createElement('h4');heading.textContent=`${label} · ${entries.length}`;
   const listing=document.createElement('div');listing.className='character-effects-list';
-  for(const effect of entries){const row=renderEffectRow(effect,entry=>openEffectReference(characterWatch.snapshot||snapshot,entry),snapshot);listing.append(row);rows.push({row,effect});}
+  for(const effect of entries){const row=renderEffectRow(effect,entry=>openEffectReference(characterWatch.snapshot||snapshot,entry),snapshot,id=>sheetThumbnail(id,'list'));listing.append(row);rows.push({row,effect});}
   group.append(heading,listing);buckets.push({group,entries});
  }
  const empty=document.createElement('p');empty.className='muted character-effects-empty';empty.textContent=all.length?'По заданным фильтрам эффектов нет.':'У персонажа пока нет эффектов.';
@@ -1399,7 +1439,7 @@ function refreshCharacterTrace(snapshot){
  openCharacterTrace(snapshot,panel.openId);
 }
 const actionReferencePanel=new ActionReferencePanel();
-const effectReferencePanel=new EffectReferencePanel({openItem:itemID=>{
+const effectReferencePanel=new EffectReferencePanel({releaseArtwork:()=>sheetArtControllers.get('effect')?.abort(),artwork:(slot,snapshot,effect)=>renderSheetArtwork(slot,snapshot,'effect',effect.id,effect.artworkAssetId),openItem:itemID=>{
  const snapshot=characterWatch.snapshot;if(!snapshot?.instance?.inventory?.some(item=>item.id===itemID))return;
  characterActiveTab='inventory';renderCharacterPanel();characterSelectInventory(snapshot,itemID);
 }});
@@ -1646,11 +1686,11 @@ async function assignActionToEdit(id){
  d.actionIds.push(id);addEditPlacement(`action:${id}`);renderCharacterPanel();showActionDependencies(action,editSnapshot(characterWatch.snapshot));
 }
 
-function discardCharacterPanelDisplay(){characterDisplayedID='';characterPanel.dataset.characterId='';characterPanel.hidden=true;characterPanel.inert=false;characterPanel.removeAttribute('aria-busy');$('characterSummary').hidden=true;showCharacterAvatar('','');}
+function discardCharacterPanelDisplay(){releaseSheetThumbs('list');characterDisplayedID='';characterPanel.dataset.characterId='';characterPanel.hidden=true;characterPanel.inert=false;characterPanel.removeAttribute('aria-busy');$('characterSummary').hidden=true;showCharacterAvatar('','');}
 const cloneEdit=value=>JSON.parse(JSON.stringify(value));
 function makeCharacterEdit(snapshot){
  return {characterId:snapshot.characterId,revision:snapshot.revision,registryRevision:snapshot.registryRevision,
-  name:snapshot.instance.name,expectedInstance:cloneEdit(snapshot.instance),stats:cloneEdit(snapshot.effective.stats||{}),
+  name:snapshot.instance.name,description:snapshot.effective?.description||'',expectedInstance:cloneEdit(snapshot.instance),stats:cloneEdit(snapshot.effective.stats||{}),
   resourceInitial:Object.fromEntries(Object.entries(snapshot.effective.resources||{}).map(([id,r])=>[id,cloneEdit(r.initial)])),
   resourceCurrent:Object.fromEntries(Object.entries(snapshot.effective.resources||{}).map(([id,r])=>[id,cloneEdit(r.current)])),
   actionIds:[...(snapshot.effective.actionIds||[])],definitions:[],resetAvatar:false,placeholderAvatar:false,artworkPath:'',selectedMediaAsset:'',avatarFile:null,avatarPreview:'',places:[],saving:false,invalid:new Set(),conflict:false};
@@ -1694,12 +1734,12 @@ function removeEditItem(id,kind){
 function editRemoveButton(id,kind){const b=document.createElement('button');b.type='button';b.className='subtle character-edit-remove';b.title='Убрать у персонажа (определение останется в кампании)';b.textContent='Убрать';b.onclick=()=>removeEditItem(id,kind);return b;}
 function playerCharacterHasChanges(){
  const d=playerCharacterDraft,snapshot=characterWatch.snapshot;
- return !!(d&&snapshot?.characterId===d.characterId&&(d.name.trim()!==snapshot.instance.name||d.avatarFile||d.resetAvatar||d.placeholderAvatar||Object.keys(d.stats||{}).length));
+ return !!(d&&snapshot?.characterId===d.characterId&&(d.name.trim()!==snapshot.instance.name||d.description.trim()!==(snapshot.effective?.description||'')||d.avatarFile||d.selectedMediaAsset||d.resetAvatar||d.placeholderAvatar||Object.keys(d.stats||{}).length));
 }
 function characterEditHasChanges(){
  const d=characterEditSession,snapshot=characterWatch.snapshot;if(!d||!snapshot||d.characterId!==snapshot.characterId)return false;
  const current=Object.fromEntries(Object.entries(snapshot.effective?.resources||{}).map(([id,value])=>[id,value.current]));
- return characterEditMechanicsChanged(d,snapshot)||JSON.stringify(d.resourceCurrent)!==JSON.stringify(current)||$('characterRename').value.trim()!==(snapshot.instance.name||'')||!!(d.avatarFile||d.selectedMediaAsset||d.artworkPath||d.resetAvatar||d.placeholderAvatar);
+ return characterEditMechanicsChanged(d,snapshot)||JSON.stringify(d.resourceCurrent)!==JSON.stringify(current)||$('characterRename').value.trim()!==(snapshot.instance.name||'')||d.description.trim()!==(snapshot.effective?.description||'')||!!(d.avatarFile||d.selectedMediaAsset||d.artworkPath||d.resetAvatar||d.placeholderAvatar);
 }
 function canReorderSheet(){return sheetEdit&&!characterPanel.querySelector('.character-stat-value-slot.active');}
 function updateEditButtons(){
@@ -1707,7 +1747,7 @@ function updateEditButtons(){
  sheetHintPanel.hidden=!sheetEdit||sheetHintClosed||sheetHintDismissed;
  sheetHint.hidden=sheetHintPanel.hidden;
  sheetHint.textContent=!sheetEdit?'':d?'Перетаскивайте строки между разделами и вкладками. Правый клик по разделу открывает переименование и удаление. Можно редактировать и добавлять статы. Раскладка сохраняется автоматически, игровые изменения — кнопкой «Сохранить». Наведите на число, чтобы увидеть путь значения.':'Перетаскивайте строки между разделами и вкладками. Наведите на раздел, чтобы открыть его. Правый клик по разделу позволяет переименовать или удалить его. Раскладка сохраняется автоматически.';
- characterPanel.classList.toggle('character-sheet-editing',sheetEdit);characterPanel.classList.toggle('character-drag-locked',sheetEdit&&!canReorderSheet());characterAvatarFrame.classList.toggle('character-avatar-editable',!!identity);characterAvatarFrame.tabIndex=identity?0:-1;characterAvatarFrame.setAttribute('role',identity?'button':'img');characterAvatarFrame.setAttribute('aria-label',identity?'Выбрать аватар персонажа':'Аватар персонажа');characterNameRow.hidden=!identity;$('characterName').hidden=!!identity;characterAvatarWrap.classList.toggle('editing',!!identity);
+ characterPanel.classList.toggle('character-sheet-editing',sheetEdit);characterPanel.classList.toggle('character-drag-locked',sheetEdit&&!canReorderSheet());characterAvatarFrame.classList.toggle('character-avatar-editable',!!identity);characterAvatarFrame.tabIndex=identity?0:-1;characterAvatarFrame.setAttribute('role',identity?'button':'img');characterAvatarFrame.setAttribute('aria-label',identity?'Выбрать аватар персонажа':'Аватар персонажа');characterNameRow.hidden=!identity;$('characterName').hidden=!!identity;$('characterDescriptionRow').hidden=!identity;$('characterSubtitle').hidden=!!identity||!$('characterSubtitle').textContent;characterAvatarWrap.classList.toggle('editing',!!identity);
  $('characterMechanicsToggle').classList.toggle('active',sheetEdit);$('characterMechanicsToggle').setAttribute('aria-expanded',String(sheetEdit));
  if(!identity){$('characterAddPopover').hidden=true;return;}
  if(!d){$('characterEditSave').hidden=!playerCharacterHasChanges();$('characterEditSave').disabled=!!playerCharacterDraft?.saving||!!playerCharacterDraft?.invalid?.size;$('characterEditCancel').disabled=!!playerCharacterDraft?.saving;$('characterEditFeedback').textContent=playerCharacterDraft?.saving?'Сохранение…':playerCharacterDraft?.invalid?.size?'Исправьте недопустимые значения.':playerCharacterHasChanges()?'Есть несохранённые изменения. Для выхода нажмите «Сохранить» или «Выход».':'';return;}
@@ -1716,19 +1756,20 @@ function updateEditButtons(){
  $('characterEditFeedback').textContent=d.conflict?'Данные изменились на сервере. Выйдите из настройки и повторите.':d.saving?'Сохранение…':d.invalid.size?'Исправьте недопустимые значения':characterEditHasChanges()?'Есть несохранённые изменения. Для выхода нажмите «Сохранить» или «Выход».':'';
  for(const el of characterPanel.querySelectorAll('.sheet-entry[draggable],.character-layout-tabs button[draggable],.character-action-section-tabs button[draggable],.sheet-heading[draggable]'))el.draggable=canReorderSheet();
 }
-function releaseEditSession(){if(statCatalogDialog.open)statCatalogDialog.close();if(actionDependenciesDialog.open)actionDependenciesDialog.close();const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);characterAssetPicker.close();characterEditSession=null;updateEditButtons();}
-function releasePlayerEdit(){const d=playerCharacterDraft;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);playerCharacterDraft=null;}
+function releaseEditSession(){if(statCatalogDialog.open)statCatalogDialog.close();if(actionDependenciesDialog.open)actionDependenciesDialog.close();const d=characterEditSession;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);if(mediaLibrary.picker)mediaLibrary.finishPicker(null);characterEditSession=null;updateEditButtons();}
+function releasePlayerEdit(){if(mediaLibrary.picker?.restricted)mediaLibrary.finishPicker(null);const d=playerCharacterDraft;if(d?.avatarPreview)URL.revokeObjectURL(d.avatarPreview);playerCharacterDraft=null;}
 async function savePlayerCharacterEdit(){
  const d=playerCharacterDraft;if(!d||d.saving||d.characterId!==characterWatch.snapshot?.characterId)return;
  if(!d.name.trim()){toast('Укажите имя персонажа');return;}
  if(d.invalid.size){toast('Исправьте недопустимые значения');return;}
  d.saving=true;updateEditButtons();
  try{
-  if(d.avatarFile){const query=new URLSearchParams({session:credentials.session,kind:'avatar',characterId:d.characterId});await api(`/api/upload?${query}`,d.avatarFile,true);}
+  if(d.selectedMediaAsset){if(!queueCommand('characterAvatarSet',{characterId:d.characterId,avatarAssetId:d.selectedMediaAsset}))throw Error('Не удалось сохранить аватар');}
+  else if(d.avatarFile){const query=new URLSearchParams({session:credentials.session,kind:'avatar',characterId:d.characterId,filename:d.avatarFile.name});await api(`/api/upload?${query}`,d.avatarFile,true);}
   else if(d.resetAvatar){if(!queueCommand('characterAvatarReset',{characterId:d.characterId}))throw new Error('Не удалось отправить сброс аватара');}
   else if(d.placeholderAvatar){if(!queueCommand('characterAvatarSet',{characterId:d.characterId,avatarAssetId:''}))throw new Error('Не удалось отправить очистку аватара');}
   for(const [statId,statValue] of Object.entries(d.stats)){if(!queueCommand('characterStatSet',{characterId:d.characterId,statId,statValue}))throw new Error(`Не удалось сохранить ${statId}`);}
-  if(d.name.trim()!==characterWatch.snapshot?.instance?.name&&!queueCommand('characterNameSet',{characterId:d.characterId,characterName:d.name.trim()}))throw new Error('Не удалось сохранить имя');
+  if((d.name.trim()!==characterWatch.snapshot?.instance?.name||d.description.trim()!==(characterWatch.snapshot?.effective?.description||''))&&!queueCommand('characterNameSet',{characterId:d.characterId,characterName:d.name.trim(),characterDescription:d.description.trim()}))throw new Error('Не удалось сохранить имя и описание');
   releasePlayerEdit();sheetEdit=false;renderCharacterPanel();
  }catch(error){d.saving=false;toast(`Не удалось сохранить персонажа: ${error.message}`);updateEditButtons();}
 }
@@ -1760,20 +1801,15 @@ async function saveCharacterEdit(){const d=characterEditSession;if(!d||d.saving|
  const original=characterWatch.snapshot;if(d.characterId!==original?.characterId||JSON.stringify(d.expectedInstance)!==JSON.stringify(original.instance)){d.conflict=true;updateEditButtons();return;}
  if(characterEditMechanicsChanged(d,original)&&!confirmMechanicalEdit(original))return;
  d.saving=true;updateEditButtons();
- let preparedArtwork='';
+ let preparedArtwork='',preparedAsset='';
  try{
-   if(d.avatarFile){
-     const result=await uploadSharedMedia(d.avatarFile);
-     const attached=await presetAPI('/api/definitions/ruleset/media/attach',{assetId:result.asset.id,filename:d.avatarFile.name});
-     preparedArtwork=attached.path;d.registryRevision=attached.registryRevision;
-   }else if(d.selectedMediaAsset){
-     const attached=await presetAPI('/api/definitions/ruleset/media/attach',{assetId:d.selectedMediaAsset,filename:d.selectedMediaAsset+'.png'});
-     preparedArtwork=attached.path;d.registryRevision=attached.registryRevision;
-   }else if(d.artworkPath){preparedArtwork=d.artworkPath;}
+   if(d.avatarFile){const result=await uploadSharedMedia(d.avatarFile);preparedAsset=result.asset.id;}
+   else if(d.selectedMediaAsset){preparedAsset=d.selectedMediaAsset;}
+   else if(d.artworkPath){preparedArtwork=d.artworkPath;}
    if(characterEditSession!==d){return;}
    const request={expectedCharacterRevision:d.revision,expectedRegistryRevision:d.registryRevision,expectedInstance:d.expectedInstance,
-     name:d.name,stats:d.stats,resourceInitial:d.resourceInitial,resourceCurrent:d.resourceCurrent,actionIds:d.actionIds,
-     definitions:d.definitions,resetAvatar:d.resetAvatar,placeholderAvatar:d.placeholderAvatar,...(preparedArtwork?{artworkPath:preparedArtwork}:{})};
+     name:d.name,description:d.description.trim(),stats:d.stats,resourceInitial:d.resourceInitial,resourceCurrent:d.resourceCurrent,actionIds:d.actionIds,
+     definitions:d.definitions,resetAvatar:d.resetAvatar,placeholderAvatar:d.placeholderAvatar,...(preparedArtwork?{artworkPath:preparedArtwork}:{}),...(preparedAsset?{avatarAssetId:preparedAsset}:{})};
    if(!queueCommand('characterEdit',{characterId:d.characterId,characterEdit:request})){
      d.saving=false;toast('Не удалось отправить изменения');updateEditButtons();
    }
@@ -2099,7 +2135,7 @@ $('characterMechanicsToggle').onclick=()=>{
  if(sheetEdit){if(characterEditSession){confirmLeaveEdit();return;}if(playerCharacterDraft){if(playerCharacterHasChanges()&&!confirm('Несохранённые изменения персонажа будут потеряны. Выйти?'))return;discardPlayerEdit();return;}sheetEdit=false;characterSettingsOpen=false;renderCharacterPanel();return;}
  const snapshot=characterWatch.snapshot;if(!snapshot?.permissions?.edit)return;
  if(snapshot.permissions.manage&&isEditorView())openCharacterEdit();
- else{playerCharacterDraft={characterId:snapshot.characterId,name:snapshot.instance.name||'',avatarFile:null,avatarPreview:'',resetAvatar:false,placeholderAvatar:false,saving:false,stats:{},invalid:new Set()};sheetHintClosed=false;sheetEdit=true;characterSettingsOpen=false;renderCharacterPanel();}
+ else{playerCharacterDraft={characterId:snapshot.characterId,name:snapshot.instance.name||'',description:snapshot.effective?.description||'',avatarFile:null,avatarPreview:'',resetAvatar:false,placeholderAvatar:false,saving:false,stats:{},invalid:new Set()};sheetHintClosed=false;sheetEdit=true;characterSettingsOpen=false;renderCharacterPanel();}
 };
 // Frequent server snapshots change values much more often than the sheet
 // structure. Preserve live DOM (including scroll and search focus) and only
@@ -2164,8 +2200,18 @@ function patchCharacterLiveView(previous,snapshot){
   const next=renderCharacterEffects(snapshot);existing.replaceWith(next);
   if(focused){const search=next.querySelector('.character-effects-search');search.focus();search.setSelectionRange(start,end);}
  }
- // The inventory list itself has not changed; only the open item's action
- // preview or status may need updating.
+ // The inventory structure is unchanged, but artwork is projected separately.
+ if(characterActiveTab==='inventory'&&!sameVisibleData(previous.itemDetails,snapshot.itemDetails)){
+  const loader=sheetThumbLoaders.get('list');
+  for(const row of content.querySelectorAll('.character-inventory-row[data-inventory-id]')){
+   const id=row.dataset.inventoryId,asset=snapshot.itemDetails?.[id]?.artworkAssetId;
+   if(asset===previous.itemDetails?.[id]?.artworkAssetId)continue;
+   const icon=row.querySelector('.character-table-pick .character-table-icon');if(!icon)continue;
+   const img=icon.querySelector('img');if(img)loader?.unobserve(img);
+   icon.replaceWith(sheetThumbnail(asset,'list'));
+  }
+ }
+ // Only the open item's action preview or status may need updating.
  if(characterActiveTab==='inventory'&&characterBrowseOpen&&(!sameVisibleData(previous.actionPreviews,snapshot.actionPreviews)||!sameVisibleData(previous.itemDetails,snapshot.itemDetails))){
   characterSelectInventory(snapshot,characterBrowseItem,true);
  }
@@ -2191,7 +2237,7 @@ function renderCharacterPanel(incremental=false){
  const loading=!!linkedID&&!ready&&(characterWatchReason==='pending'||characterWatchReason==='replaced'),retainDisplayed=!!token&&loading&&!!characterDisplayedID&&!$('characterSummary').hidden,deferInitial=!!token&&loading&&!characterDisplayedID;
  characterPanel.hidden=!token||deferInitial;
  characterPanel.inert=retainDisplayed;if(retainDisplayed)characterPanel.setAttribute('aria-busy','true');else characterPanel.removeAttribute('aria-busy');
- if(!token){lastRenderedCharacterSnapshot=null;effectReferencePanel.close();closeInventoryDrawer();if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
+ if(!token){releaseSheetThumbs('list');lastRenderedCharacterSnapshot=null;effectReferencePanel.close();closeInventoryDrawer();if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();sheetEdit=false;characterSettingsOpen=false;characterMechanicsOpen=false;updateEditButtons();$('characterSettingsPanel').hidden=true;characterRecoveryToggle.hidden=true;return;}
  if(retainDisplayed||deferInitial)return;
  if(incremental&&ready&&!sheetEdit&&!characterEditSession&&!playerCharacterDraft
    &&characterPanel.dataset.characterId===linkedID&&characterPanel.dataset.renderedTab===characterActiveTab
@@ -2200,6 +2246,8 @@ function renderCharacterPanel(incremental=false){
   lastRenderedCharacterSnapshot=snapshot;
   return;
  }
+ releaseSheetThumbs('list');
+ if(!ready)closeInventoryDrawer();
  if(characterDisplayedID!==linkedID){if(characterEditSession)releaseEditSession();if(playerCharacterDraft)releasePlayerEdit();characterDisplayedID=linkedID;characterSettingsOpen=false;characterMechanicsOpen=false;characterActiveTab='stats';sheetEdit=false;$('characterMechanicsSection').open=false;}
  characterPanel.dataset.characterId=linkedID;
  $('characterSettingsToggle').hidden=true;
@@ -2214,7 +2262,8 @@ function renderCharacterPanel(incremental=false){
   $('characterLinkSection').hidden=!gm;
   $('characterTechnicalSection').hidden=!gm;
   $('characterName').textContent=characterDisplayTitle(snapshot.effective?.name||instance.name||'Без имени',snapshot.characterId);
-  $('characterSubtitle').textContent=snapshot.preset?.name||'';
+  $('characterSubtitle').textContent=snapshot.effective?.description||'';
+  if(document.activeElement!==$('characterDescription'))$('characterDescription').value=characterEditSession?.description??playerCharacterDraft?.description??snapshot.effective?.description??'';
   $('characterRenameRow').hidden=!snapshot.permissions?.edit;
   if(document.activeElement!==$('characterRename'))$('characterRename').value=characterEditSession?.name??playerCharacterDraft?.name??instance.name??'';
   $('characterTechnicalID').textContent=snapshot.characterId;
@@ -2399,27 +2448,33 @@ function setCharacterAvatarFile(file){
  renderCharacterPanel();
 }
 $('characterAvatarUpload').onchange=e=>{const file=e.target.files?.[0];e.target.value='';try{setCharacterAvatarFile(file);}catch(error){toast(error.message);}};
+$('characterDescription').oninput=()=>{const d=characterEditSession||playerCharacterDraft;if(d){d.description=$('characterDescription').value;updateEditButtons();}};
 $('characterRename').oninput=()=>{if(characterEditSession||playerCharacterDraft){(characterEditSession||playerCharacterDraft).name=$('characterRename').value;updateEditButtons();}};$('characterRename').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('characterRename').blur();}};
 function clearCharacterImageDraft(d){
  d.avatarFile=null;d.selectedMediaAsset='';d.artworkPath='';if(d.avatarPreview){URL.revokeObjectURL(d.avatarPreview);d.avatarPreview='';}
- characterAssetPicker.close();
+ if(mediaLibrary.picker)mediaLibrary.finishPicker(null);
 }
 $('characterAvatarReset').onclick=()=>{const d=characterEditSession||playerCharacterDraft;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=true;d.placeholderAvatar=false;renderCharacterPanel();};
 $('characterAvatarPlaceholder').onclick=()=>{const d=characterEditSession||playerCharacterDraft;if(!d)return;clearCharacterImageDraft(d);d.resetAvatar=false;d.placeholderAvatar=true;renderCharacterPanel();};
 async function selectCharacterLibraryAsset(d,file){
- if(!d||!file?.assetId||!file.path)return;
- d.selectedMediaAsset='';d.artworkPath=file.path;d.avatarFile=null;d.resetAvatar=false;d.placeholderAvatar=false;
+ if(!d||!file?.assetId)return;
+ d.selectedMediaAsset=file.assetId;d.artworkPath='';d.avatarFile=null;d.resetAvatar=false;d.placeholderAvatar=false;
  if(d.avatarPreview)URL.revokeObjectURL(d.avatarPreview);d.avatarPreview='';
- const blob=await loadRulesetMediaThumbnail(file.assetId);
- if(characterEditSession!==d||d.artworkPath!==file.path)return;
+ const blob=await loadDefinitionAvatar(file.assetId);
+ if((characterEditSession||playerCharacterDraft)!==d||d.selectedMediaAsset!==file.assetId)return;
  d.avatarPreview=URL.createObjectURL(blob);renderCharacterPanel();
 }
-function openCharacterAvatarGallery(){
- if(playerCharacterDraft){$('characterAvatarUpload').click();return;}
- const d=characterEditSession;if(!d||!isEditorView())return;
- characterAssetPicker.open({title:'Аватар персонажа',actionLabel:'Выбрать',onSelect:file=>selectCharacterLibraryAsset(d,file),onUpload:setCharacterAvatarFile}).catch(error=>toast(error.message));
+async function openCharacterAvatarGallery(){
+ const d=characterEditSession||playerCharacterDraft;if(!d)return;const restricted=!!playerCharacterDraft;
+ try{const result=await mediaLibrary.openPicker({title:'Аватар персонажа',variant:'avatar.png',restricted,
+ list:signal=>mediaRequest('/available',undefined,signal),image:async(file,variant,signal)=>{const part=variant==='thumb'?'media-thumb.png':'avatar.png';const query=new URLSearchParams({session:credentials.session});const response=await fetch(`/api/asset/${encodeURIComponent(file.assetId)}/${part}?${query}`,{headers:{Authorization:`Bearer ${credentials.key}`},signal});if(!response.ok)throw Error('Изображение недоступно');return response.blob();},
+ onLocalFile:async(file,signal)=>{const query=new URLSearchParams({session:credentials.session,kind:'avatar',characterId:d.characterId,stage:'1',filename:file.name});return api(`/api/upload?${query}`,file,true,signal);}});
+ if(result?.file&&(characterEditSession||playerCharacterDraft)===d)await selectCharacterLibraryAsset(d,result.file);
+ }catch(error){toast(error.message);}
 }
 $('characterMediaPick').onclick=openCharacterAvatarGallery;
+$('characterAvatarUpload').parentElement.hidden=true;
+
 function rememberElementField(id,field){const element=state?.elements?.[selectedElement]||state?.elementCatalog?.[selectedElement];if(!element)return;const control=$(id);let value=control.type==='checkbox'?control.checked:control.type==='number'||control.type==='range'?Number(control.value):control.value;if(field==='layerId'){const layer=state.layers[value];if(!layer)return;elementDrafts.set(element.id,'floorId',layer.floorId);}elementDrafts.set(element.id,field,value);}
 function commitElementProperties(id=selectedElement){clearTimeout(elementAutosaveTimer);elementAutosaveTimer=null;const loaded=state?.elements?.[id],element=loaded||state?.elementCatalog?.[id];if(!element||!isEditorView()||!$('elementProperties').checkValidity())return;const draft={...elementDrafts.get(id)},properties={},transform={},unchanged={},unavailable={};for(const [field,raw] of Object.entries(draft)){const transformField=field in element.transform;if(transformField&&!loaded){unavailable[field]=raw;continue;}const value=field==='name'?String(raw).trim():raw,base=transformField?element.transform[field]:element[field],type=transformField?'elementTransform':'elementUpdate',box=transformField?positionOutbox:outbox;if(value!==raw)elementDrafts.set(id,field,value);if(base===value)unchanged[field]=value;else if(!commandAlreadyQueued(box,type,id,field,value))(transformField?transform:properties)[field]=value;}if(Object.keys(unavailable).length)elementDrafts.confirm(id,unavailable);if(Object.keys(unchanged).length)elementDrafts.confirm(id,unchanged);if(Object.keys(properties).length)queueCommand('elementUpdate',{element:{id},elementProperties:properties});if(Object.keys(transform).length)queueTransform('elementTransform',{element:{id,transform:{...element.transform,...transform}}});if(!Object.keys(properties).length&&!Object.keys(transform).length&&id===selectedElement)fillElementProperties();}
 function scheduleElementProperties(id=selectedElement){clearTimeout(elementAutosaveTimer);elementAutosaveTimer=setTimeout(()=>commitElementProperties(id),FORM_AUTOSAVE_DELAY);}
@@ -2464,12 +2519,19 @@ $('tokenCatalogMore').onclick=()=>characterCatalog.more(tokenCatalogKind).catch(
 $('tokenCatalogCancel').onclick=closeTokenCatalogPicker;
 $('tokenCatalogPlace').onclick=placeTokenCatalogSelection;
 $('addEmptyToken').onclick=()=>{if(isEditorView()&&addToken())closeTokenCreatePanel();};
-$('addImageToken').onclick=()=>{if(isEditorView()){$('tokenUpload').click();closeTokenCreatePanel();}};
-async function upload(file,kind,position=null){if(!file)return;if(!state?.scene?.id)throw new Error('Сначала откройте сцену');if(file.size>UPLOAD_LIMIT_BYTES)throw new Error('Размер файла не должен превышать 256 МиБ');const sceneID=state.scene.id,controller=new AbortController(),activeElement=state.elements?.[selectedElement],layer=activeElement?.layerId||orderedLayers(state,currentFloorID).find(item=>item.kind==='visual')?.id||'';uploadControllers.add(controller);toast('Подготовка изображения на сервере…');try{const query=new URLSearchParams({session:credentials.session,scene:sceneID,kind,name:file.name,floor:currentFloorID,layer});if(kind==='scene'&&position){query.set('x',String(position.x));query.set('y',String(position.y));}const a=await api(`/api/upload?${query}`,file,true,controller.signal);if(controller.signal.aborted||state?.scene?.id!==sceneID)throw new DOMException('Scene changed','AbortError');toast(kind==='scene'?(a.renderMode==='tiled'?'Изображение добавлено. Загружаются видимые тайлы.':'Изображение добавлено.'):'Изображение персонажа загружено');if(kind==='token')addToken({avatarAssetId:a.id});return a;}finally{uploadControllers.delete(controller);}}
-for(const [input,kind] of [['map','scene'],['token','token']])$(`${input}Upload`).onchange=async e=>{const control=e.target;control.disabled=true;try{await upload(control.files[0],kind);}catch(e){if(e.name!=='AbortError')toast(e.message);}finally{control.disabled=false;control.value='';}};
-// External images dropped onto the canvas use the same server-side scene upload pipeline.
+$('addImageToken').onclick=async()=>{if(!isEditorView())return;closeTokenCreatePanel();const scene=objectContext();try{const result=await mediaLibrary.openPicker({title:'Изображение персонажа',variant:'avatar.png'});if(result?.asset&&scene===objectContext()&&isEditorView())addToken({avatarAssetId:result.asset.id});}catch(e){toast(e.message);}};
+async function quickSceneUpload(files,event=null){
+ if(!isEditorView()||!files.length)return;if(actionTargetPicker.request||transitionDraft||walkableTool||renderBoundsTool)throw Error('Сначала завершите текущую операцию на карте');
+ const ctx=mediaSceneContext(),p=event?point(event):{x:viewport.w/2,y:viewport.h/2},position={x:camera.x+p.x/camera.scale,y:camera.y+p.y/camera.scale};const controller=new AbortController();uploadControllers.add(controller);
+ try{toast('Загрузка в медиатеку…');const result=await mediaLibrary.importRaw(files,'',controller.signal);mediaLibrary.changed(result.catalog?.revision);if(controller.signal.aborted||ctx.sceneId!==objectContext()||!isEditorView())return;
+ if(!result.paths?.length)throw Error(result.issues?.[0]?.message||'Изображения не загружены');if(result.paths.length>256)throw Error('Изображения добавлены в медиатеку. Размещайте не более 256 за раз.');
+ const placed=await mediaRequest('/place',{paths:result.paths,sceneId:ctx.sceneId,floorId:ctx.floorId,layerId:ctx.layerId,...position},controller.signal);
+ mediaLibrary.recordRecent(result.catalog.files.filter(f=>result.paths.includes(f.path)).map(f=>f.assetId));toast(`Размещено: ${placed.count} · ${placed.layerName}${result.skipped?' · пропущено: '+result.skipped:''}`);
+ }finally{uploadControllers.delete(controller);}
+}
+$('mapUpload').onchange=async e=>{const control=e.target,files=[...control.files];control.value='';control.disabled=true;try{await quickSceneUpload(files);}catch(e){if(e.name!=='AbortError')toast(e.message);}finally{control.disabled=false;}};
 canvas.addEventListener('dragover',e=>{if(isEditorView()&&e.dataTransfer?.types?.includes('Files')){e.preventDefault();e.dataTransfer.dropEffect='copy';}});
-canvas.addEventListener('drop',async e=>{if(!isEditorView()||!e.dataTransfer?.files?.length)return;e.preventDefault();const files=Array.from(e.dataTransfer.files).filter(file=>['image/png','image/jpeg'].includes(file.type));if(!files.length){toast('Поддерживаются изображения PNG и JPEG');return;}const p=point(e),position={x:camera.x+p.x/camera.scale,y:camera.y+p.y/camera.scale};for(const file of files){try{await upload(file,'scene',position);}catch(error){if(error.name!=='AbortError')toast(error.message);}}});
+canvas.addEventListener('drop',async e=>{if(!isEditorView()||!e.dataTransfer?.files?.length)return;e.preventDefault();try{await quickSceneUpload([...e.dataTransfer.files],e);}catch(error){if(error.name!=='AbortError')toast(error.message);}});
 function resize(){const rect=$('stage').getBoundingClientRect();viewport={w:Math.max(1,rect.width),h:Math.max(1,rect.height)};const dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(viewport.w*dpr);canvas.height=Math.round(viewport.h*dpr);dirty=true;}
 new ResizeObserver(resize).observe($('stage'));
 function fit(){const bounds=floorCameraBounds(state,currentFloorID),entry=state?.entry;if(bounds){camera.scale=Math.max(.015,Math.min(2,(viewport.w-70)/bounds.width,(viewport.h-70)/bounds.height));camera.x=(bounds.left+bounds.right)/2-viewport.w/2/camera.scale;camera.y=(bounds.top+bounds.bottom)/2-viewport.h/2/camera.scale;}else{const scale=.75,cx=entry?.x??0,cy=entry?.y??0;camera={x:cx-viewport.w/(2*scale),y:cy-viewport.h/(2*scale),scale};}scheduleViewportSave();dirty=true;}
@@ -2541,7 +2603,7 @@ function cacheKey(path){return `${credentials.session}/${path}`;}
 function nativeSize(path){
  const key=cacheKey(path);if(nativeSizes.has(key))return nativeSizes.get(key);
  const [asset,file]=path.split('/'),a=state?.assets[asset];let width=512,height=512;
- if(file==='token.png'&&a){width=a.width;height=a.height;while(width>512||height>512){width=Math.ceil(width/2);height=Math.ceil(height/2);}}
+ if(file==='token.png'&&a){width=a.width;height=a.height;if(a.representationVersion==='raster-v3-shared-png-tile512'){const scale=Math.min(1,512/Math.max(width,height));width=Math.round(width*scale);height=Math.round(height*scale);}else{while(width>512||height>512){width=Math.ceil(width/2);height=Math.ceil(height/2);}}}
  else if(file==='image.png'&&a){width=a.width;height=a.height;}
  else if(a){const match=file.match(/^(\d+)_(\d+)_(\d+)\.png$/);if(match){const [,z,x,y]=match.map(Number);width=Math.min(512,Math.ceil(a.width/2**z)-x*512);height=Math.min(512,Math.ceil(a.height/2**z)-y*512);}}
  return {width:Math.max(1,width),height:Math.max(1,height)};

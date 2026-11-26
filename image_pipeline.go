@@ -35,9 +35,10 @@ const (
 	maxAvatarOutputSide       = 512
 	// A bitmap may consume at most one seventh of the smallest decoded-asset
 	// budget (56 MiB after the token-artwork reserve). Larger rasters use LOD.
-	bitmapSceneDecodedBytes int64 = 8 << 20
-	bitmapSceneMaxSide            = 8192
-	representationVersion         = "raster-v2-png-tile512"
+	bitmapSceneDecodedBytes        int64 = 8 << 20
+	bitmapSceneMaxSide                   = 8192
+	representationVersion                = "raster-v2-png-tile512"
+	universalRepresentationVersion       = "raster-v3-shared-png-tile512"
 )
 
 type rasterMetadata struct {
@@ -177,6 +178,12 @@ func prepareRasterReader(ctx context.Context, root string, input io.Reader, kind
 		renderMode = representationPolicy(rasterMetadata{Width: cfg.Width, Height: cfg.Height}).Mode
 	}
 	a := Asset{SourceID: sourceID, RepresentationVersion: representationVersion, Filename: filename, MimeType: mimeType, Width: cfg.Width, Height: cfg.Height, Size: n, Kind: kind, RenderMode: renderMode, RetentionPolicy: assetReclaimable, CreatedAt: time.Now().Unix()}
+	if mediaFormats {
+		a.RepresentationVersion = universalRepresentationVersion
+		if a.RenderMode == renderModeTiled {
+			a.Levels = mediaPyramidLevels(a.Width, a.Height)
+		}
+	}
 	a.ID = representationID(a.SourceID, a.Kind, a.RepresentationVersion, a.RenderMode)
 	dest := filepath.Join(assets, a.ID)
 	if metadata, e := os.ReadFile(filepath.Join(dest, "meta.json")); e == nil {
@@ -218,7 +225,11 @@ func prepareRasterReader(ctx context.Context, root string, input io.Reader, kind
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	err = prepareRepresentationFiles(ctx, tool, stage, original, &a)
+	if mediaFormats {
+		err = generateMediaThumbnail(ctx, tool, stage, original, "media-thumb.png", 192)
+	} else {
+		err = prepareRepresentationFiles(ctx, tool, stage, original, &a)
+	}
 	if err != nil {
 		return a, err
 	}

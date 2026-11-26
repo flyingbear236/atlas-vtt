@@ -62,24 +62,26 @@ type inventorySheetField struct {
 	Value string   `json:"value"`
 }
 type inventorySheetEffect struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Targets    []string `json:"targets,omitempty"`
-	Formula    string   `json:"formula,omitempty"`
-	Condition  string   `json:"condition,omitempty"`
-	Stack      string   `json:"stack,omitempty"`
-	Scope      string   `json:"scope,omitempty"`
-	Value      *int64   `json:"value,omitempty"`
-	Status     string   `json:"status"`
-	State      string   `json:"state"` // active, conditional, inactive
-	SourceID   string   `json:"sourceId,omitempty"`
-	SourceName string   `json:"sourceName,omitempty"`
-	SourceKind string   `json:"sourceKind,omitempty"` // item or character
+	ArtworkAssetID string   `json:"artworkAssetId,omitempty"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Targets        []string `json:"targets,omitempty"`
+	Formula        string   `json:"formula,omitempty"`
+	Condition      string   `json:"condition,omitempty"`
+	Stack          string   `json:"stack,omitempty"`
+	Scope          string   `json:"scope,omitempty"`
+	Value          *int64   `json:"value,omitempty"`
+	Status         string   `json:"status"`
+	State          string   `json:"state"` // active, conditional, inactive
+	SourceID       string   `json:"sourceId,omitempty"`
+	SourceName     string   `json:"sourceName,omitempty"`
+	SourceKind     string   `json:"sourceKind,omitempty"` // item or character
 }
 type inventorySheetDetail struct {
-	Effects     []inventorySheetEffect `json:"effects,omitempty"`
-	Description string                 `json:"description,omitempty"`
-	Fields      []inventorySheetField  `json:"fields,omitempty"`
+	ArtworkAssetID string                 `json:"artworkAssetId,omitempty"`
+	Effects        []inventorySheetEffect `json:"effects,omitempty"`
+	Description    string                 `json:"description,omitempty"`
+	Fields         []inventorySheetField  `json:"fields,omitempty"`
 }
 
 func inventoryDetailsForSheet(registry EffectiveRegistry, items []InventoryItem, directGrants ...EffectGrant) map[string]inventorySheetDetail {
@@ -282,6 +284,7 @@ type characterPermissions struct {
 }
 
 type characterSnapshot struct {
+	artworkRevision       uint64                           // internal projection cache key, never serialized
 	ActionSelectors       map[string]string                `json:"actionSelectors,omitempty"`
 	ActionGroups          map[string]string                `json:"actionGroups,omitempty"`
 	ActionPreviews        []ActionPreview                  `json:"actionPreviews,omitempty"`
@@ -343,6 +346,7 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 	// Definitions and inventory presentation are independent of numeric values.
 	// Reuse the immutable previous projection only when all structural inputs agree.
 	if previous != nil && previous.RegistryRevision == session.RegistryRevision &&
+		previous.artworkRevision == session.sheetArtworkRevision &&
 		previous.Instance.PresetID == instance.PresetID &&
 		reflect.DeepEqual(previous.Instance.Inventory, instance.Inventory) &&
 		slices.Equal(previous.Instance.EffectIDs, instance.EffectIDs) &&
@@ -440,6 +444,20 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 	}
 	itemDetails := inventoryDetailsForSheet(registry, instance.Inventory, directEffects...)
 	direct := directCharacterEffectsForSheet(registry, instance, itemDetails)
+	for _, item := range instance.Inventory {
+		d, ok := itemDetails[item.ID]
+		if !ok {
+			continue
+		}
+		d.ArtworkAssetID = session.ItemArtwork[item.ObjectID]
+		for i := range d.Effects {
+			d.Effects[i].ArtworkAssetID = session.EffectArtwork[sheetEffectDefinitionID(d.Effects[i].ID)]
+		}
+		itemDetails[item.ID] = d
+	}
+	for i := range direct {
+		direct[i].ArtworkAssetID = session.EffectArtwork[sheetEffectDefinitionID(direct[i].ID)]
+	}
 	var combined []inventorySheetEffect
 	if legacy {
 		// Preserve the full effects list for clients that don't opt into deltas.
@@ -450,6 +468,7 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 		direct = nil
 	}
 	return characterSnapshot{
+		artworkRevision: session.sheetArtworkRevision,
 		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
 		ItemDetails:           itemDetails,
 		CharacterEffects:      combined,

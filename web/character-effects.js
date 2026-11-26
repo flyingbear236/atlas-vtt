@@ -60,32 +60,33 @@ export function effectTargetName(target,snapshot){
 const node=(tag,cls='',value)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(value!==undefined)el.textContent=String(value);return el;};
 const effectValue=effect=>effect.value===undefined||effect.value===null?'ƒ':`${Number(effect.value)>0?'+':''}${effect.value}`;
 
-export function renderEffectCard(effect,onInspect,snapshot){
+export function renderEffectCard(effect,onInspect,snapshot,thumbnail){
  const button=node('button','character-effect-card');button.type='button';button.title=`Подробнее об эффекте ${effect.name||effect.id}`;
  const head=node('span','character-effect-card-head');head.append(node('strong','character-effect-name',effect.name||effect.id),node('b','character-effect-value',effectValue(effect)));
  const id=node('span','character-effect-id',effect.id);
  const info=node('span','character-effect-card-meta');info.append(node('span',effectStatus(effect)==='inactive'?'character-effect-status is-inactive':'character-effect-status',effect.status||'Активен'));
- button.append(head,id,info);
- if(effect.targets?.length){const target=node('span','character-effect-target');target.title=effect.targets.join(' · ');target.append(node('span','character-effect-field-label','Меняет: '),document.createTextNode(effect.targets.map(path=>effectTargetName(path,snapshot)).join(' · ')));button.append(target);}
- if(effect.formula){const formula=node('code','character-effect-formula');formula.append(node('span','character-effect-field-label','Формула: '),document.createTextNode(effect.formula));button.append(formula);}
- if(effect.condition)button.append(node('span','character-effect-when',`Условие: ${effect.condition}`));
+ const body=node('span','character-effect-card-body');body.append(head,id,info);
+ if(effect.targets?.length){const target=node('span','character-effect-target');target.title=effect.targets.join(' · ');target.append(node('span','character-effect-field-label','Меняет: '),document.createTextNode(effect.targets.map(path=>effectTargetName(path,snapshot)).join(' · ')));body.append(target);}
+ if(effect.formula){const formula=node('code','character-effect-formula');formula.append(node('span','character-effect-field-label','Формула: '),document.createTextNode(effect.formula));body.append(formula);}
+ if(effect.condition)body.append(node('span','character-effect-when',`Условие: ${effect.condition}`));
+ if(effect.artworkAssetId&&thumbnail){button.classList.add('with-artwork');button.append(thumbnail(effect.artworkAssetId));}button.append(body);
  if(effectStatus(effect)==='inactive')button.classList.add('is-inactive');
  button.onclick=()=>onInspect(effect);return button;
 }
-export function renderEffectRow(effect,onInspect,snapshot){
+export function renderEffectRow(effect,onInspect,snapshot,thumbnail){
  const button=node('button','character-effect-row');button.type='button';button.title='Посмотреть источник и формулу эффекта';
  const text=node('span','character-effect-row-info');text.append(node('strong','character-effect-name',effect.name||effect.id));
  text.append(node('span','character-effect-origin',effect.sourceKind==='character'?'У персонажа':`${effect.sourceName||'Предмет'} · ${effect.sourceId}`));
  const targets=node('span','character-effect-target');targets.title=effect.targets?.join(' · ')||effect.id;targets.append(node('span','character-effect-field-label','Меняет: '),document.createTextNode(effect.targets?.length?effect.targets.map(path=>effectTargetName(path,snapshot)).join(' · '):effect.id));text.append(targets);
  const end=node('span','character-effect-row-right');end.append(node('b','character-effect-value',effectValue(effect)),node('span','character-effect-status',effect.status||'Активен'));
- button.append(text,end);
+ if(effect.artworkAssetId&&thumbnail)button.append(thumbnail(effect.artworkAssetId));button.append(text,end);
  if(effectStatus(effect)==='inactive')button.classList.add('is-inactive');
  button.onclick=()=>onInspect(effect);return button;
 }
 
 export class EffectReferencePanel extends ActionReferencePanel{
- constructor({openItem}){
-  super();this.openItem=openItem;this.key='';this.snapshotRevision=-1;
+ constructor({openItem,artwork,releaseArtwork}){
+  super();this.maxWidth=400;this.openItem=openItem;this.artwork=artwork;this.releaseArtwork=releaseArtwork;this.key='';this.snapshotRevision=-1;
   this.host.setAttribute('aria-label','Инспектор эффекта');this.host.classList.add('character-effect-inspector');
  }
  open(snapshot,effect){
@@ -95,7 +96,9 @@ export class EffectReferencePanel extends ActionReferencePanel{
  }
  renderEffect(effect,snapshot){
   const root=node('div','character-effect-reference');
-  root.append(node('h3','',effect.name||effect.id),node('p','character-effect-id',effect.id));
+  const header=node('div','character-effect-reference-header'),title=node('div','character-effect-reference-title');
+  title.append(node('h3','',effect.name||effect.id),node('p','character-effect-id',effect.id));
+  const art=node('div','character-effect-artwork');this.artwork?.(art,snapshot,effect);if(art.childElementCount){header.classList.add(effect.artworkAssetId?'with-artwork':'with-artwork-placeholder');header.append(art);}header.append(title);root.append(header);
   const block=(heading)=>{const wrapper=node('section','character-effect-reference-block');wrapper.append(node('h4','',heading));root.append(wrapper);return wrapper;};
   const line=(parent,label,value)=>{const row=node('div','character-effect-reference-line');row.append(node('span','',label),node('strong','',value));parent.append(row);};
   const state=block('Состояние');
@@ -132,5 +135,5 @@ export class EffectReferencePanel extends ActionReferencePanel{
   if(this.snapshotRevision!==snapshot.revision){const scroll=this.card.scrollTop;this.renderEffect(effect,snapshot);this.card.scrollTop=scroll;this.snapshotRevision=snapshot.revision;}
   this.position();
  }
- close(){super.close();this.key='';}
+ close(){this.releaseArtwork?.();super.close();this.key='';}
 }

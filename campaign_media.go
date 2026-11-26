@@ -529,8 +529,14 @@ func (s *Server) readCampaignMediaImage(w http.ResponseWriter, r *http.Request) 
 		fail(w, 400, "Неизвестный вид изображения")
 		return
 	}
+	if name != "original" {
+		if err := s.ensureUniversalPart(r.Context(), a, name); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+	}
 	w.Header().Set("Cache-Control", "private, no-store")
-	http.ServeFile(w, r, filepath.Join(s.root, "assets", a.ID, name))
+	http.ServeFile(w, r, filepath.Join(s.root, "assets", a.ID, universalPartName(a, name)))
 }
 
 type mediaImportIssue struct {
@@ -542,6 +548,7 @@ type mediaImportResult struct {
 	Skipped  int                `json:"skipped"`
 	Issues   []mediaImportIssue `json:"issues"`
 	Catalog  campaignMediaView  `json:"catalog"`
+	Paths    []string           `json:"paths,omitempty"`
 }
 type mediaImportItem struct {
 	path  string
@@ -573,10 +580,13 @@ func (j *mediaImportJob) addImage(p string, r io.Reader) {
 		return
 	}
 	a, err := prepareCampaignMediaReader(j.ctx, j.server.root, r)
+	if err == nil {
+		a.Filename = mediaUploadFilename(path.Base(p), a.Filename)
+	}
 	if a.ID != "" && err == nil {
 		j.prepared[a.ID] = a
 	}
-	if err == nil {
+	if err == nil && !universalMedia(a) {
 		err = prepareMediaPreviews(j.server.root, a)
 	}
 	if err != nil {
@@ -780,12 +790,14 @@ func (s *Server) importCampaignMedia(w http.ResponseWriter, r *http.Request) {
 		next.Directories = append(next.Directories, d)
 	}
 	for _, item := range j.items {
-		if _, err = ns.addFile(&next, item.path, CampaignMediaEntry{item.asset.ID, time.Now().Unix()}, true); err != nil {
+		addedPath, addErr := ns.addFile(&next, item.path, CampaignMediaEntry{item.asset.ID, time.Now().Unix()}, true)
+		if err = addErr; err != nil {
 			j.issue(item.path, err)
 			continue
 		}
 		added[item.asset.ID] = item.asset
 		j.result.Imported++
+		j.result.Paths = append(j.result.Paths, addedPath)
 	}
 	if j.result.Imported > 0 || len(next.Directories) != len(ss.MediaLibrary.Directories) {
 		if err = s.commitCampaignMedia(ss, next, added); err != nil {
@@ -854,9 +866,49 @@ func (s *Server) placeCampaignMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	initial, member := s.auth(r)
+	if !memberIsGM(member) {
+		s.mu.Unlock()
+		fail(w, 403, "Нужны права ведущего")
+		return
+	}
+	sceneBefore := initial.Scenes[req.SceneID]
+	if sceneBefore == nil {
+		s.mu.Unlock()
+		fail(w, 404, "Сцена не найдена")
+		return
+	}
+	layerBefore, layerErr := mediaPlacementLayer(sceneBefore, req.FloorID, req.LayerID)
+	if layerErr != nil || layerBefore.Locked || len(sceneBefore.Elements)+len(req.Paths) > maxSceneElements {
+		s.mu.Unlock()
+		if layerErr != nil {
+			fail(w, 400, layerErr.Error())
+		} else {
+			fail(w, 400, "Слой заблокирован или достигнут лимит элементов")
+		}
+		return
+	}
+	planned := make(map[string]Asset, len(req.Paths))
+	for _, p := range req.Paths {
+		a := initial.Assets[initial.MediaLibrary.Files[p].AssetID]
+		if a.ID == "" {
+			s.mu.Unlock()
+			fail(w, 400, "Изображение больше недоступно: "+p)
+			return
+		}
+		planned[p] = a
+	}
+	s.mu.Unlock()
+	for _, a := range planned {
+		if err := s.ensureUniversalPart(r.Context(), a, "scene"); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	ss, m := s.auth(r)
-	if !memberIsGM(m) {
+	if ss != initial || !memberIsGM(m) {
 		fail(w, 403, "Нужны права ведущего")
 		return
 	}
@@ -892,7 +944,7 @@ func (s *Server) placeCampaignMedia(w http.ResponseWriter, r *http.Request) {
 	for i, p := range req.Paths {
 		e := ss.MediaLibrary.Files[p]
 		a := ss.Assets[e.AssetID]
-		if a.ID == "" || !isSceneRasterKind(a.Kind) {
+		if a.ID == "" || a.ID != planned[p].ID || !isSceneRasterKind(a.Kind) {
 			fail(w, 400, "Изображение больше недоступно: "+p)
 			return
 		}

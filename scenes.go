@@ -821,6 +821,16 @@ func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, active
 	if isCharacterArtworkAsset(asset) && avatarAssetVisibleTo(ss, member, assetID) {
 		return true
 	}
+	return rasterVisibleToAtToken(ss, member, sceneID, assetID, activeTokenID, true)
+}
+func sceneRasterVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, activeTokenID string) bool {
+	return rasterVisibleToAtToken(ss, member, sceneID, assetID, activeTokenID, false)
+}
+func rasterVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, activeTokenID string, includeTokens bool) bool {
+	asset, ok := ss.Assets[assetID]
+	if !ok {
+		return false
+	}
 	scene := ss.Scenes[sceneID]
 	if !sceneVisible(scene, member) {
 		return false
@@ -834,7 +844,7 @@ func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, active
 		floorID = tokenFloorID(scene, token)
 	}
 	visibleFloors := visibleFloorSet(scene, floorID)
-	if isCharacterArtworkAsset(asset) {
+	if includeTokens && isCharacterArtworkAsset(asset) {
 		registry, err := MergeDefinitionRegistries(sessionRegistries(ss))
 		if err == nil {
 			for _, token := range scene.Tokens {
@@ -853,6 +863,9 @@ func assetVisibleToAtToken(ss *Session, member *Member, sceneID, assetID, active
 }
 
 func assetVisibleToPeer(ss *Session, peer *peer, assetID string) bool {
+	return rasterVisibleToPeer(ss, peer, assetID, true)
+}
+func rasterVisibleToPeer(ss *Session, peer *peer, assetID string, includeTokens bool) bool {
 	asset, ok := ss.Assets[assetID]
 	if !ok || peer == nil || peer.member == nil {
 		return false
@@ -863,7 +876,7 @@ func assetVisibleToPeer(ss *Session, peer *peer, assetID string) bool {
 	}
 	runtime := scene.ensureRuntime()
 	if !peerUsesPlayerProjection(peer) {
-		if isCharacterArtworkAsset(asset) && avatarAssetVisibleTo(ss, peer.member, assetID) {
+		if includeTokens && isCharacterArtworkAsset(asset) && avatarAssetVisibleTo(ss, peer.member, assetID) {
 			return true
 		}
 		return runtime.assetAll[assetID] > 0
@@ -874,7 +887,7 @@ func assetVisibleToPeer(ss *Session, peer *peer, assetID string) bool {
 			return true
 		}
 	}
-	if isCharacterArtworkAsset(asset) {
+	if includeTokens && isCharacterArtworkAsset(asset) {
 		registry, _ := MergeDefinitionRegistries(sessionRegistries(ss))
 		for _, token := range scene.Tokens {
 			_, floorVisible := visibleFloors[token.FloorID]

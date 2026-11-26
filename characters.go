@@ -283,6 +283,7 @@ type EffectiveResource struct {
 }
 
 type EffectiveCharacter struct {
+	Description   string                       `json:"description,omitempty"`
 	StatValues    map[string]any               `json:"statValues,omitempty"` // effective v0.4 expression addresses
 	ID            string                       `json:"id"`
 	PresetID      string                       `json:"presetId,omitempty"`
@@ -430,7 +431,7 @@ func MaterializeCharacter(instance CharacterInstance, preset *CharacterPresetDef
 
 func characterSourceState(instance CharacterInstance, preset *CharacterPresetDefinition, registry EffectiveRegistry) EffectiveCharacter {
 	effective := EffectiveCharacter{
-		ID: instance.ID, PresetID: instance.PresetID, Name: instance.Name,
+		ID: instance.ID, PresetID: instance.PresetID, Name: instance.Name, Description: characterDescription(instance),
 		Stats: map[string]StatValue{}, Resources: map[string]EffectiveResource{}, Persistent: instance.Persistent,
 	}
 	resourceInitial := map[string]StatValue{}

@@ -334,6 +334,10 @@ func (s *Server) saveSceneObject(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Изображение не найдено")
 		return
 	}
+	if universalMedia(a) && !mediaReady(s.root, a, "scene") {
+		fail(w, 400, "Представление сцены не подготовлено")
+		return
+	}
 	if err := validateObjectInteraction(ss, req.Interaction); err != nil {
 		fail(w, 400, err.Error())
 		return

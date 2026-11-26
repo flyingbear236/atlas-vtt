@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -77,7 +78,7 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	s.mu.Lock()
 	session, member := s.auth(request)
 	staged := request.URL.Query().Get("stage") == "1"
-	allowed := avatarTargetAllowed(session, member, target) && (!staged || (target.characterID != "" && memberIsGM(member)))
+	allowed := avatarTargetAllowed(session, member, target) && (!staged || target.characterID != "")
 	s.mu.Unlock()
 	if !allowed {
 		fail(w, http.StatusForbidden, "Avatar недоступен")
@@ -91,12 +92,18 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		fail(w, http.StatusTooManyRequests, "Другое изображение уже обрабатывается")
 		return
 	}
-	request.Body = http.MaxBytesReader(w, request.Body, avatarUploadLimit)
-	asset, err := prepareReader(request.Context(), s.root, request.Body, assetKindAvatar)
+	request.Body = http.MaxBytesReader(w, request.Body, uploadLimit)
+	asset, err := prepareCampaignMediaReader(request.Context(), s.root, request.Body)
+	if err == nil {
+		err = ensureUniversalPartLocked(request.Context(), s.root, asset, "avatar.png")
+	}
 	if err != nil {
+		s.mu.Lock()
+		s.discardPreparedAssetLocked(asset.ID)
+		s.mu.Unlock()
 		status := http.StatusBadRequest
 		var maxBytes *http.MaxBytesError
-		if errors.Is(err, errAvatarUploadSize) || errors.As(err, &maxBytes) {
+		if errors.Is(err, errUploadSize) || errors.As(err, &maxBytes) {
 			status = http.StatusRequestEntityTooLarge
 		}
 		if errors.Is(err, errVipsMissing) {
@@ -120,7 +127,10 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	asset.Filename = mediaUploadFilename(request.URL.Query().Get("filename"), asset.Filename)
 	oldAssets := cloneAssetRegistry(session.Assets)
+	oldMedia := session.MediaLibrary
+	oldMemberMedia := session.MemberMedia
 	oldRuleset := cloneRulesetSnapshot(session.Ruleset)
 	oldRegistryRevision := session.RegistryRevision
 	oldCharacterRevision := session.CharacterRevision
@@ -135,7 +145,29 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		asset.OrphanSince = previous.OrphanSince
 	}
 	session.Assets[asset.ID] = asset
+	if err = addUnsortedMedia(session, asset, request.URL.Query().Get("filename")); err != nil {
+		session.Assets = oldAssets
+		s.discardPreparedAssetLocked(asset.ID)
+		s.mu.Unlock()
+		fail(w, 400, err.Error())
+		return
+	}
 
+	// A player's upload is available to that player before an assignment is
+	// committed. It does not expose any other GM catalog entries.
+	if !memberIsGM(currentMember) {
+		owned := maps.Clone(session.MemberMedia)
+		if owned == nil {
+			owned = map[string]map[string]bool{}
+		}
+		mine := maps.Clone(owned[currentMember.ID])
+		if mine == nil {
+			mine = map[string]bool{}
+		}
+		mine[asset.ID] = true
+		owned[currentMember.ID] = mine
+		session.MemberMedia = owned
+	}
 	if staged {
 		// Store an unattached immutable asset. The character edit commit will attach it.
 	} else if target.characterID != "" {
@@ -146,6 +178,8 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		registry, mergeErr := MergeDefinitionRegistries(sessionRegistries(session))
 		if mergeErr != nil {
 			session.Assets = oldAssets
+			session.MediaLibrary = oldMedia
+			session.MemberMedia = oldMemberMedia
 			s.discardPreparedAssetLocked(asset.ID)
 			s.mu.Unlock()
 			fail(w, http.StatusConflict, mergeErr.Error())
@@ -154,6 +188,8 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		candidate, sourceErr := RulesetSnapshotWithSources(session.Ruleset)
 		if sourceErr != nil {
 			session.Assets = oldAssets
+			session.MediaLibrary = oldMedia
+			session.MemberMedia = oldMemberMedia
 			s.discardPreparedAssetLocked(asset.ID)
 			s.mu.Unlock()
 			fail(w, http.StatusConflict, sourceErr.Error())
@@ -170,6 +206,8 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		candidate.Registry.Presets[target.presetID] = preset
 		if sourceErr = validateUnifiedDefinitionCandidate(session, candidate); sourceErr != nil {
 			session.Assets = oldAssets
+			session.MediaLibrary = oldMedia
+			session.MemberMedia = oldMemberMedia
 			s.discardPreparedAssetLocked(asset.ID)
 			s.mu.Unlock()
 			fail(w, http.StatusConflict, sourceErr.Error())
@@ -184,6 +222,8 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	refreshAssetOrphans(session, time.Now())
 	if err = validateSessionCharacterState(session); err != nil {
 		session.Assets = oldAssets
+		session.MediaLibrary = oldMedia
+		session.MemberMedia = oldMemberMedia
 		session.Ruleset = oldRuleset
 		if target.characterID != "" {
 			session.CharacterInstances[target.characterID] = oldInstance
@@ -198,6 +238,8 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 	s.dirty = true
 	if err = s.saveLocked(); err != nil {
 		session.Assets = oldAssets
+		session.MediaLibrary = oldMedia
+		session.MemberMedia = oldMemberMedia
 		session.Ruleset = oldRuleset
 		if target.characterID != "" {
 			session.CharacterInstances[target.characterID] = oldInstance
@@ -219,6 +261,9 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, request *http.Request) {
 		s.publishCharacterTokens(session, map[string]bool{target.characterID: false})
 		s.refreshCharacterWatches(session, map[string]bool{target.characterID: false}, false)
 	}
+	if session.MediaLibrary.Revision != oldMedia.Revision {
+		s.publishMediaRevision(session)
+	}
 	s.mu.Unlock()
 	reply(w, asset)
 }
@@ -228,12 +273,12 @@ func avatarAssetVisibleTo(session *Session, member *Member, assetID string) bool
 	if !exists || !isCharacterArtworkAsset(asset) {
 		return false
 	}
+	if memberIsGM(member) || (member != nil && session.MemberMedia[member.ID][assetID]) {
+		return true
+	}
 	registry, err := MergeDefinitionRegistries(sessionRegistries(session))
 	if err != nil {
 		return false
-	}
-	if memberIsGM(member) {
-		return true // GM can inspect the campaign artwork catalog, including draft uploads.
 	}
 	for characterID, instance := range session.CharacterInstances {
 		if memberCanAccessCharacter(session, member, characterID) && effectiveCharacterAvatar(session, instance, registry) == assetID {

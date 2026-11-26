@@ -129,13 +129,17 @@ type Session struct {
 	CampaignDefinitions  CampaignRegistry                      `json:"-"`
 	CharacterInstances   map[string]CharacterInstance          `json:"characterInstances"`
 	CharacterSources     map[string]CharacterTOMLSource        `json:"characterSources,omitempty"`
+	MemberMedia          map[string]map[string]bool            `json:"memberMedia,omitempty"`
+	ItemArtwork          map[string]string                     `json:"itemArtwork,omitempty"`
+	EffectArtwork        map[string]string                     `json:"effectArtwork,omitempty"`
 	MediaLibrary         CampaignMedia                         `json:"mediaLibrary,omitempty"`
 	LibraryDirectories   []string                              `json:"libraryDirectories,omitempty"`
 	UnknownTOML          map[string]string                     `json:"unknownToml,omitempty"`
 	ObjectGlow           ObjectGlowSettings                    `json:"objectGlow,omitempty"`
 	ResourceOverlays     []ResourceOverlayConfig               `json:"resourceOverlays,omitempty"`
 
-	characterReferences map[string]map[CharacterTokenReference]struct{} `json:"-"`
+	sheetArtworkRevision uint64
+	characterReferences  map[string]map[CharacterTokenReference]struct{} `json:"-"`
 }
 type peer struct {
 	conn              *websocket.Conn
@@ -164,6 +168,7 @@ type Server struct {
 	writes          uint64
 	flushInterval   time.Duration
 	imageJobs       chan struct{}
+	mediaWaiters    chan struct{}
 	jobContext      context.Context
 	jobCancel       context.CancelFunc
 	jobWG           sync.WaitGroup
@@ -195,7 +200,7 @@ func newServer(root string, rulesetDefaults ...RulesetSnapshot) (*Server, error)
 		return nil, fmt.Errorf("invalid default ruleset: %w", err)
 	}
 	jobContext, jobCancel := context.WithCancel(context.Background())
-	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, imageJobs: make(chan struct{}, 1), jobContext: jobContext, jobCancel: jobCancel, rotationJobs: map[string]*rotationJob{}, previewPeers: map[string]*peer{}, rollService: NewRollService(nil), defaultRuleset: defaultRuleset}
+	s := &Server{sessions: map[string]*Session{}, peers: map[*peer]bool{}, root: root, flushInterval: persistenceFlushInterval, imageJobs: make(chan struct{}, 1), mediaWaiters: make(chan struct{}, 16), jobContext: jobContext, jobCancel: jobCancel, rotationJobs: map[string]*rotationJob{}, previewPeers: map[string]*peer{}, rollService: NewRollService(nil), defaultRuleset: defaultRuleset}
 	if err := os.MkdirAll(filepath.Join(root, "assets"), 0755); err != nil {
 		return nil, fmt.Errorf("storage directory: %w", err)
 	}
@@ -463,10 +468,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/characters", s.readCharacterCatalog)
 	mux.HandleFunc("GET /api/library", s.readLibrary)
 	mux.HandleFunc("GET /api/media-library", s.readCampaignMedia)
+	mux.HandleFunc("GET /api/media-library/available", s.playerMediaCatalog)
 	mux.HandleFunc("GET /api/media-library/image", s.readCampaignMediaImage)
 	mux.HandleFunc("POST /api/media-library/operation", s.operateCampaignMedia)
 	mux.HandleFunc("POST /api/media-library/import", s.importCampaignMedia)
 	mux.HandleFunc("POST /api/media-library/place", s.placeCampaignMedia)
+	mux.HandleFunc("POST /api/media-library/prepare", s.prepareCampaignMediaUse)
+	mux.HandleFunc("POST /api/media-library/sheet-artwork", s.setSheetArtwork)
 	mux.HandleFunc("GET /api/library/file/download", s.downloadLibraryFile)
 	mux.HandleFunc("GET /api/library/inspect", s.inspectLibraryFile)
 	mux.HandleFunc("POST /api/library/operation", s.libraryOperation)
@@ -821,8 +829,20 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, uploadLimit)
-	a, e := prepareReader(r.Context(), s.root, r.Body, kind)
+	a, e := prepareCampaignMediaReader(r.Context(), s.root, r.Body)
+	if e == nil {
+		variant := "scene"
+		if kind == assetKindToken {
+			variant = "avatar.png"
+		} else if r.URL.Query().Get("objectMedia") == "1" {
+			variant = "artwork.png"
+		}
+		e = ensureUniversalPartLocked(r.Context(), s.root, a, variant)
+	}
 	if e != nil {
+		s.mu.Lock()
+		s.discardPreparedAssetLocked(a.ID)
+		s.mu.Unlock()
 		status := http.StatusBadRequest
 		var maxBytes *http.MaxBytesError
 		if errors.Is(e, errUploadSize) || errors.As(e, &maxBytes) {
@@ -835,28 +855,34 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Context().Err() != nil {
+		s.mu.Lock()
+		s.discardPreparedAssetLocked(a.ID)
+		s.mu.Unlock()
 		return
 	}
-	if filename := strings.TrimSpace(r.URL.Query().Get("name")); filename != "" && len(filename) <= 200 && !strings.ContainsAny(filename, "/\\") {
-		a.Filename = filename
-	}
+	a.Filename = mediaUploadFilename(r.URL.Query().Get("name"), a.Filename)
 	s.mu.Lock()
 	if s.stopping {
+		s.discardPreparedAssetLocked(a.ID)
 		s.mu.Unlock()
 		fail(w, 503, "Сервер останавливается")
 		return
 	}
 	if r.Context().Err() != nil {
+		s.discardPreparedAssetLocked(a.ID)
 		s.mu.Unlock()
 		return
 	}
 	currentSession, currentMember := s.auth(r)
 	if currentSession != ss || !memberIsGM(currentMember) || ss.Scenes[sceneID] != scene {
+		s.discardPreparedAssetLocked(a.ID)
 		s.mu.Unlock()
 		fail(w, http.StatusConflict, "Сцена была закрыта во время загрузки")
 		return
 	}
 	oldAsset, hadAsset := ss.Assets[a.ID]
+	oldMedia := ss.MediaLibrary
+	oldAssets := cloneAssetRegistry(ss.Assets)
 	oldRevision, oldDirty := scene.Revision, s.dirty
 	oldElements := make(map[string]SceneElement, len(scene.Elements))
 	for elementID, element := range scene.Elements {
@@ -872,6 +898,13 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		a.OrphanSince = oldAsset.OrphanSince
 	}
 	ss.Assets[a.ID] = a
+	if err := addUnsortedMedia(ss, a, a.Filename); err != nil {
+		ss.Assets = oldAssets
+		s.discardPreparedAssetLocked(a.ID)
+		s.mu.Unlock()
+		fail(w, 400, err.Error())
+		return
+	}
 	if kind == assetKindScene && r.URL.Query().Get("objectMedia") != "1" {
 		floorID := r.URL.Query().Get("floor")
 		layerID := r.URL.Query().Get("layer")
@@ -901,11 +934,8 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	refreshAssetOrphans(ss, time.Now())
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
-		if hadAsset {
-			ss.Assets[a.ID] = oldAsset
-		} else {
-			delete(ss.Assets, a.ID)
-		}
+		ss.Assets, ss.MediaLibrary = oldAssets, oldMedia
+		s.discardPreparedAssetLocked(a.ID)
 		scene.Elements, scene.Revision, s.dirty = oldElements, oldRevision, oldDirty
 		scene.Floors = oldFloors
 		scene.rebuildRuntime()
@@ -915,6 +945,9 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	if kind == assetKindScene && r.URL.Query().Get("objectMedia") != "1" {
 		s.publishSceneSnapshot(ss, sceneID)
+	}
+	if ss.MediaLibrary.Revision != oldMedia.Revision {
+		s.publishMediaRevision(ss)
 	}
 	s.mu.Unlock()
 	reply(w, a)
@@ -931,11 +964,19 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	if ss != nil && m != nil {
 		previewKey := r.URL.Query().Get("previewKey")
 		if previewKey == "" {
-			allowed = assetVisibleToAtToken(ss, m, r.URL.Query().Get("scene"), parts[0], r.URL.Query().Get("activeTokenId"))
+			a := ss.Assets[parts[0]]
+			if universalMedia(a) && mediaPartSide(parts[1]) == 0 && parts[1] != "token.png" {
+				allowed = sceneRasterVisibleToAtToken(ss, m, r.URL.Query().Get("scene"), parts[0], r.URL.Query().Get("activeTokenId"))
+			} else {
+				allowed = assetVisibleToAtToken(ss, m, r.URL.Query().Get("scene"), parts[0], r.URL.Query().Get("activeTokenId"))
+				if !allowed && (parts[1] == "media-thumb.png" || parts[1] == "artwork.png") {
+					allowed = sheetArtworkVisibleTo(ss, m, parts[0])
+				}
+			}
 		} else {
 			peer := s.previewPeers[previewKey]
 			if peer != nil && peer.session == ss.ID && peer.member.ID == m.ID && peer.sceneID == r.URL.Query().Get("scene") && peer.playerPreview {
-				allowed = assetVisibleToPeer(ss, peer, parts[0])
+				allowed = rasterVisibleToPeer(ss, peer, parts[0], !universalMedia(ss.Assets[parts[0]]) || mediaPartSide(parts[1]) > 0 || parts[1] == "token.png")
 			}
 		}
 	}
@@ -943,7 +984,7 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("objectEditor") == "1" && memberIsGM(m) {
 			allowed = true
 		}
-		if validObjectMediaGrant(ss, m, parts[0], r.URL.Query().Get("objectGrant")) {
+		if (!universalMedia(ss.Assets[parts[0]]) || mediaPartSide(parts[1]) > 0) && validObjectMediaGrant(ss, m, parts[0], r.URL.Query().Get("objectGrant")) {
 			allowed = true
 		}
 	}
@@ -960,6 +1001,22 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	if strings.ContainsAny(name, "/\\:") || (!strings.HasSuffix(name, ".png")) {
 		http.NotFound(w, r)
 		return
+	}
+	if universalMedia(asset) {
+		requested := name
+		name = universalPartName(asset, name)
+		if requested == "image.png" {
+			// Only the scene placement path may build a scene representation.
+			if !mediaReady(s.root, asset, "scene") {
+				fail(w, 404, "Представление сцены не подготовлено")
+				return
+			}
+		} else if mediaPartSide(name) > 0 {
+			if err := s.ensureUniversalPart(r.Context(), asset, name); err != nil {
+				fail(w, 400, err.Error())
+				return
+			}
+		}
 	}
 	if name == "avatar.png" && asset.Kind == assetKindToken {
 		name = "token.png"

@@ -165,10 +165,22 @@ func (s *Server) diceCommand(session *Session, peer *peer, command Command) {
 			e := receipt.Action
 			if public, ok := a.project(e); ok {
 				response["action"] = public
-				if e.ObjectResponse != nil && e.UserID == peer.member.ID && e.ObjectResponse.ImageAssetID != "" {
-					if media := objectMediaPayload(session, peer.member, e.ObjectResponse.ImageAssetID); media != nil {
-						response["objectImage"] = map[string]any{"type": "objectImage", "sceneId": e.SceneID, "executionId": e.ExecutionID, "media": media}
+				if e.ObjectResponse != nil && e.UserID == peer.member.ID {
+					name := "Объект"
+					if e.Target != nil {
+						if scene := session.Scenes[e.SceneID]; scene != nil {
+							if element := scene.Elements[e.Target.ElementID]; element.Name != "" {
+								name = element.Name
+							}
+						}
 					}
+					reaction := map[string]any{"type": "objectReaction", "sceneId": e.SceneID, "executionId": e.ExecutionID, "text": e.ObjectResponse.Text, "name": name}
+					if e.ObjectResponse.ImageAssetID != "" {
+						if media := objectMediaPayload(session, peer.member, e.ObjectResponse.ImageAssetID); media != nil {
+							reaction["media"] = media
+						}
+					}
+					response["objectReaction"] = reaction
 				}
 				if a.seesCharacter(e.CharacterID, true) && (e.Target == nil || e.Target.ElementID != "" && a.seesHistoricalTarget(*e.Target) || a.seesCharacter(e.Target.CharacterID, true)) {
 					response["details"] = e.Details

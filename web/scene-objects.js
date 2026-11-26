@@ -56,6 +56,7 @@ export class ObjectMasks {
 // bounded LOD (never load a full-size map for a modal or a hover tooltip).
 export async function objectImageBlob(media,maxSide,fetchPart,signal){
   const a=media?.asset;if(!a)throw Error('Изображение недоступно');
+  if(a.representationVersion==='raster-v3-shared-png-tile512')return fetchPart(media,maxSide<=256?'media-thumb.png':maxSide<=320?'hover.png':'artwork.png',signal);
   if(a.renderMode!=='tiled')return fetchPart(media,'image.png',signal);
   const z=Math.max(0,Math.min(a.levels-1,Math.ceil(Math.log2(Math.max(a.width,a.height)/maxSide)))),unit=512*2**z;
   const nx=Math.ceil(a.width/unit),ny=Math.ceil(a.height/unit);
@@ -76,8 +77,8 @@ class MediaView {
 // All private fields stay in this editor only. The scene snapshot contains
 // the interaction flag, not the contents of the matrix.
 export class SceneObjectEditor {
-  constructor({read,upload,save,optimistic,fetchPart,toast,context}){
-    Object.assign(this,{read,upload,save,optimistic,toast,context});this.avatarMedia=new MediaView(fetchPart);this.cellMedia=new MediaView(fetchPart);this.pending=new Map();this.request=0;this.model=null;this.active=['hover','any'];this.query='';this.busy=false;
+  constructor({read,upload,pick,save,optimistic,fetchPart,toast,context}){
+    Object.assign(this,{read,upload,pick,save,optimistic,toast,context});this.avatarMedia=new MediaView(fetchPart);this.cellMedia=new MediaView(fetchPart);this.pending=new Map();this.request=0;this.model=null;this.active=['hover','any'];this.query='';this.busy=false;
     this.dialog=node('dialog','scene-object-dialog');this.dialog.setAttribute('aria-label','Настройки объекта');document.body.append(this.dialog);
     this.dialog.addEventListener('cancel',e=>{e.preventDefault();this.close();});
     this.dialog.addEventListener('click',e=>{if(e.target===this.dialog){const r=this.dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)this.close();}});
@@ -118,10 +119,10 @@ export class SceneObjectEditor {
     this.cellMedia.clear();this.cell.replaceChildren();const [id,branch]=this.active,m=this.message,name=id==='hover'?'Alt + наведение':this.model.actions.find(a=>a.id===id)?.name||id;
     const top=node('div','scene-object-cell-head');top.append(node('strong','',id==='hover'?name:`${name} · ${branches.find(b=>b[0]===branch)[1]}`));this.cell.append(top);
     const fields=node('div','scene-object-cell-fields'),text=node('textarea');text.rows=3;text.maxLength=8192;text.placeholder='Текст сообщения (необязательно)';text.value=m.text||'';text.oninput=()=>this.setMessage({...this.message,text:text.value});fields.append(text);
-    const image=node('div','scene-object-image-slot');if(m.imageAssetId){const preview=node('img');preview.alt='Изображение сообщения';image.append(preview);const controls=node('div','scene-object-image-controls');controls.append(button('Заменить',()=>this.pickFile('message')),button('×',()=>{this.setMessage({...this.message,imageAssetId:''});this.renderCell();},'subtle'));image.append(controls);const asset=this.model.assets[m.imageAssetId];if(asset)this.cellMedia.show({asset,editor:true},preview,320,null,e=>this.toast(e.message));}else image.append(button('＋ Изображение',()=>this.pickFile('message'),'scene-object-add-image subtle'));fields.append(image);this.cell.append(fields);
+    const image=node('div','scene-object-image-slot');if(m.imageAssetId){const preview=node('img');preview.alt='Изображение сообщения';image.append(preview);const controls=node('div','scene-object-image-controls');controls.append(button('Заменить',()=>this.pickFile('message')),button('×',()=>{this.setMessage({...this.message,imageAssetId:''});this.renderCell();},'subtle'));image.append(controls);const asset=this.model.assets[m.imageAssetId];if(asset)this.cellMedia.show({asset,editor:true},preview,192,null,e=>this.toast(e.message));}else image.append(button('＋ Артворк',()=>this.pickFile('message'),'scene-object-add-image subtle'));fields.append(image);this.cell.append(fields);
   }
-  pickFile(kind){if(this.busy||!this.model)return;const input=node('input');input.type='file';input.accept='image/png,image/jpeg';input.onchange=()=>{if(input.files?.[0])this.uploadFile(kind,input.files[0]);};input.click();}
-  async uploadFile(kind,file){const model=this.model,active=[...this.active];this.busy=true;this.status.textContent='Подготовка изображения…';try{const asset=await this.upload(model.scene,file);if(this.model!==model)return;model.assets[asset.id]=asset;this.changed=true;if(kind==='avatar'){model.element.assetId=asset.id;this.optimistic(model.element,model.assets);this.avatarMedia.show({asset,editor:true},this.avatarImg,256,null,e=>this.toast(e.message));}else{const old=this.active;this.active=active;this.setMessage({...this.message,imageAssetId:asset.id});this.active=old;this.renderMatrix();this.renderCell();}}catch(e){this.toast(e.message);}finally{this.busy=false;if(this.model===model)this.status.textContent='Изменения сохраняются при закрытии.';}}
+  pickFile(kind){if(this.busy||!this.model)return;this.uploadFile(kind);}
+  async uploadFile(kind,file){const model=this.model,active=[...this.active];this.busy=true;this.status.textContent='Подготовка изображения…';try{const asset=this.pick?(await this.pick({title:kind==='avatar'?'Изображение объекта':'Артворк реакции',variant:kind==='avatar'?'scene':active[0]==='hover'?'hover.png':'artwork.png'}))?.asset:await this.upload(model.scene,file);if(this.model!==model||!asset)return;model.assets[asset.id]=asset;this.changed=true;if(kind==='avatar'){model.element.assetId=asset.id;this.optimistic(model.element,model.assets);this.avatarMedia.show({asset,editor:true},this.avatarImg,256,null,e=>this.toast(e.message));}else{const old=this.active;this.active=active;this.setMessage({...this.message,imageAssetId:asset.id});this.active=old;this.renderMatrix();this.renderCell();}}catch(e){this.toast(e.message);}finally{this.busy=false;if(this.model===model)this.status.textContent='Изменения сохраняются при закрытии.';}}
   close(force=false){
     if(!this.model){this.request++;return true;}if(this.busy&&!force){this.toast('Дождитесь окончания загрузки изображения.');return false;}
     const model=this.model;if(this.changed){const e=clone(model.element),i=e.interaction;e.name=e.name.trim()||'Объект';if(i.hover&&emptyMessage(i.hover))delete i.hover;for(const [id,r] of Object.entries(i.reactions||{})){for(const [key] of branches)if(emptyMessage(r[key]))delete r[key];if(!Object.keys(r).length)delete i.reactions[id];}
@@ -146,20 +147,20 @@ export class ObjectPresentation {
     const id=element?.id||'',scene=this.context(),previous=this.hovered;this.alt=alt;this.last={element,x,y};this.hovered=id;
     if(id!==previous)this.onHover?.(id);
     if(!alt){this.hideHover();return;}
-    if(!id){if(this.tooltip.hidden){this.hideHover();return;}clearTimeout(this.openTimer);this.openTimer=null;if(!this.tooltip.hidden&&!this.closeTimer)this.closeTimer=setTimeout(()=>this.hideHover(),850);return;}
+    if(!id){if(this.tooltip.hidden){this.hideHover();return;}clearTimeout(this.openTimer);this.openTimer=null;if(!this.tooltip.hidden&&!this.closeTimer)this.closeTimer=setTimeout(()=>this.hideHover(),500);return;}
     clearTimeout(this.closeTimer);this.closeTimer=null;
     if(this.currentID===id&&this.currentScene===scene){if(!this.tooltip.hidden)this.position(x,y);return;}
     this.hideHover();this.currentID=id;this.currentScene=scene;const seq=++this.seq;
-    this.openTimer=setTimeout(()=>{this.openTimer=null;if(this.alt&&this.hovered===id&&this.context()===scene)this.send({type:'objectHover',sceneId:scene,seq,element:{id}});},250);
+    this.openTimer=setTimeout(()=>{this.openTimer=null;if(this.alt&&this.hovered===id&&this.context()===scene)this.send({type:'objectHover',sceneId:scene,seq,element:{id}});},150);
   }
   setAlt(value){if(value===this.alt)return;if(!value){this.alt=false;this.hideHover();}else if(this.last)this.pointer(this.last.element,this.last.x,this.last.y,true);else this.alt=true;}
   position(x,y){const r=this.tooltip.getBoundingClientRect();let left=x+16,top=y+16;if(left+r.width>innerWidth-8)left=x-r.width-12;if(top+r.height>innerHeight-8)top=y-r.height-12;this.tooltip.style.left=`${Math.max(8,Math.min(left,innerWidth-r.width-8))}px`;this.tooltip.style.top=`${Math.max(8,Math.min(top,innerHeight-r.height-8))}px`;}
   hideHover(){if(!this.currentID&&this.tooltip.hidden)return;clearTimeout(this.openTimer);clearTimeout(this.closeTimer);this.openTimer=this.closeTimer=null;this.currentID='';this.currentScene='';this.seq++;this.tooltip.hidden=true;this.tooltip.replaceChildren();this.hoverMedia.clear();}
   handle(msg){
     if(msg.type==='objectHover'){if(msg.sceneId!==this.context()||msg.seq!==this.seq||!this.alt||msg.id!==this.hovered)return true;if(!msg.text&&!msg.media)return true;this.tooltip.replaceChildren();if(msg.text)this.tooltip.append(node('div','scene-object-hover-text',msg.text));if(msg.media){const img=node('img');img.alt='Описание объекта';this.tooltip.append(img);this.hoverMedia.show(msg.media,img,320,()=>{if(this.last)this.position(this.last.x,this.last.y);},()=>img.remove());}this.tooltip.hidden=false;if(this.last)this.position(this.last.x,this.last.y);return true;}
-    if(msg.type==='objectImage'){if(msg.sceneId===this.context()&&!this.seenImages.has(msg.executionId)){if(msg.executionId){this.seenImages.add(msg.executionId);if(this.seenImages.size>128)this.seenImages.delete(this.seenImages.values().next().value);}if(this.dialog.open){if(this.imageQueue.length<8)this.imageQueue.push(msg.media);}else this.showImage(msg.media);}return true;}return false;
+    if(msg.type==='objectImage'){if(msg.sceneId===this.context()&&!this.seenImages.has(msg.executionId)){if(msg.executionId){this.seenImages.add(msg.executionId);if(this.seenImages.size>128)this.seenImages.delete(this.seenImages.values().next().value);}if(this.dialog.open){if(this.imageQueue.length<8)this.imageQueue.push({...msg.media,reactionText:msg.text||''});}else this.showImage({...msg.media,reactionText:msg.text||''});}return true;}return false;
   }
-  showImage(media){this.dialog.replaceChildren();const frame=node('div','scene-object-result-frame'),img=node('img');img.alt='Изображение результата действия';const status=node('span','scene-object-image-status','Загрузка изображения…');frame.append(button('×',()=>this.closeImage(),'scene-object-result-close subtle'),status,img);this.dialog.append(frame);this.dialog.showModal();this.resultMedia.show(media,img,1536,()=>status.remove(),e=>{status.textContent=e.message;});}
+  showImage(media){this.dialog.replaceChildren();const frame=node('div','scene-object-result-frame'),img=node('img');img.alt='Изображение результата действия';const status=node('span','scene-object-image-status','Загрузка изображения…');frame.append(button('×',()=>this.closeImage(),'scene-object-result-close subtle'),status,img);if(media.reactionText)frame.append(node('div','scene-object-result-caption',media.reactionText));this.dialog.append(frame);this.dialog.showModal();this.resultMedia.show(media,img,1536,()=>status.remove(),e=>{status.textContent=e.message;});}
   closeImage(){this.resultMedia.clear();if(this.dialog.open)this.dialog.close();const next=this.imageQueue.shift();if(next)this.showImage(next);}
   reset(){this.alt=false;this.last=null;this.hovered=null;this.onHover?.('');this.hideHover();this.imageQueue=[];this.resultMedia.clear();if(this.dialog.open)this.dialog.close();}
 }

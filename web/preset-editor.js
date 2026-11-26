@@ -12,8 +12,8 @@ function statControl(type,value){
 // Owns one disposable draft. Both cancel and backdrop dismissal discard all
 // logical media changes; physical uploads are retained by shared storage.
 export class PresetEditor {
-  constructor({request,upload,thumbnail,toast,onSaved}){
-    this.request=request;this.upload=upload;this.thumbnail=thumbnail;this.toast=toast;this.onSaved=onSaved;
+  constructor({request,upload,thumbnail,toast,onSaved,pick}){
+    this.request=request;this.upload=upload;this.pick=pick;this.thumbnail=thumbnail;this.toast=toast;this.onSaved=onSaved;
     this.mount=document.createElement('div');this.mount.className='preset-editor-backdrop';this.mount.hidden=true;
     this.mount.innerHTML=`<section class="preset-editor-modal" role="dialog" aria-modal="true" aria-labelledby="presetEditorTitle"><header><div><small>RULESET / ШАБЛОН</small><h2 id="presetEditorTitle">Шаблон персонажа</h2></div><button data-close class="subtle" type="button" aria-label="Закрыть">×</button></header><div class="preset-editor-body"><p data-meta class="muted"></p><p data-error class="definition-error" hidden></p><label>Имя шаблона<input data-name maxlength="200" required></label><label>Вид<select data-kind><option value="">Не указан</option><option value="character">Character</option><option value="npc">NPC</option><option value="monster">Monster</option></select></label><h3>Характеристики и initial ресурсов</h3><div data-stats></div><div class="preset-editor-add"><select data-add-stat></select><button data-add type="button" class="subtle">Добавить stat</button></div><h3>Действия</h3><div data-actions class="preset-editor-actions"></div><h3>Artwork</h3><div data-artwork class="preset-editor-artwork"></div><div class="preset-editor-actions"><button data-pick class="subtle" type="button">Выбрать из медиа</button><label class="file-button">Загрузить изображение<input data-upload type="file" accept="image/png,image/jpeg,image/webp" hidden></label><button data-clear class="subtle" type="button">Сбросить</button></div><div data-picker hidden class="preset-editor-picker"></div><p data-warning class="muted"></p></div><div class="preset-editor-footer"><small data-count></small><div><button data-cancel class="subtle" type="button">Отмена</button><button data-save class="primary" type="button">Сохранить</button></div></div></section>`;
     document.body.append(this.mount);
@@ -22,6 +22,7 @@ export class PresetEditor {
     this.mount.addEventListener('click',event=>{if(event.target===this.mount)this.close();});
     this.q('[data-save]').onclick=()=>this.save();this.q('[data-pick]').onclick=()=>this.openPicker();
     this.q('[data-clear]').onclick=()=>{this.draft.artwork='';this.updateArtwork();};
+    if(this.pick){this.q('[data-upload]').parentElement.hidden=true;this.q('[data-artwork]').onclick=()=>this.openPicker();this.q('[data-artwork]').style.cursor='pointer';}
     this.q('[data-upload]').onchange=async e=>{const file=e.target.files?.[0];e.target.value='';if(file)await this.uploadArtwork(file);};
     this.q('[data-add]').onclick=()=>{const id=this.q('[data-add-stat]').value,definition=this.data?.statDefinitions?.[id];if(!definition||Object.hasOwn(this.draft.stats,id))return;this.draft.stats[id]={type:definition.type,value:definition.type==='boolean'?false:definition.type==='string'?'':0};this.renderStats();};
     this.images=new Set();this.pickerURLs=new Set();this.pickerGeneration=0;this.generation=0;
@@ -79,7 +80,9 @@ export class PresetEditor {
   }
   async ensureMedia(){if(this.media)return this.media;this.media=await this.request('/api/definitions/ruleset/media/assets');return this.media;}
   async openPicker(){
-    if(!this.data)return;const target=this.q('[data-picker]');target.hidden=!target.hidden;if(target.hidden){this.pickerGeneration++;for(const url of this.pickerURLs)URL.revokeObjectURL(url);this.pickerURLs.clear();target.replaceChildren();return;}
+    if(!this.data)return;
+    if(this.pick){const generation=this.generation;try{const result=await this.pick({title:'Аватар шаблона',variant:'avatar.png'});if(result?.asset&&generation===this.generation){await this.selectAsset(result.asset.id,result.file.path.split('/').pop());}}catch(error){if(generation===this.generation)this.error(error.message);}return;}
+    const target=this.q('[data-picker]');target.hidden=!target.hidden;if(target.hidden){this.pickerGeneration++;for(const url of this.pickerURLs)URL.revokeObjectURL(url);this.pickerURLs.clear();target.replaceChildren();return;}
     try{const media=await this.ensureMedia();this.pickerPage=0;this.renderPickerPage(media.assets||[]);}catch(error){this.error(error.message);}
   }
   renderPickerPage(assets){

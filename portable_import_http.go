@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -237,6 +236,19 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 		fail(w, http.StatusConflict, "Состояние кампании изменилось: повторите preview")
 		return
 	}
+	oldMedia := ss.MediaLibrary
+	// Add imported originals to the live catalog without discarding changes made
+	// during the preview. Logical ruleset paths remain independent.
+	for _, name := range names {
+		if aid := preparedPaths[name]; aid != "" {
+			if err := addUnsortedMedia(ss, prepared[aid], filepath.Base(name)); err != nil {
+				ss.MediaLibrary = oldMedia
+				s.mu.Unlock()
+				fail(w, 400, err.Error())
+				return
+			}
+		}
+	}
 	oldRuleset := ss.Ruleset
 	oldChars := ss.CharacterInstances
 	oldSources := ss.CharacterSources
@@ -246,6 +258,12 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	ss.Ruleset = next.Ruleset
 	ss.CharacterInstances = next.Characters
 	ss.CharacterSources = next.Sources
+	// Preserve catalog resources imported concurrently while the candidate was built.
+	for aid, asset := range oldAssets {
+		if _, exists := next.Assets[aid]; !exists {
+			next.Assets[aid] = asset
+		}
+	}
 	ss.Assets = next.Assets
 	ss.UnknownTOML, ss.LibraryDirectories = next.Unknown, next.Directories
 	ss.RegistryRevision++
@@ -255,6 +273,7 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
 		ss.Ruleset, ss.CharacterInstances, ss.CharacterSources, ss.Assets = oldRuleset, oldChars, oldSources, oldAssets
+		ss.MediaLibrary = oldMedia
 		ss.UnknownTOML, ss.LibraryDirectories = oldUnknown, oldDirs
 		ss.RegistryRevision, ss.CharacterRevision, ss.LibraryRevision, s.dirty = oldReg, oldChar, oldLibrary, oldDirty
 		s.mu.Unlock()
@@ -262,6 +281,9 @@ func (s *Server) withPortableImport(w http.ResponseWriter, r *http.Request, appl
 		return
 	}
 	committed = true
+	if oldMedia.Revision != ss.MediaLibrary.Revision {
+		s.publishMediaRevision(ss)
+	}
 	s.publishRegistryChanged(ss)
 	s.refreshCharacterWatches(ss, nil, true)
 	s.mu.Unlock()
@@ -279,44 +301,8 @@ func preparePortableImportMedia(ctx context.Context, root string, f *zip.File) (
 	}
 	defer r.Close()
 	switch strings.ToLower(filepath.Ext(f.Name)) {
-	case ".png", ".jpg", ".jpeg":
-		return prepareReader(ctx, root, io.LimitReader(r, int64(maxPortableImportImage)+1), assetKindAvatar)
-	case ".webp":
-		tool, e := findVips()
-		if e != nil {
-			return Asset{}, e
-		}
-		stage, e := os.MkdirTemp(root, "atlas-import-webp-*")
-		if e != nil {
-			return Asset{}, e
-		}
-		defer os.RemoveAll(stage)
-		src := filepath.Join(stage, "image.webp")
-		dst := filepath.Join(stage, "image.png")
-		out, e := os.Create(src)
-		if e != nil {
-			return Asset{}, e
-		}
-		n, e := io.Copy(out, io.LimitReader(r, int64(maxPortableImportImage)+1))
-		closeErr := out.Close()
-		if e != nil {
-			return Asset{}, e
-		}
-		if closeErr != nil {
-			return Asset{}, closeErr
-		}
-		if n > int64(maxPortableImportImage) {
-			return Asset{}, errors.New("image too large")
-		}
-		if e = runVips(ctx, tool, stage, "copy", src, dst); e != nil {
-			return Asset{}, e
-		}
-		in, e := os.Open(dst)
-		if e != nil {
-			return Asset{}, e
-		}
-		defer in.Close()
-		return prepareReader(ctx, root, in, assetKindAvatar)
+	case ".png", ".jpg", ".jpeg", ".webp":
+		return prepareCampaignMediaReader(ctx, root, io.LimitReader(r, int64(maxPortableImportImage)+1))
 	}
 	return Asset{}, fmt.Errorf("unsupported media format %q", f.Name)
 }

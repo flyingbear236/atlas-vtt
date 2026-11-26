@@ -787,11 +787,11 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 #characterPanel .character-table-filters button{font-size:12px;min-height:32px}
 .character-item-drawer[hidden]{display:none!important}
 .character-item-drawer{position:fixed;z-index:110;box-sizing:border-box;min-width:0;overflow-y:auto;overscroll-behavior:contain;border:1px solid #6e8b74;border-radius:15px 15px 9px 9px;background:#1d2c2a;color:#e8f1e7;box-shadow:0 -12px 40px #06120ee0;padding:0 14px 18px;scrollbar-width:thin;touch-action:pan-y;}
-.character-item-drawer.dragging{transition:none!important;user-select:none}
+.character-item-drawer.dragging{transition:none!important;user-select:none;overflow:hidden}
 .character-item-drawer-handle{height:29px;display:flex;justify-content:center;align-items:center;touch-action:none;cursor:grab;position:sticky;top:0;z-index:2;background:#1d2c2a}
 .character-item-drawer-handle:active{cursor:grabbing}
 .character-item-drawer-handle span{display:block;width:55px;height:5px;border-radius:99px;background:#879e88}
-.character-item-drawer-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 13px}
+.character-item-drawer-top{touch-action:none;cursor:grab;display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 13px}
 .character-item-drawer-top strong{font-size:19px;font-weight:750;line-height:1.3;min-width:0;overflow-wrap:anywhere}
 .character-item-drawer .character-item-drawer-close{font-size:22px;line-height:1;padding:4px 10px;flex:none}
 .character-item-intro{display:flex;align-items:flex-start;gap:13px;margin-bottom:15px}
@@ -1251,3 +1251,36 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .item-create-grant-row input{flex:none}.item-create-footer{display:flex;align-items:end;justify-content:flex-end;gap:14px;padding:13px 21px;border-top:1px solid #4a6756;flex-wrap:wrap}
 .item-create-footer .item-create-field input{width:80px}.item-create-check{display:flex;align-items:center;gap:8px;flex-direction:row-reverse;justify-content:flex-end}.item-create-check input{width:17px;height:17px}
 @media(max-width:600px){.item-create-split{grid-template-columns:1fr;grid-template-rows:minmax(80px,180px) minmax(140px,240px)}.item-create-list,.item-create-preview{max-height:240px}.item-create-content{max-height:calc(100dvh - 215px)}.item-create-footer{gap:8px}.item-create-header,.item-create-tabs,.item-create-content,.item-create-footer{padding-inline:12px}}
+
+/* Compact character identity, inventory artwork and effect details. */
+#characterPanel .character-head{margin:5px 0 12px;gap:10px;align-items:center}
+#characterPanel .character-avatar-wrap{flex:0 0 64px;align-self:center}
+#characterPanel .character-avatar-wrap .character-avatar{width:64px;height:64px}
+#characterPanel #characterSubtitle{margin:3px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.35}
+#characterPanel #characterDescriptionRow{display:block;margin:4px 0 0;font-size:0}
+#characterPanel #characterDescriptionRow[hidden],#characterPanel #characterSubtitle[hidden]{display:none}
+#characterPanel #characterDescription{box-sizing:border-box;width:100%;min-width:0;max-width:100%;font:inherit;font-size:12px;line-height:1.4;padding:5px 8px;resize:vertical;color:#e9f4e7;background:#12231f;border:1px solid #78947b;border-radius:7px}
+.character-item-intro{gap:10px;margin-bottom:12px}
+.character-item-square-art{flex-basis:124px;width:124px;gap:0;align-items:stretch;justify-content:stretch}
+.character-item-square-art .character-artwork-preview{flex:1;min-height:0}
+.character-item-equipment{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:7px}
+.character-item-about .character-item-equipment .character-source-equipped{margin:0}
+.character-item-equip-action{font-size:11px;min-height:27px;padding:4px 8px}
+.character-effect-card-body{display:grid;min-width:0;gap:5px}
+.character-effect-card.with-artwork{grid-template-columns:66px minmax(0,1fr);align-items:start;gap:9px}
+.character-effect-card.with-artwork>.character-table-icon{width:66px;height:66px}
+.character-effect-row>.character-table-icon{width:48px;height:48px;flex-basis:48px}
+.character-effect-inspector .action-reference-card{padding:14px 15px 16px}
+.character-effect-reference-header{display:grid;align-items:center;gap:12px;padding:0 0 5px;min-width:0}
+.character-effect-reference-header.with-artwork{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.character-effect-reference-title{min-width:0;overflow-wrap:anywhere}
+.character-effect-reference-title h3{margin:0;font-size:19px;line-height:1.25;overflow-wrap:anywhere}
+.character-effect-reference-title p{margin:4px 0 0;overflow-wrap:anywhere}
+.character-effect-reference-block{padding:8px 0}
+.character-effect-reference-block h4{margin-bottom:5px}
+.character-effect-reference-line{padding:4px 0}
+@media(max-width:430px){.character-item-square-art{flex-basis:104px;width:104px}}
+
+.character-effect-reference-header.with-artwork-placeholder{grid-template-columns:78px minmax(0,1fr)}
+.character-effect-reference-header.with-artwork-placeholder .character-artwork-preview .character-table-icon{width:30px;height:30px;border:0;background:transparent}
+.character-effect-reference-header.with-artwork-placeholder .character-artwork-preview small{font-size:10px}

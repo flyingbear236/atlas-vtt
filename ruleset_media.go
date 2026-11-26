@@ -244,12 +244,12 @@ func (s *Server) uploadRulesetMedia(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusTooManyRequests, "Другое изображение уже обрабатывается")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, avatarUploadLimit)
-	asset, err := prepareReader(r.Context(), s.root, r.Body, assetKindAvatar)
+	r.Body = http.MaxBytesReader(w, r.Body, uploadLimit)
+	asset, err := prepareCampaignMediaReader(r.Context(), s.root, r.Body)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		status := http.StatusBadRequest
-		if errors.As(err, &tooLarge) || errors.Is(err, errAvatarUploadSize) {
+		if errors.As(err, &tooLarge) || errors.Is(err, errUploadSize) {
 			status = http.StatusRequestEntityTooLarge
 		}
 		if errors.Is(err, errVipsMissing) {
@@ -266,21 +266,34 @@ func (s *Server) uploadRulesetMedia(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "Права изменились во время загрузки")
 		return
 	}
+	asset.Filename = mediaUploadFilename(r.URL.Query().Get("filename"), asset.Filename)
 	oldAssets, oldDirty := cloneAssetRegistry(session.Assets), s.dirty
+	oldMedia := session.MediaLibrary
 	if previous, ok := session.Assets[asset.ID]; ok {
 		asset.RetentionPolicy, asset.CreatedAt, asset.OrphanSince = previous.RetentionPolicy, previous.CreatedAt, previous.OrphanSince
 	}
 	session.Assets[asset.ID] = asset
+	if err = addUnsortedMedia(session, asset, r.URL.Query().Get("filename")); err != nil {
+		session.Assets = oldAssets
+		s.discardPreparedAssetLocked(asset.ID)
+		s.mu.Unlock()
+		fail(w, 400, err.Error())
+		return
+	}
 	refreshAssetOrphans(session, time.Now())
 	s.dirty = true
 	if err = s.saveLocked(); err != nil {
 		session.Assets, s.dirty = oldAssets, oldDirty
+		session.MediaLibrary = oldMedia
 		s.discardPreparedAssetLocked(asset.ID)
 		s.mu.Unlock()
 		fail(w, http.StatusInternalServerError, "Ошибка сохранения media")
 		return
 	}
 	path := suggestMediaPath(r.URL.Query().Get("filename"), session.Ruleset.Media)
+	if session.MediaLibrary.Revision != oldMedia.Revision {
+		s.publishMediaRevision(session)
+	}
 	s.mu.Unlock()
 	reply(w, map[string]any{"asset": asset, "suggestedPath": path})
 }
@@ -307,7 +320,13 @@ func (s *Server) readRulesetMediaImage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	filename := "avatar.png"
-	if asset.Kind == assetKindToken {
+	if universalMedia(asset) {
+		filename = "media-thumb.png"
+		if err := s.ensureUniversalPart(r.Context(), asset, filename); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+	} else if asset.Kind == assetKindToken {
 		filename = "token.png"
 	}
 	http.ServeFile(w, r, filepath.Join(s.root, "assets", assetID, filename))

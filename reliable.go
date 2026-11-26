@@ -186,6 +186,7 @@ type Command struct {
 	CharacterSequence        uint64                     `json:"characterSequence,omitempty"`
 	CharacterWatch           uint64                     `json:"characterWatch,omitempty"`
 	CharacterName            string                     `json:"characterName,omitempty"`
+	CharacterDescription     *string                    `json:"characterDescription,omitempty"`
 	ItemID                   string                     `json:"itemId,omitempty"`
 	ObjectID                 string                     `json:"objectId,omitempty"`
 	ItemCount                int                        `json:"itemCount,omitempty"`

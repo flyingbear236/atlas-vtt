@@ -221,6 +221,9 @@ func mediaSourcePath(root string, asset Asset) (string, error) {
 		return "", fmt.Errorf("unsafe asset ID %q", asset.ID)
 	}
 	file := "avatar.png"
+	if universalMedia(asset) {
+		file = "original"
+	}
 	if asset.Kind == assetKindToken {
 		file = "token.png"
 	}
@@ -239,6 +242,39 @@ func writePortableMedia(ctx context.Context, dst io.Writer, root, logicalPath st
 		return fmt.Errorf("%s: %w", logicalPath, err)
 	}
 	defer file.Close()
+	if universalMedia(asset) {
+		ext := strings.ToLower(path.Ext(logicalPath))
+		same := ext == ".png" && asset.MimeType == "image/png" || (ext == ".jpg" || ext == ".jpeg") && asset.MimeType == "image/jpeg" || ext == ".webp" && asset.MimeType == "image/webp"
+		if same {
+			_, err = io.Copy(dst, contextReader{ctx, file})
+			return err
+		}
+		if ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".webp" {
+			return fmt.Errorf("unsupported media path %q", logicalPath)
+		}
+		tool, e := findVips()
+		if e != nil {
+			return e
+		}
+		tmp, e := os.MkdirTemp("", "atlas-export-media-")
+		if e != nil {
+			return e
+		}
+		defer os.RemoveAll(tmp)
+		// Convert using the same sequential, disk-backed pipeline. Never decode a
+		// full map into Go memory merely to export it under another extension.
+		out := filepath.Join(tmp, "image"+ext)
+		if e = runVips(ctx, tool, tmp, "copy", source+"[access=sequential,fail-on=error]", out); e != nil {
+			return e
+		}
+		converted, e := os.Open(out)
+		if e != nil {
+			return e
+		}
+		defer converted.Close()
+		_, e = io.Copy(dst, contextReader{ctx, converted})
+		return e
+	}
 	var sig [8]byte
 	if _, err := io.ReadFull(file, sig[:]); err != nil || !bytes.Equal(sig[:], []byte("\x89PNG\r\n\x1a\n")) {
 		return fmt.Errorf("%s: stored asset is not PNG", logicalPath)

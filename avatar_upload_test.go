@@ -111,7 +111,7 @@ func TestAvatarUploadAssignmentSharingAndAuthorization(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("shared avatar upload: %d %s", status, message)
 	}
-	if firstAsset.ID == "" || firstAsset.ID != secondAsset.ID || firstAsset.Kind != assetKindAvatar {
+	if firstAsset.ID == "" || firstAsset.ID != secondAsset.ID || !universalMedia(firstAsset) {
 		t.Fatalf("avatar representation was not shared: %#v %#v", firstAsset, secondAsset)
 	}
 	fixture.server.mu.Lock()
@@ -135,8 +135,8 @@ func TestAvatarUploadAssignmentSharingAndAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("avatar-only source was retained: %v", entries)
+	if len(entries) != 3 || !mediaReady(fixture.server.root, firstAsset, "avatar.png") {
+		t.Fatalf("expected original, metadata and shared thumbnail: %v", entries)
 	}
 }
 
@@ -285,12 +285,14 @@ func TestAvatarUploadSaveFailureRollsBackAndCleansFiles(t *testing.T) {
 	assertNoPartialAssets(t, fixture.server.root)
 }
 
-func TestAvatarHTTPSizeLimitCleansTemporaryInput(t *testing.T) {
+func TestAvatarHTTPInvalidLargeInputCleansTemporaryInput(t *testing.T) {
 	fixture := newCharacterCommandFixture(t)
+	// The avatar path uses the universal limit now. A malformed file above
+	// the old avatar-only limit is rejected as an image, not for its size.
 	body := bytes.Repeat([]byte{1}, int(avatarUploadLimit)+1)
 	status, _, message := uploadAvatarRequest(t, fixture, fixture.gm, "presetId", "wolf", body)
-	if status != http.StatusRequestEntityTooLarge {
-		t.Fatalf("avatar size status: %d %s", status, message)
+	if status != http.StatusBadRequest {
+		t.Fatalf("avatar image status: %d %s", status, message)
 	}
 	assertNoPartialAssets(t, fixture.server.root)
 }

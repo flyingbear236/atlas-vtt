@@ -95,7 +95,7 @@ func prepareDefinitionCharacters(session *Session, ruleset RulesetSnapshot, camp
 	}
 	for id, preset := range ruleset.Registry.Presets {
 		if preset.AvatarAssetID != "" {
-			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
+			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || !isCharacterArtworkAsset(asset) {
 				return nil, fmt.Errorf("preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
 			}
 		}

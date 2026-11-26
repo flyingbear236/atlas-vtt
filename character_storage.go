@@ -394,7 +394,7 @@ func initializeSessionCharacterCollections(session *Session) bool {
 }
 
 func isCharacterArtworkAsset(asset Asset) bool {
-	return asset.ID != "" && (asset.Kind == assetKindAvatar || asset.Kind == assetKindToken)
+	return asset.ID != "" && (asset.Kind == assetKindAvatar || asset.Kind == assetKindToken || universalMedia(asset))
 }
 
 // migrateLegacyTokenCharacters converts the old token-owned name/artwork model.
@@ -502,7 +502,7 @@ func validateSessionCharacterState(session *Session) error {
 	}
 	for id, preset := range registry.Presets {
 		if preset.AvatarAssetID != "" {
-			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || asset.Kind != assetKindAvatar {
+			if asset, exists := session.Assets[preset.AvatarAssetID]; !exists || !isCharacterArtworkAsset(asset) {
 				return fmt.Errorf("preset %q references unknown avatar asset %q", id, preset.AvatarAssetID)
 			}
 		}

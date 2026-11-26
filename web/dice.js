@@ -280,7 +280,14 @@ export class DiceRuntime {
 
   handleReceipt(command,message){
     if(command?.type==='actionExecute'){
-      if(message.action?.sceneId===this.sceneId)this.#updateAction(message.action,false,null,message.details?.changes);
+      if(message.action?.sceneId===this.sceneId){
+        const action=message.objectReaction?{...message.action,objectText:undefined}:message.action;
+        this.#updateAction(action,!message.replayed,null,message.details?.changes);
+        if(message.objectReaction){const event=this.events.find(row=>row.id===message.action.executionId)||this.#actionEvent(message.action);
+          if(event.roll&&message.replayed&&!this.liveActionRolls.has(event.id)){this.liveActionRolls.add(event.id);this.showTotal(event,false);}
+          if(!event.roll&&!this.liveActionNotices.has(event.id)){this.liveActionNotices.add(event.id);this.showActionNotice(event);}
+        }
+      }
       return;
     }
     if(command?.type!=='roll'||message?.sceneId!==this.sceneId)return;
@@ -305,6 +312,7 @@ export class DiceRuntime {
       event.messages=[...(previous?.messages||[])];
       event.messages[message.index]=message.message;
     }else if(previous?.messages?.length&&!event.messages?.length)event.messages=previous.messages;
+    event.objectText=event.objectText||previous?.objectText;
     event.changes=changes||previous?.changes;
     if(this.#remember(event))this.#append(event);
     else if(previous){
@@ -346,6 +354,7 @@ export class DiceRuntime {
     }
     if(typeof event.success==='boolean')append(event.success?'Успех':'Провал');
     for(const message of event.messages||[])if(message!==undefined)append(message);
+    if(event.objectText)append(event.objectText);
     for(const change of event.changes||[]){
       append(`${change.field} · ${String(change.before.value)} → ${String(change.after.value)}`);
     }
@@ -399,13 +408,19 @@ export class DiceRuntime {
     }
     message.textContent=text;
   }
-  showActionNotice(event){
+  showObjectReaction(reaction){
+    const event=this.events.find(row=>row.id===reaction.executionId);
+    if(event&&reaction.text){event.objectText=reaction.text;const row=this.entries.querySelector(`[data-event-id="${CSS.escape(event.id)}"]`);if(row)row.replaceWith(this.#row(event));}
+    if(reaction.text)this.showActionNotice({id:reaction.executionId+':reaction',sceneId:reaction.sceneId,userId:this.userId,actionName:reaction.name||'Реакция объекта',messages:[reaction.text]},false);
+  }
+  showActionNotice(event,notify=true){
     if(!this.sceneId||event.sceneId!==this.sceneId)return;
     if(!this.#shouldAnimate(event)&&event.userId!==this.userId)return;
     clearTimeout(this.overlayTimer);this.overlay.hidden=false;this.overlay.replaceChildren();
     this.overlay.classList.remove('dice-total-animate');
     this.overlay.classList.add('dice-message-only');this.overlayActionID=event.id;
     const title=document.createElement('strong');title.textContent=event.actionName||'Действие';this.overlay.append(title);
+    if(typeof event.success==='boolean'){const status=document.createElement('small');status.textContent=event.success?'Успех':'Неудача';this.overlay.append(status);}
     this.#updateOverlayMessage(event);
     if(!(event.messages||[]).some(Boolean)&&event.changes?.length){
       const details=document.createElement('div');details.className='dice-overlay-message';
@@ -416,7 +431,7 @@ export class DiceRuntime {
     }
     const text=(event.messages||[]).filter(Boolean).join(' · ');
     const duration=Math.min(7000,Math.max(3000,1800+text.length*35));
-    this.onActionPresented(event.id);
+    if(notify)this.onActionPresented(event.id);
     this.overlayTimer=setTimeout(()=>{this.overlay.hidden=true;this.overlayActionID='';},duration);
   }
   showTotal(event,animated=true){
@@ -432,6 +447,7 @@ export class DiceRuntime {
     const total=document.createElement('strong');total.textContent=current.rollTotalText??numberText(current.total);
     const formula=document.createElement('small');formula.className='dice-overlay-formula';formula.textContent=numericRollFormula(current,preview);
     this.overlay.append(total,formula);
+    if(typeof current.success==='boolean'){const status=document.createElement('small');status.className='dice-overlay-formula';status.textContent=current.success?'Успех':'Неудача';this.overlay.append(status);}
     this.overlay.classList.remove('dice-total-animate');
     if(animated){void this.overlay.offsetWidth;this.overlay.classList.add('dice-total-animate');}
     if(current.actionExecution)this.onActionPresented(current.id);

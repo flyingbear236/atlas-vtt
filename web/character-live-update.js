@@ -8,7 +8,7 @@ export function canPatchCharacterSnapshot(previous, next) {
  if(!equal(previous.permissions,next.permissions)||!equal(previous.instance?.inventory,next.instance?.inventory))return false;
  if(!equal(previous.instance?.effectIds,next.instance?.effectIds))return false;
  if(previous.instance?.name!==next.instance?.name||previous.instance?.presetId!==next.instance?.presetId||previous.instance?.persistent!==next.instance?.persistent||!!previous.instance?.materialized!==!!next.instance?.materialized)return false;
- if(previous.effective?.name!==next.effective?.name||previous.effective?.avatarAssetId!==next.effective?.avatarAssetId||!equal(previous.effective?.artwork,next.effective?.artwork))return false;
+ if(previous.effective?.description!==next.effective?.description||previous.effective?.name!==next.effective?.name||previous.effective?.avatarAssetId!==next.effective?.avatarAssetId||!equal(previous.effective?.artwork,next.effective?.artwork))return false;
  if(!sameKeys(previous.effective?.stats,next.effective?.stats)||!sameKeys(previous.effective?.resources,next.effective?.resources))return false;
  for(const [id,old] of Object.entries(previous.effective?.stats||{}))if(old?.type!==next.effective.stats[id]?.type)return false;
  for(const [id,old] of Object.entries(previous.effective?.resources||{}))if(old?.initial?.type!==next.effective.resources[id]?.initial?.type||old?.current?.type!==next.effective.resources[id]?.current?.type)return false;

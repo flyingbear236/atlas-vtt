@@ -23,3 +23,9 @@ test('a materialized character can update numeric values without remounting the 
  const b=structuredClone(a);b.instance.materialized.stats.str.value=13;b.effective.stats.str.value=13;
  assert.equal(canPatchCharacterSnapshot(a,b),true);
 });
+
+test('changing or clearing the description refreshes the character header',()=>{
+ const a=base(),b=structuredClone(a);b.effective.description='Пройдоха с района';
+ assert.equal(canPatchCharacterSnapshot(a,b),false);
+ assert.equal(canPatchCharacterSnapshot(b,a),false);
+});

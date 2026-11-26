@@ -340,8 +340,12 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				command.Element = source
 			}
 			asset, ok := session.Assets[command.Element.AssetID]
-			if !ok {
+			if !ok || !isSceneRasterKind(asset.Kind) {
 				issue = "Изображение не найдено"
+				break
+			}
+			if universalMedia(asset) && !mediaReady(s.root, asset, "scene") {
+				issue = "Сначала подготовьте изображение в медиатеке"
 				break
 			}
 			element := command.Element
@@ -390,6 +394,10 @@ func (s *Server) contentCommand(session *Session, peer *peer, command Command) {
 				asset, ok := session.Assets[*props.AssetID]
 				if !ok || !isSceneRasterKind(asset.Kind) {
 					issue = "Изображение не найдено"
+					break
+				}
+				if universalMedia(asset) && !mediaReady(s.root, asset, "scene") {
+					issue = "Сначала подготовьте изображение в медиатеке"
 					break
 				}
 				element.AssetID = asset.ID

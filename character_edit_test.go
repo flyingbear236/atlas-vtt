@@ -103,14 +103,55 @@ func TestCharacterEditNameOnlyKeepsPresetInheritance(t *testing.T) {
 	session.CharacterInstances[linked.ID] = linked
 	draft := &CharacterEditPayload{
 		ExpectedRegistryRevision: session.RegistryRevision, ExpectedInstance: ptrCharacter(linked),
-		Name: "Renamed", Stats: cloneStatValues(preset.Stats), ActionIDs: append([]string(nil), preset.ActionIDs...),
+		Name: "Renamed", Description: new(string), Stats: cloneStatValues(preset.Stats), ActionIDs: append([]string(nil), preset.ActionIDs...),
 	}
+	*draft.Description = "Искатель приключений"
 	mutation := newCharacterMutation(session)
 	if err := applyCharacterCommand(session, member, fixture.sceneA.ID, Command{Type: "characterEdit", CharacterID: linked.ID, CharacterEdit: draft}, mutation); err != nil {
 		t.Fatal(err)
 	}
 	after := session.CharacterInstances[linked.ID]
-	if after.Materialized != nil || after.Name != "Renamed" || after.PresetID != preset.ID {
+	if after.Materialized != nil || after.Name != "Renamed" || after.PresetID != preset.ID || characterDescription(after) != *draft.Description {
 		t.Fatalf("name-only edit materialized character: %+v", after)
+	}
+}
+
+func TestCharacterDescriptionUsesExistingRulesetField(t *testing.T) {
+	registry := EffectiveRegistry{}
+	original := NewCharacterInstance("hero", nil)
+	original.Persistent = true
+	var err error
+	original.V04, err = newRulesetFields(map[string]any{"description": "Старое описание", "custom": int64(7)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := cloneCharacterInstance(original)
+	desc := "  Пройдоха с района  "
+	if changed, err := setCharacterDescription(&copy, &desc); err != nil || !changed {
+		t.Fatal(changed, err)
+	}
+	if characterDescription(original) != "Старое описание" || copy.V04.values["custom"] != int64(7) {
+		t.Fatal("shared custom fields mutated")
+	}
+	effective, err := EffectiveCharacterState(copy, nil, registry)
+	if err != nil || effective.Description != "Пройдоха с района" {
+		t.Fatal(effective.Description, err)
+	}
+	data, err := EncodeCharacterTOML(copy, nil, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeCharacterTOML(data, nil, registry)
+	if err != nil || characterDescription(decoded) != effective.Description {
+		t.Fatal(characterDescription(decoded), err)
+	}
+	tooLong := strings.Repeat("я", MaxDefinitionDescriptionRunes+1)
+	before := copy.V04
+	if changed, err := setCharacterDescription(&copy, &tooLong); err == nil || changed || copy.V04 != before {
+		t.Fatal("invalid description changed state")
+	}
+	empty := ""
+	if changed, err := setCharacterDescription(&copy, &empty); err != nil || !changed || characterDescription(copy) != "" {
+		t.Fatal("cannot clear description", err)
 	}
 }

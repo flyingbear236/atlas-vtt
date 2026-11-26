@@ -55,7 +55,7 @@ export class ActionReferencePanel{
   close.onclick=()=>this.close();
   this.card=document.createElement('div');this.card.className='action-reference-card';
   this.host.append(close,this.card);document.body.append(this.host);
-  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!this.host.hidden){event.preventDefault();this.close();}});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!this.host.hidden&&!document.querySelector('dialog[open]')){event.preventDefault();this.close();}});
   window.addEventListener('resize',()=>this.position());
  }
  open(snapshot,definition,group){
@@ -81,7 +81,7 @@ export class ActionReferencePanel{
  position(){
   if(this.host.hidden)return;
   const inspector=document.querySelector('.inspector');const rect=inspector?.getBoundingClientRect();
-  const width=Math.min(555,window.innerWidth-32);
+  const width=Math.min(this.maxWidth||555,Math.max(1,window.innerWidth-32));
   this.host.style.width=`${width}px`;
   const left=rect&&rect.left-width-12>=12?rect.left-width-12:Math.max(12,(window.innerWidth-width)/2);
   this.host.style.left=`${left}px`;

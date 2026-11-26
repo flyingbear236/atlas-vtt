@@ -17,6 +17,7 @@ type CharacterEditPayload struct {
 	ExpectedInstance          *CharacterInstance   `json:"expectedInstance"`
 	ExpectedRegistryRevision  uint64               `json:"expectedRegistryRevision"`
 	Name                      string               `json:"name"`
+	Description               *string              `json:"description,omitempty"`
 	Stats                     map[string]StatValue `json:"stats"`
 	ResourceInitial           map[string]StatValue `json:"resourceInitial"`
 	ResourceCurrent           map[string]StatValue `json:"resourceCurrent"`
@@ -26,6 +27,40 @@ type CharacterEditPayload struct {
 	AvatarAssetID             string               `json:"avatarAssetId,omitempty"`
 	ArtworkPath               string               `json:"artworkPath,omitempty"`
 	PlaceholderAvatar         bool                 `json:"placeholderAvatar,omitempty"`
+}
+
+// Description already exists as a custom v0.4 character field. Keep a single
+// persisted value, preserving all other immutable ruleset fields.
+func characterDescription(instance CharacterInstance) string {
+	if instance.V04 == nil {
+		return ""
+	}
+	value, _ := instance.V04.values["description"].(string)
+	return value
+}
+
+func setCharacterDescription(instance *CharacterInstance, description *string) (bool, error) {
+	if description == nil {
+		return false, nil
+	}
+	value := strings.TrimSpace(*description)
+	if err := validateText("character description", value, MaxDefinitionDescriptionRunes, true); err != nil {
+		return false, err
+	}
+	if value == characterDescription(*instance) {
+		return false, nil
+	}
+	fields := map[string]any{}
+	if instance.V04 != nil {
+		maps.Copy(fields, instance.V04.values)
+	}
+	fields["description"] = value
+	next, err := newRulesetFields(fields)
+	if err != nil {
+		return false, err
+	}
+	instance.V04 = next
+	return true, nil
 }
 
 func applyCharacterEdit(session *Session, command Command, registry EffectiveRegistry, mutation *characterMutation) error {
@@ -131,6 +166,9 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 	}
 	instance := cloneCharacterInstance(existing)
 	instance.Name = name
+	if _, err := setCharacterDescription(&instance, draft.Description); err != nil {
+		return err
+	}
 	var preset *CharacterPresetDefinition
 	if instance.Materialized == nil && instance.PresetID != "" {
 		p, exists := registry.Presets[instance.PresetID]
@@ -233,7 +271,7 @@ func applyCharacterEdit(session *Session, command Command, registry EffectiveReg
 		instance = WithAvatarOverride(instance, "")
 	} else if draft.AvatarAssetID != "" {
 		asset, exists := session.Assets[draft.AvatarAssetID]
-		if !exists || asset.Kind != assetKindAvatar {
+		if !exists || !isCharacterArtworkAsset(asset) {
 			return errors.New("prepared avatar is not available")
 		}
 		instance = WithAvatarOverride(instance, draft.AvatarAssetID)

@@ -49,6 +49,7 @@ type ActionEvent struct {
 	RollTotalText string               `json:"rollTotalText,omitempty"`
 	Success       *bool                `json:"success,omitempty"`
 	Messages      []string             `json:"messages,omitempty"`
+	ObjectText    string               `json:"objectText,omitempty"`
 	Trace         *ActionTrace         `json:"trace,omitempty"`
 }
 
@@ -133,7 +134,7 @@ func (a actionAudience) project(e *actionJournalEntry) (ActionEvent, bool) {
 	}
 	if !peerUsesPlayerProjection(a.peer) {
 		if e.ObjectResponse != nil && e.UserID == a.peer.member.ID && e.ObjectResponse.Text != "" {
-			out.Messages = append(append([]string(nil), out.Messages...), e.ObjectResponse.Text)
+			out.ObjectText = e.ObjectResponse.Text
 		}
 		return out, true
 	}
@@ -149,7 +150,7 @@ func (a actionAudience) project(e *actionJournalEntry) (ActionEvent, bool) {
 		out.Messages = append(out.Messages, message)
 	}
 	if e.ObjectResponse != nil && e.UserID == a.peer.member.ID && e.ObjectResponse.Text != "" {
-		out.Messages = append(out.Messages, e.ObjectResponse.Text)
+		out.ObjectText = e.ObjectResponse.Text
 	}
 	return out, true
 }
@@ -371,6 +372,7 @@ func (s *Server) publishAction(session *Session, m *actionCommit) {
 		// Roll and message broadcasts remain as small as before.
 		trace := event.Trace
 		event.Messages = nil
+		event.ObjectText = "" // private reaction is delivered in the initiator receipt
 		event.Trace = nil
 		if event.Roll != nil {
 			s.send(p, map[string]any{"type": "actionRoll", "executionId": event.ExecutionID, "rollRevision": session.RollRevision, "event": event})
