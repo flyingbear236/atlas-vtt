@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -76,7 +77,16 @@ func TestCharacterEffectsForSheetIncludesDirectAndItemSources(t *testing.T) {
 	}}
 	direct := []EffectGrant{{EffectID: "training", SourceID: "hero"}}
 	details := inventoryDetailsForSheet(registry, hero.Inventory, direct...)
-	entries := characterEffectsForSheet(registry, hero, details)
+	// Item effects are sent once in itemDetails; only direct grants have a
+	// separate wire field. Reconstruct the combined view as the client does.
+	combined := func(details map[string]inventorySheetDetail) []inventorySheetEffect {
+		var entries []inventorySheetEffect
+		for _, item := range hero.Inventory {
+			entries = append(entries, details[item.ID].Effects...)
+		}
+		return append(entries, directCharacterEffectsForSheet(registry, hero, details)...)
+	}
+	entries := combined(details)
 	if len(entries) != 7 {
 		t.Fatalf("effect count %d: %+v", len(entries), entries)
 	}
@@ -99,7 +109,7 @@ func TestCharacterEffectsForSheetIncludesDirectAndItemSources(t *testing.T) {
 	// remaining equipped ring becomes the first unique effect provider.
 	hero.Inventory[0].Equipped = false
 	details = inventoryDetailsForSheet(registry, hero.Inventory, direct...)
-	entries = characterEffectsForSheet(registry, hero, details)
+	entries = combined(details)
 	byKey = map[string]inventorySheetEffect{}
 	for _, entry := range entries {
 		byKey[entry.SourceID+":"+entry.ID] = entry
@@ -112,7 +122,33 @@ func TestCharacterEffectsForSheetIncludesDirectAndItemSources(t *testing.T) {
 		t.Fatalf("direct effect: %+v", training)
 	}
 	// A character without inventory still needs its direct effect list.
-	if alone := characterEffectsForSheet(registry, CharacterInstance{ID: "hero", EffectIDs: []string{"training"}}, nil); len(alone) != 1 || alone[0].SourceID != "hero" {
+	if alone := directCharacterEffectsForSheet(registry, CharacterInstance{ID: "hero", EffectIDs: []string{"training"}}, nil); len(alone) != 1 || alone[0].SourceID != "hero" {
 		t.Fatalf("direct-only: %+v", alone)
+	}
+}
+
+func TestCharacterEffectsSnapshotProtocols(t *testing.T) {
+	session := itemCommandSession(t)
+	hero := session.CharacterInstances["hero"]
+	hero.EffectIDs = []string{"ring_strength"}
+	session.CharacterInstances[hero.ID] = hero
+	gm := &Member{GM: true}
+	legacy, err := characterSnapshotForMember(session, gm, hero.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := buildCharacterSnapshot(session, gm, hero.ID, 1, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.DirectEffects) != 0 || len(compact.CharacterEffects) != 0 || len(compact.DirectEffects) != 1 {
+		t.Fatalf("wrong effects fields in legacy or compact snapshots")
+	}
+	var combined []inventorySheetEffect
+	for _, item := range compact.Instance.Inventory {
+		combined = append(combined, compact.ItemDetails[item.ID].Effects...)
+	}
+	if len(combined) == 0 || !reflect.DeepEqual(append(combined, compact.DirectEffects...), legacy.CharacterEffects) {
+		t.Fatal("legacy and compact snapshots expose different effects")
 	}
 }

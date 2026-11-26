@@ -41,3 +41,18 @@ test('target names resolve from character definitions, including derived fields'
  assert.equal(effectTargetName('action.weapon.strike.hit.roll',null),'action.weapon.strike.hit.roll');
  assert.equal(effectTargetName('stat.focus.extra',{statDefinitions:{foc:{name:'Другой'}}}),'stat.focus.extra');
 });
+
+// The server sends inventory effects only in itemDetails, and character
+// grants separately. The combined view preserves inventory order and IDs.
+test('inventory and direct character effects combine once per snapshot',async()=>{
+ const {characterEffectsFromSnapshot}=await import('./character-effects.js');
+ const snapshot={instance:{inventory:[{id:'ring-b'},{id:'ring-a'},{id:'missing'}]},
+  itemDetails:{'ring-b':{effects:[{id:'effect.strength',sourceId:'ring-b',sourceKind:'item'}]},
+   'ring-a':{effects:[{id:'effect.strength',sourceId:'ring-a',sourceKind:'item'}]}},
+  directEffects:[{id:'effect.training',sourceId:'hero',sourceKind:'character'}]};
+ const combined=characterEffectsFromSnapshot(snapshot);
+ assert.deepEqual(combined.map(effect=>effect.sourceId),['ring-b','ring-a','hero']);
+ assert.equal(characterEffectsFromSnapshot(snapshot),combined);
+ assert.deepEqual(characterEffectsFromSnapshot({...snapshot,directEffects:[]}).map(effect=>effect.sourceId),['ring-b','ring-a']);
+ assert.equal(characterEffectsFromSnapshot({characterEffects:combined}),combined);
+});

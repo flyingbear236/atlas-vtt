@@ -191,22 +191,25 @@ func TestProfileHost(t *testing.T) {
 			scene.Bounds.Height = math.Max(scene.Bounds.Height, float64(a.Height+i*120))
 		}
 		scene.Tokens = map[string]Token{}
+		ss.CharacterInstances = make(map[string]CharacterInstance, req.Count)
+		tokenLayerID := layerIDByKind(scene, floorID, layerKindTokens)
 		for i := 0; i < req.Count; i++ {
 			key := fmt.Sprintf("t%04d", i)
 			if i == 0 {
 				key = "moving"
 			}
-			token := Token{ID: key, Name: fmt.Sprintf("Token %d", i), FloorID: floorID, LayerID: layerIDByKind(scene, floorID, layerKindTokens), X: float64(200 + (i%50)*65), Y: float64(200 + (i/50)*65), Size: 48, Color: "#c2d89b"}
+			token := Token{ID: key, Name: fmt.Sprintf("Token %d", i), FloorID: floorID, LayerID: tokenLayerID, X: float64(200 + (i%50)*65), Y: float64(200 + (i/50)*65), Size: 48, Color: "#c2d89b", Opacity: 1}
 			if req.Images > 0 {
 				token.Asset = small[i%req.Images].ID
 			}
-			scene.Tokens[key] = token
+			addBrowserToken(ss, scene, token)
 		}
+		rebuildCharacterReferences(ss)
 		scene.Revision++
 		scene.rebuildRuntime()
 		s.dirty = true
-		s.publishSceneSnapshot(ss, scene.ID)
-		reply(w, map[string]bool{"ok": true})
+		publishBrowserFixtureScene(s, ss, scene)
+		reply(w, map[string]any{"ok": true, "revision": scene.Revision})
 	})
 	mux.HandleFunc("POST /__bench/layer", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -389,7 +392,9 @@ func profileDial(t *testing.T, url string) *profileCDP {
 }
 func (d *profileCDP) call(method string, params any) json.RawMessage {
 	d.seq++
-	d.c.WriteJSON(map[string]any{"id": d.seq, "method": method, "params": params})
+	if err := d.c.WriteJSON(map[string]any{"id": d.seq, "method": method, "params": params}); err != nil {
+		d.t.Fatal(err)
+	}
 	d.c.SetReadDeadline(time.Now().Add(90 * time.Second))
 	for {
 		var msg struct {
@@ -427,6 +432,9 @@ func (d *profileCDP) call(method string, params any) json.RawMessage {
 		}
 		if msg.ID == d.seq {
 			if len(msg.Error) > 0 {
+				if method == "Runtime.evaluate" && params.(map[string]any)["expression"] == browserReadyExpression && browserNavigationError(string(msg.Error)) {
+					return nil
+				}
 				d.t.Fatalf("CDP %s: %s", method, msg.Error)
 			}
 			return msg.Result
@@ -518,12 +526,6 @@ func runBrowserMemoryCausalProfile(t *testing.T, output, chrome, hostURL string,
 	report["largeAsset"] = "one 10000x10000 tiled scene image"
 	report["comparison"] = "each variant runs in a fresh Chromium process and fresh browser profile"
 
-	browserLog, err := os.OpenFile(filepath.Join(output, "browser.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer browserLog.Close()
-
 	var csv strings.Builder
 	csv.WriteString("variant,stage,seconds_after_reset,private_mib,working_set_mib,renderer_private_mib,gpu_private_mib,js_heap_mib,atlas_bitmap_mib,atlas_fallback_mib,atlas_artwork_mib,live_bitmaps,bitmap_created,bitmap_closed,bitmap_close_calls,bitmap_created_mib,bitmap_closed_mib,http_requests,http_mib,idb_reads,decode_count,reset_frames,reset_max_frame_ms,camera_x,camera_y,camera_scale,canvas_width,canvas_height,dpr,js_errors\n")
 
@@ -555,45 +557,12 @@ func runBrowserMemoryCausalProfile(t *testing.T, output, chrome, hostURL string,
 		t.Logf("browser memory causal variant %s", variant.Name)
 		profileJSON(t, hostURL+"/__bench/scene", "POST", map[string]any{"Count": 0, "MapWidth": 10000, "MapElements": 1, "DistinctMaps": true})
 
-		profileDir, err := os.MkdirTemp(output, ".chrome-"+variant.Name+"-")
-		if err != nil {
-			t.Fatal(err)
-		}
-		args := []string{"--no-sandbox", "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--remote-debugging-port=0", "--user-data-dir=" + profileDir, "about:blank"}
-		browser := exec.Command(chrome, args...)
-		browser.Stdout = browserLog
-		browser.Stderr = browserLog
-		if err := browser.Start(); err != nil {
-			os.RemoveAll(profileDir)
-			t.Fatal(err)
-		}
-		cleanupBrowser := func() {
-			if browser.Process != nil {
-				_ = browser.Process.Kill()
-			}
-			_ = browser.Wait()
-			_ = os.RemoveAll(profileDir)
-		}
-
+		browser := startTestChrome(t, chrome, output, "browser-"+variant.Name+".log", 10*time.Second,
+			append([]string{"--no-sandbox"}, profileChromeArgs...)...)
 		func() {
-			defer cleanupBrowser()
-			var port, endpoint string
-			for i := 0; i < 100; i++ {
-				if b, err := os.ReadFile(filepath.Join(profileDir, "DevToolsActivePort")); err == nil {
-					lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-					if len(lines) >= 2 {
-						port = strings.TrimSpace(lines[0])
-						endpoint = strings.TrimSpace(lines[1])
-						break
-					}
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			if port == "" {
-				t.Fatal("browser startup")
-			}
-
-			control := profileDial(t, "ws://127.0.0.1:"+port+endpoint)
+			defer browser.close()
+			control := profileDial(t, browser.wsURL)
+			defer control.c.Close()
 			if variantIndex == 0 {
 				report["browser"] = json.RawMessage(control.call("Browser.getVersion", map[string]any{}))
 				report["gpu"] = json.RawMessage(control.call("SystemInfo.getInfo", map[string]any{}))
@@ -601,35 +570,15 @@ func runBrowserMemoryCausalProfile(t *testing.T, output, chrome, hostURL string,
 				persist()
 			}
 
-			var tabs []struct {
-				Type string `json:"type"`
-				URL  string `json:"webSocketDebuggerUrl"`
-			}
-			b := profileJSON(t, "http://127.0.0.1:"+port+"/json", "GET", nil)
-			json.Unmarshal(b, &tabs)
-			pageURL := ""
-			for _, tab := range tabs {
-				if tab.Type == "page" && tab.URL != "" {
-					pageURL = tab.URL
-					break
-				}
-			}
-			if pageURL == "" {
-				t.Fatal("browser page target not found")
-			}
-			page := profileDial(t, pageURL)
+			page := profileDial(t, browser.pageURL(""))
+			defer page.c.Close()
 			page.call("Runtime.enable", map[string]any{})
 			page.call("Network.enable", map[string]any{})
 			page.call("Page.enable", map[string]any{})
 			page.call("Performance.enable", map[string]any{})
 			page.call("HeapProfiler.enable", map[string]any{})
 			page.call("Emulation.setDeviceMetricsOverride", map[string]any{"width": 1440, "height": 1000, "deviceScaleFactor": 1, "mobile": false})
-			page.call("Page.navigate", map[string]any{"url": hostURL})
-			// Page.navigate returns before the new document has necessarily finished
-			// starting. Give Chromium a short chance to switch away from about:blank,
-			// then allow the profile app/WebSocket substantially longer than the old
-			// 5s window. Slow startup must not invalidate an otherwise useful memory run.
-			time.Sleep(300 * time.Millisecond)
+			page.navigate(hostURL)
 			ready := page.eval(`(async()=>{for(let i=0;i<400&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));if(!window.__atlasProbe)return false;__atlasProbe.enter({session:'load',key:'load-key'});for(let i=0;i<400&&!__atlasProbe.connected();i++)await new Promise(r=>setTimeout(r,50));return __atlasProbe.connected()})()`)
 			if string(ready) != "true" {
 				state := page.eval(`JSON.stringify({href:location.href,readyState:document.readyState,probe:!!window.__atlasProbe,connected:!!window.__atlasProbe&&__atlasProbe.connected()})`)
@@ -752,7 +701,7 @@ func runBrowserMemoryCausalProfile(t *testing.T, output, chrome, hostURL string,
 				page.eval(`__atlasProbe.replaceCanvas()`)
 			case "reload":
 				page.eval(`__atlasProbe.prepareReloadReset();true`)
-				page.call("Page.reload", map[string]any{})
+				page.reload()
 				reloaded := page.eval(`(async()=>{for(let i=0;i<200&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));return !!window.__atlasProbe})()`)
 				if string(reloaded) != "true" {
 					t.Fatal("profile probe did not return after reload")
@@ -862,124 +811,23 @@ func runBrowserMemoryLongSessionProfile(t *testing.T, output, chrome, hostURL st
 
 	profileJSON(t, hostURL+"/__bench/scene", "POST", map[string]any{"Count": 0, "MapWidth": 10000, "MapElements": 1, "DistinctMaps": true})
 
-	browserLog, err := os.OpenFile(filepath.Join(output, "browser.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer browserLog.Close()
-
-	profileDir, err := os.MkdirTemp(output, ".chrome-long-session-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(profileDir)
-
-	args := []string{"--no-sandbox", "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--remote-debugging-port=0", "--user-data-dir=" + profileDir, "about:blank"}
-	browser := exec.Command(chrome, args...)
-	browser.Stdout = browserLog
-	browser.Stderr = browserLog
-	if err := browser.Start(); err != nil {
-		t.Fatal(err)
-	}
-	browserExit := make(chan error, 1)
-	go func() { browserExit <- browser.Wait() }()
-	browserExited := false
-	defer func() {
-		if !browserExited && browser.Process != nil {
-			_ = browser.Process.Kill()
-			<-browserExit
-		}
-	}()
-
-	readBrowserLog := func() string {
-		_ = browserLog.Sync()
-		b, _ := os.ReadFile(filepath.Join(output, "browser.log"))
-		return strings.TrimSpace(string(b))
-	}
-	var port, endpoint string
-	devToolsFromLog := func() bool {
-		const marker = "DevTools listening on ws://127.0.0.1:"
-		for _, line := range strings.Split(readBrowserLog(), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, marker) {
-				continue
-			}
-			rest := strings.TrimPrefix(line, marker)
-			slash := strings.IndexByte(rest, '/')
-			if slash <= 0 {
-				continue
-			}
-			port = rest[:slash]
-			endpoint = rest[slash:]
-			return true
-		}
-		return false
-	}
-	startupDeadline := time.NewTimer(30 * time.Second)
-	defer startupDeadline.Stop()
-	startupTicker := time.NewTicker(100 * time.Millisecond)
-	defer startupTicker.Stop()
-startupWait:
-	for {
-		select {
-		case err := <-browserExit:
-			browserExited = true
-			t.Fatalf("browser exited before DevTools startup: %v\n%s", err, readBrowserLog())
-		case <-startupTicker.C:
-			if b, err := os.ReadFile(filepath.Join(profileDir, "DevToolsActivePort")); err == nil {
-				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-				if len(lines) >= 2 {
-					port = strings.TrimSpace(lines[0])
-					endpoint = strings.TrimSpace(lines[1])
-					break startupWait
-				}
-			}
-			// Chrome can expose a working DevTools endpoint without leaving
-			// DevToolsActivePort in the requested profile directory. The endpoint
-			// printed by Chrome is authoritative and equivalent for CDP startup.
-			if devToolsFromLog() {
-				break startupWait
-			}
-		case <-startupDeadline.C:
-			if devToolsFromLog() {
-				break startupWait
-			}
-			t.Fatalf("browser did not expose a DevTools endpoint within 30s\n%s", readBrowserLog())
-		}
-	}
-
-	control := profileDial(t, "ws://127.0.0.1:"+port+endpoint)
+	browser := startTestChrome(t, chrome, output, "browser.log", 30*time.Second,
+		append([]string{"--no-sandbox"}, profileChromeArgs...)...)
+	defer browser.close()
+	control := profileDial(t, browser.wsURL)
 	report["browser"] = json.RawMessage(control.call("Browser.getVersion", map[string]any{}))
 	report["gpu"] = json.RawMessage(control.call("SystemInfo.getInfo", map[string]any{}))
 	report["viewport"] = "1440x1000 DPR1, headless, GPU not disabled"
 	persist()
 
-	var tabs []struct {
-		Type string `json:"type"`
-		URL  string `json:"webSocketDebuggerUrl"`
-	}
-	b := profileJSON(t, "http://127.0.0.1:"+port+"/json", "GET", nil)
-	json.Unmarshal(b, &tabs)
-	pageURL := ""
-	for _, tab := range tabs {
-		if tab.Type == "page" && tab.URL != "" {
-			pageURL = tab.URL
-			break
-		}
-	}
-	if pageURL == "" {
-		t.Fatal("browser page target not found")
-	}
-
-	page := profileDial(t, pageURL)
+	page := profileDial(t, browser.pageURL(""))
 	page.call("Runtime.enable", map[string]any{})
 	page.call("Network.enable", map[string]any{})
 	page.call("Page.enable", map[string]any{})
 	page.call("Performance.enable", map[string]any{})
 	page.call("HeapProfiler.enable", map[string]any{})
 	page.call("Emulation.setDeviceMetricsOverride", map[string]any{"width": 1440, "height": 1000, "deviceScaleFactor": 1, "mobile": false})
-	page.call("Page.navigate", map[string]any{"url": hostURL})
-	time.Sleep(300 * time.Millisecond)
+	page.navigate(hostURL)
 	ready := page.eval(`(async()=>{for(let i=0;i<400&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));if(!window.__atlasProbe)return false;__atlasProbe.enter({session:'load',key:'load-key'});for(let i=0;i<400&&!__atlasProbe.connected();i++)await new Promise(r=>setTimeout(r,50));return __atlasProbe.connected()})()`)
 	if string(ready) != "true" {
 		state := page.eval(`JSON.stringify({href:location.href,readyState:document.readyState,probe:!!window.__atlasProbe,connected:!!window.__atlasProbe&&__atlasProbe.connected()})`)
@@ -1237,12 +1085,18 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	if chrome == "" {
 		t.Fatal("ATLAS_CHROME required")
 	}
-	os.MkdirAll(output, 0755)
+	if err := os.MkdirAll(output, 0755); err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	exe, _ := os.Executable()
 	cmd := exec.Command(exe, "-test.run=^TestProfileHost$", "-test.timeout=30m")
 	cmd.Env = append(os.Environ(), "ATLAS_PROFILE_HOST="+root)
-	logfile, _ := os.Create(filepath.Join(output, "host.log"))
+	logfile, err := os.Create(filepath.Join(output, "host.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logfile.Close()
 	cmd.Stdout = logfile
 	cmd.Stderr = logfile
 	if e := cmd.Start(); e != nil {
@@ -1256,7 +1110,6 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 			_ = cmd.Process.Kill()
 			<-waitDone
 		}
-		logfile.Close()
 	}()
 	readHostLog := func() string {
 		b, _ := os.ReadFile(filepath.Join(output, "host.log"))
@@ -1284,12 +1137,25 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	if host.URL == "" {
 		t.Fatalf("profile host did not become ready within 60s\nhost.log:\n%s", readHostLog())
 	}
+	stopHost := func() {
+		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
+		err := <-waitDone
+		hostExited = true
+		if err != nil {
+			t.Fatalf("profile host shutdown: %v\nhost.log:\n%s", err, readHostLog())
+		}
+	}
 	report := map[string]any{"go": runtime.Version(), "os": runtime.GOOS, "cores": runtime.NumCPU(), "origin": host.URL}
 	var rows []map[string]any
 	persist := func() {
 		report["rows"] = rows
-		b, _ := json.MarshalIndent(report, "", "  ")
-		os.WriteFile(filepath.Join(output, "results.json"), b, 0600)
+		b, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(output, "results.json"), b, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Upload deterministic detailed JPEG maps. Source generation is driver-side.
 	type mapSpec struct{ width, height, seed int }
@@ -1387,104 +1253,27 @@ func runProfileAtlas(t *testing.T, output, profileMode string) {
 	debug.FreeOSMemory()
 	if profileMode == "memory" {
 		runBrowserMemoryCausalProfile(t, output, chrome, host.URL, report, &rows, persist)
-		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
-		cmd.Wait()
+		stopHost()
 		persist()
 		return
 	}
 	if profileMode == "memory-long" {
 		runBrowserMemoryLongSessionProfile(t, output, chrome, host.URL, report, &rows, persist)
-		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
-		cmd.Wait()
+		stopHost()
 		persist()
 		return
 	}
 	// Start Chrome only after costly fixture preparation. Keeping an idle headless
 	// browser alive while three large pyramids are built made the CDP baseline
 	// depend on unrelated CPU pressure and could trigger its startup watchdog.
-	profile, err := os.MkdirTemp(output, ".chrome-profile-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(profile)
-	chromeArgs := []string{"--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"}
-	if profileMode == "memory" || profileMode == "cache-return" {
-		// The browser has a disposable local-only profile and loads only the
-		// isolated localhost fixture. Some managed Windows environments deny the
-		// GPU child process before page startup unless its sandbox is disabled.
+	chromeArgs := profileChromeArgs
+	if profileMode == "cache-return" {
+		// The disposable browser loads only the isolated localhost fixture.
 		chromeArgs = append([]string{"--no-sandbox"}, chromeArgs...)
 	}
-	browser := exec.Command(chrome, chromeArgs...)
-	browserLog, _ := os.Create(filepath.Join(output, "browser.log"))
-	browser.Stdout = browserLog
-	browser.Stderr = browserLog
-	if e := browser.Start(); e != nil {
-		t.Fatal(e)
-	}
-	browserExit := make(chan error, 1)
-	go func() { browserExit <- browser.Wait() }()
-	browserExited := false
-	defer func() {
-		if !browserExited && browser.Process != nil {
-			_ = browser.Process.Kill()
-			<-browserExit
-		}
-		browserLog.Close()
-	}()
-	readBrowserLog := func() string {
-		_ = browserLog.Sync()
-		data, _ := os.ReadFile(filepath.Join(output, "browser.log"))
-		return strings.TrimSpace(string(data))
-	}
-	var port, endpoint string
-	devToolsFromLog := func() bool {
-		const marker = "DevTools listening on ws://127.0.0.1:"
-		for _, line := range strings.Split(readBrowserLog(), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, marker) {
-				continue
-			}
-			rest := strings.TrimPrefix(line, marker)
-			slash := strings.IndexByte(rest, '/')
-			if slash <= 0 {
-				continue
-			}
-			port = rest[:slash]
-			endpoint = rest[slash:]
-			return true
-		}
-		return false
-	}
-	startupDeadline := time.NewTimer(30 * time.Second)
-	defer startupDeadline.Stop()
-	startupTicker := time.NewTicker(100 * time.Millisecond)
-	defer startupTicker.Stop()
-startupWait:
-	for {
-		select {
-		case e := <-browserExit:
-			browserExited = true
-			t.Fatalf("browser exited before DevTools startup: %v\n%s", e, readBrowserLog())
-		case <-startupTicker.C:
-			if b, e := os.ReadFile(filepath.Join(profile, "DevToolsActivePort")); e == nil {
-				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-				if len(lines) >= 2 {
-					port = strings.TrimSpace(lines[0])
-					endpoint = strings.TrimSpace(lines[1])
-					break startupWait
-				}
-			}
-			if devToolsFromLog() {
-				break startupWait
-			}
-		case <-startupDeadline.C:
-			if devToolsFromLog() {
-				break startupWait
-			}
-			t.Fatalf("browser did not expose a DevTools endpoint within 30s\n%s", readBrowserLog())
-		}
-	}
-	control := profileDial(t, "ws://127.0.0.1:"+port+endpoint)
+	browser := startTestChrome(t, chrome, output, "browser.log", 30*time.Second, chromeArgs...)
+	defer browser.close()
+	control := profileDial(t, browser.wsURL)
 	report["browser"] = json.RawMessage(control.call("Browser.getVersion", map[string]any{}))
 	report["viewport"] = "1440x1000 DPR1, headless, GPU not disabled"
 	report["gpu"] = json.RawMessage(control.call("SystemInfo.getInfo", map[string]any{}))
@@ -1503,64 +1292,29 @@ startupWait:
 	profileJSON(t, host.URL+"/__bench/scene", "POST", sceneSetup)
 	var pages []*profileCDP
 	controls := []*profileCDP{control}
-	pageCount := 0
-	newPage := func() *profileCDP {
-		if pageCount > 0 {
-			profileDir := t.TempDir()
-			b := exec.Command(chrome, "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--remote-debugging-port=0", "--user-data-dir="+profileDir, "about:blank")
-			if e := b.Start(); e != nil {
-				t.Fatal(e)
-			}
-			t.Cleanup(func() { b.Process.Kill(); b.Wait() })
-			var ep string
-			port = ""
-			for i := 0; i < 100; i++ {
-				if data, e := os.ReadFile(filepath.Join(profileDir, "DevToolsActivePort")); e == nil {
-					lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-					port = strings.TrimSpace(lines[0])
-					ep = strings.TrimSpace(lines[1])
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			if port == "" {
-				t.Fatal("additional browser startup")
-			}
-			control = profileDial(t, "ws://127.0.0.1:"+port+ep)
-			controls = append(controls, control)
+	openProfileScene := func(d *profileCDP) {
+		ready := d.eval(`(async()=>{
+		 const wait=async test=>{for(let i=0;i<100;i++){if(test())return true;await new Promise(r=>setTimeout(r,50))}return false};
+		 __atlasProbe.enter({session:'load',key:'load-key'});
+		 if(!await wait(()=>__atlasProbe.connected()))throw Error('Profile campaign did not connect');
+		 __atlasProbe.openScene('load-scene');
+		 return await wait(()=>__atlasProbe.ready());
+		})()`)
+		if string(ready) != "true" {
+			t.Fatal("profile scene did not open")
 		}
-		pageCount++
-		target := control.call("Target.createTarget", map[string]any{"url": "about:blank"})
-		var id struct {
-			ID string `json:"targetId"`
-		}
-		json.Unmarshal(target, &id)
-		var tabs []struct {
-			ID  string `json:"id"`
-			URL string `json:"webSocketDebuggerUrl"`
-		}
-		b := profileJSON(t, "http://127.0.0.1:"+port+"/json", "GET", nil)
-		json.Unmarshal(b, &tabs)
-		var url string
-		for _, tab := range tabs {
-			if tab.ID == id.ID {
-				url = tab.URL
-			}
-		}
-		d := profileDial(t, url)
+	}
+	newPage := func(instance *testChrome, control *profileCDP) *profileCDP {
+		d := instance.newPage(control)
 		d.call("Runtime.enable", map[string]any{})
 		d.call("Network.enable", map[string]any{})
 		d.call("Page.enable", map[string]any{})
 		d.call("Emulation.setDeviceMetricsOverride", map[string]any{"width": 1440, "height": 1000, "deviceScaleFactor": 1, "mobile": false})
-		d.call("Page.navigate", map[string]any{"url": host.URL})
-		time.Sleep(300 * time.Millisecond)
-		ready := d.eval(`(async()=>{for(let i=0;i<100&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));__atlasProbe.enter({session:'load',key:'load-key'});for(let i=0;i<100&&!__atlasProbe.connected();i++)await new Promise(r=>setTimeout(r,50));__atlasProbe.openScene('load-scene');for(let i=0;i<100&&!__atlasProbe.ready();i++)await new Promise(r=>setTimeout(r,50));return __atlasProbe.ready()})()`)
-		if string(ready) != "true" {
-			t.Fatal("profile scene did not open")
-		}
+		d.navigate(host.URL)
+		openProfileScene(d)
 		return d
 	}
-	pages = append(pages, newPage())
+	pages = append(pages, newPage(browser, control))
 	browserMem := func() map[string]any {
 		var info struct {
 			ProcessInfo []struct {
@@ -1843,16 +1597,12 @@ startupWait:
 		if pressureAReturn.Source != "indexeddb" || pressureAReturn.HTTPRequests != 0 || pressureAReturn.AssetHTTPBytes != 0 || pressureAReturn.DiskHitDelta <= 0 || pressureAReturn.DecodeDelta <= 0 {
 			t.Errorf("post-pressure RAM-only clear did not return from IndexedDB: source=%s HTTP requests=%d asset bytes=%d IndexedDB hits=%d decodes=%d", pressureAReturn.Source, pressureAReturn.HTTPRequests, pressureAReturn.AssetHTTPBytes, pressureAReturn.DiskHitDelta, pressureAReturn.DecodeDelta)
 		}
-		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
-		if err := <-waitDone; err != nil {
-			t.Errorf("profile host shutdown: %v\nhost.log:\n%s", err, readHostLog())
-		}
-		hostExited = true
+		stopHost()
 		persist()
 		return
 	}
 
-	measure := func(name, mode string, seconds int) {
+	measureWithSetup := func(name, mode string, seconds int, setup func()) {
 		t.Logf("scenario %s (%ds)", name, seconds)
 		for _, p := range pages {
 			p.eval(`__atlasProbe.stop();__atlasProbe.reset();true`)
@@ -1870,6 +1620,9 @@ startupWait:
 		before := readProcessStats(host.PID)
 		pages[0].call("Profiler.enable", map[string]any{})
 		pages[0].call("Profiler.start", map[string]any{})
+		if setup != nil {
+			setup()
+		}
 		var peak uint64
 		for time.Since(start) < time.Duration(seconds)*time.Second {
 			v := readProcessStats(host.PID).WorkingSet
@@ -1881,23 +1634,37 @@ startupWait:
 		after := readProcessStats(host.PID)
 		duration := time.Since(start).Seconds()
 		cpuProfile := pages[0].call("Profiler.stop", map[string]any{})
-		os.WriteFile(filepath.Join(output, name+".cpuprofile.json"), cpuProfile, 0600)
+		if err := os.WriteFile(filepath.Join(output, name+".cpuprofile.json"), cpuProfile, 0600); err != nil {
+			t.Fatal(err)
+		}
 		var clients []any
-		for _, p := range pages {
+		for i, p := range pages {
 			p.eval(`__atlasProbe.stop();true`)
 			sample := p.eval(`__atlasProbe.sample()`)
 			var checked struct {
-				FPS float64 `json:"fps"`
+				FPS   float64 `json:"fps"`
+				Frame struct {
+					Count int `json:"count"`
+				} `json:"frame"`
+				Latency struct {
+					Count int `json:"count"`
+				} `json:"latency"`
 			}
-			json.Unmarshal(sample, &checked)
-			if checked.FPS == 0 {
-				t.Fatalf("inactive browser invalidates %s: %s", name, sample)
+			if err := json.Unmarshal(sample, &checked); err != nil || checked.FPS <= 0 || checked.Frame.Count == 0 {
+				t.Fatalf("inactive browser client %d invalidates %s: %s (%v)", i+1, name, sample, err)
+			}
+			if mode == "move" && i > 0 && checked.Latency.Count == 0 {
+				t.Fatalf("browser client %d did not receive movement in %s: %s", i+1, name, sample)
+			}
+			if len(p.Errors) > 0 {
+				t.Fatalf("browser client %d errors in %s: %v", i+1, name, p.Errors)
 			}
 			clients = append(clients, map[string]any{"metrics": json.RawMessage(sample), "httpBytes": p.HTTPBytes, "httpLoads": p.Requests, "wsIn": p.WSIn, "wsOut": p.WSOut, "errors": p.Errors})
 		}
 		rows = append(rows, map[string]any{"name": name, "seconds": duration, "clients": clients, "browser": browserMem(), "serverCPUSeconds": after.CPUSeconds - before.CPUSeconds, "serverCPUPercentOneCore": 100 * (after.CPUSeconds - before.CPUSeconds) / duration, "serverWorkingSet": after.WorkingSet, "serverPeakWorkingSet": peak, "serverPrivateBytes": after.PrivateBytes})
 		persist()
 	}
+	measure := func(name, mode string, seconds int) { measureWithSetup(name, mode, seconds, nil) }
 
 	if profileMode == "layer-bake" {
 		report["profile"] = "visual-layer-bake-break-even"
@@ -2095,8 +1862,7 @@ startupWait:
 			b := profileJSON(t, host.URL+"/__bench/profile?name="+name, "GET", nil)
 			os.WriteFile(filepath.Join(output, "server."+name+".pprof"), b, 0600)
 		}
-		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
-		cmd.Wait()
+		stopHost()
 		cpu, _ := os.ReadFile(filepath.Join(root, "server.cpu.pprof"))
 		os.WriteFile(filepath.Join(output, "server.cpu.pprof"), cpu, 0600)
 		if len(page.Errors) > 0 {
@@ -2139,43 +1905,66 @@ startupWait:
 			b := profileJSON(t, host.URL+"/__bench/profile?name="+name, "GET", nil)
 			os.WriteFile(filepath.Join(output, "server."+name+".pprof"), b, 0600)
 		}
-		profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
-		cmd.Wait()
+		stopHost()
 		cpu, _ := os.ReadFile(filepath.Join(root, "server.cpu.pprof"))
 		os.WriteFile(filepath.Join(output, "server.cpu.pprof"), cpu, 0600)
 		persist()
 		return
 	}
+	loadScene := func(setup map[string]int) {
+		t.Helper()
+		var fixture struct {
+			Revision uint64 `json:"revision"`
+		}
+		raw := profileJSON(t, host.URL+"/__bench/scene", "POST", setup)
+		if err := json.Unmarshal(raw, &fixture); err != nil || fixture.Revision == 0 {
+			t.Fatalf("profile fixture missing revision: %s", raw)
+		}
+		for _, p := range pages {
+			p.eval(fmt.Sprintf(`(async()=>{
+			 for(let i=0;i<100;i++){
+			  if(__atlasProbe.lifecycle().sceneState.sceneRevision===%d){__atlasProbe.fit();return true}
+			  await new Promise(r=>setTimeout(r,50));
+			 }
+			 throw Error('Profile fixture revision %d did not arrive: '+JSON.stringify(__atlasProbe.lifecycle().sceneState));
+			})()`, fixture.Revision, fixture.Revision))
+		}
+	}
 	for _, width := range []int{4096, 8192, 10000, 32768} {
 		if os.Getenv("ATLAS_PROFILE_SKIP_MAPS") != "" && width != 4096 {
 			continue
 		}
-		profileJSON(t, host.URL+"/__bench/scene", "POST", map[string]int{"Count": 100, "MapWidth": width})
-		pages[0].eval(`__atlasProbe.fit();true`)
+		loadScene(map[string]int{"Count": 100, "MapWidth": width})
 		measure(fmt.Sprintf("map_%d_pan", width), "pan", 8)
 	}
 	for _, count := range []int{100, 500, 1000, 2000} {
-		profileJSON(t, host.URL+"/__bench/scene", "POST", map[string]int{"Count": count, "Images": 0})
-		pages[0].eval(fmt.Sprintf(`(async()=>{for(let i=0;i<100&&!__atlasProbe.scene(%d);i++)await new Promise(r=>setTimeout(r,50));__atlasProbe.fit();return true})()`, count))
+		loadScene(map[string]int{"Count": count, "Images": 0})
 		measure(fmt.Sprintf("tokens_%d_render", count), "render", 8)
 		measure(fmt.Sprintf("tokens_%d_pan", count), "pan", 8)
 		rows = append(rows, map[string]any{"name": fmt.Sprintf("storage_%d", count), "metrics": profileJSON(t, host.URL+"/__bench/storage", "GET", nil)})
 		persist()
 	}
-	pages = append(pages, newPage(), newPage())
+	for i := 2; i <= 3; i++ {
+		instance := startTestChrome(t, chrome, output, fmt.Sprintf("browser-%d.log", i), 10*time.Second, chromeArgs...)
+		defer instance.close()
+		browserControl := profileDial(t, instance.wsURL)
+		controls = append(controls, browserControl)
+		pages = append(pages, newPage(instance, browserControl))
+	}
 	for _, p := range pages {
 		p.eval(`__atlasProbe.view();true`)
-	} // Accessible only through eval? module variables require probe below.
+	}
 	measure("2000_tokens_3_clients_move", "move", 30)
 	for _, p := range pages {
 		p.eval(`__atlasProbe.fit();true`)
 	}
-	profileJSON(t, host.URL+"/__bench/scene", "POST", map[string]int{"Count": 2000, "Images": 128})
-	measure("2000_tokens_128_images_cold", "render", 15)
+	measureWithSetup("2000_tokens_128_images_cold", "render", 15, func() {
+		loadScene(map[string]int{"Count": 2000, "Images": 128})
+	})
 	measure("2000_tokens_128_images_pan", "pan", 20)
-	pages[0].call("Page.reload", map[string]any{})
-	time.Sleep(500 * time.Millisecond)
-	pages[0].eval(`(async()=>{for(let i=0;i<100&&!window.__atlasProbe;i++)await new Promise(r=>setTimeout(r,50));__atlasProbe.enter({session:'load',key:'load-key'});for(let i=0;i<100&&!__atlasProbe.connected();i++)await new Promise(r=>setTimeout(r,50));__atlasProbe.openScene('load-scene');for(let i=0;i<100&&!__atlasProbe.ready();i++)await new Promise(r=>setTimeout(r,50));__atlasProbe.fit();return true})()`)
+	pages[0].reload()
+	openProfileScene(pages[0])
+	pages[0].eval(`__atlasProbe.fit();true`)
 	measure("warm_reopen", "render", 10)
 	for i := 0; i < 6; i++ {
 		measure(fmt.Sprintf("long_session_%02d", i+1), "pan", 30)
@@ -2184,8 +1973,7 @@ startupWait:
 		b := profileJSON(t, host.URL+"/__bench/profile?name="+name, "GET", nil)
 		os.WriteFile(filepath.Join(output, "server."+name+".pprof"), b, 0600)
 	}
-	profileJSON(t, host.URL+"/__bench/stop", "POST", nil)
-	cmd.Wait()
+	stopHost()
 	cpu, _ := os.ReadFile(filepath.Join(root, "server.cpu.pprof"))
 	os.WriteFile(filepath.Join(output, "server.cpu.pprof"), cpu, 0600)
 	persist()

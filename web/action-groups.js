@@ -54,23 +54,26 @@ export function shortActionFormula(preview) {
   return dice.join(' + ') + (modifier > 0 ? `${dice.length ? ' + ' : ''}${modifier}` : modifier < 0 ? ` − ${-modifier}` : '') || '0';
 }
 
-// Display only the additive part known before choosing targets and rolling.
-// Notes mean the final result may differ; the server remains authoritative.
+// Show the known additive portion separately from terms that require execution.
+// Preserve the strict shortActionFormula contract for callers that need a total.
 export function knownActionFormula(preview) {
- if(!preview?.parts?.length)return null;
- const dice=[];let modifier=0,partial=!!preview.notes?.length;
- for(const part of preview.parts){
-  const sign=part.sign==='-'?-1:1;
-  if(part.value==null||part.value===''){
-   if(!/^\d+d\d+$/i.test(part.label)||sign<0)return null;
-   dice.push(part.label.replace(/^1d/i,'d'));
-  }else{
-   const number=Number(part.value);
-   if(!Number.isFinite(number)){partial=true;continue;}
-   modifier+=sign*number;
+  if (!preview?.parts?.length) return null;
+  const parts = [];
+  let partial = Boolean(preview.notes?.length);
+  let hasDice = false;
+  for (const part of preview.parts) {
+    const hasValue = part.value != null && part.value !== '';
+    if (!hasValue && /^\d+d\d+$/i.test(part.label)) {
+      if (part.sign === '-') return null;
+      hasDice = true;
+      parts.push(part);
+    } else if (hasValue && Number.isSafeInteger(Number(part.value)) && /^-?\d+$/.test(String(part.value))) {
+      parts.push(part);
+    } else {
+      partial = true;
+    }
   }
- }
- if(!dice.length)return null;
- const total=dice.join(' + ')+(modifier>0?' + '+modifier:modifier<0?' − '+(-modifier):'');
- return {text:total,partial};
+  if (!hasDice) return null;
+  const text = shortActionFormula({parts});
+  return text ? {text, partial} : null;
 }

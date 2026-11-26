@@ -2,6 +2,20 @@ import {ActionReferencePanel} from './action-reference.js';
 
 // Both the inventory drawer and the character-wide effects tab use the same
 // server-provided entries. Never infer an active bonus from the TOML formula.
+// Item effects are already present in itemDetails. Compose the character-wide
+// list once per immutable snapshot to avoid duplicating them on the wire.
+const combinedEffects = new WeakMap();
+export function characterEffectsFromSnapshot(snapshot){
+ if(!snapshot)return [];
+ if(Array.isArray(snapshot.characterEffects))return snapshot.characterEffects;
+ let effects=combinedEffects.get(snapshot);
+ if(effects)return effects;
+ effects=[];
+ for(const item of snapshot.instance?.inventory||[])effects.push(...(snapshot.itemDetails?.[item.id]?.effects||[]));
+ effects.push(...(snapshot.directEffects||[]));
+ combinedEffects.set(snapshot,effects);
+ return effects;
+}
 export function effectStatus(effect){
  // Older snapshots can have state="active" with a later "Снят" status.
  if(/снят|unique|не складывается/i.test(effect?.status||''))return 'inactive';
@@ -113,7 +127,7 @@ export class EffectReferencePanel extends ActionReferencePanel{
  refresh(snapshot){
   if(this.host.hidden)return;
   if(!snapshot||snapshot.characterId!==this.characterId){this.close();return;}
-  const effect=(snapshot.characterEffects||[]).find(entry=>effectKey(entry)===this.key);
+  const effect=characterEffectsFromSnapshot(snapshot).find(entry=>effectKey(entry)===this.key);
   if(!effect){this.close();return;}
   if(this.snapshotRevision!==snapshot.revision){const scroll=this.card.scrollTop;this.renderEffect(effect,snapshot);this.card.scrollTop=scroll;this.snapshotRevision=snapshot.revision;}
   this.position();

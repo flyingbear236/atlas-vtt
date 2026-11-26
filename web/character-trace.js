@@ -77,11 +77,20 @@ export class CharacterTracePanel{
  }
  open(snapshot,id){
   if(!this.host.hidden&&this.edits.size){
-   if(this.openId===id){this.position();return true;}
+   if(this.openId===id&&this.snapshot?.characterId===snapshot.characterId){this.position();return true;}
    if(!confirm('Несохранённые изменения источников будут потеряны. Открыть другую характеристику?'))return false;
   }
   const model=buildStatTraceModel(snapshot,id);if(!model)return false;this.snapshot=snapshot;this.model=model;this.openId=id;this.edits.clear();this.render();this.host.hidden=false;this.position();return true;
  }
+ loading(snapshot,id){
+  if(this.edits.size){if(this.openId===id&&this.snapshot?.characterId===snapshot.characterId)return false;if(!confirm('Несохранённые изменения источников будут потеряны. Открыть другую характеристику?'))return false;}
+  this.snapshot=snapshot;this.openId=id;this.edits.clear();this.model=null;
+  const close=this.elt('button','character-trace-close','×');close.onclick=()=>this.close();
+  const card=this.elt('div','character-trace-card');card.append(this.elt('h2','',snapshot.statDefinitions?.[id]?.name||id));
+  const value=snapshot.effective?.resources?.[id]?.current?.value??snapshot.effective?.stats?.[id]?.value;
+  card.append(this.elt('strong','',numberText(value)));this.status=this.elt('p','','Загрузка расчёта…');card.append(this.status);this.host.replaceChildren(close,card);this.host.hidden=false;this.position();return true;
+ }
+ traceError(message){if(!this.model&&this.status?.isConnected)this.status.textContent=message;}
  close(force=false){
   if(!force&&this.edits.size&&!confirm('Изменения источников будут потеряны. Закрыть инспектор?'))return false;
   this.host.hidden=true;this.edits.clear();this.model=null;this.snapshot=null;this.openId='';this.host.replaceChildren();return true;

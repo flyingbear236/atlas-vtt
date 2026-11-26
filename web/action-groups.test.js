@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import {strict as assert} from 'node:assert';
-import {groupSheetActionSources, shortActionFormula} from './action-groups.js';
+import {groupSheetActionSources, shortActionFormula, knownActionFormula} from './action-groups.js';
 const snapshot = {
   actions: {
     'blade.hit': {v04: true}, 'blade.damage': {v04: true},
@@ -34,4 +34,15 @@ test('unequipped item choices remain visible as separate sources without becomin
  assert.deepEqual(groups.map(group=>group.sourceId),['knife1','knife2','knife3']);
  assert.deepEqual(groups[2].choices.map(choice=>choice.actionId),['blade.hit','blade.damage']);
  assert.equal(snapshot.effective.actionSources.some(row=>row.sourceId==='knife3'),false);
+});
+
+test('known action summary distinguishes complete, partial and unavailable values',()=>{
+ const parts=[{label:'1d20'},{label:'Сила',value:'3'},{label:'Кольцо',value:'2'}];
+ assert.deepEqual(knownActionFormula({parts}),{text:'d20 + 5',partial:false});
+ assert.deepEqual(knownActionFormula({parts:[...parts,{label:'Цель',value:'?'}],notes:['Зависит от цели']}),{text:'d20 + 5',partial:true});
+ assert.deepEqual(knownActionFormula({parts,notes:['Сложная часть формулы']}),{text:'d20 + 5',partial:true});
+ assert.deepEqual(knownActionFormula({parts:[{label:'1d6'},{label:'Штраф',value:'2',sign:'-'}]}),{text:'d6 − 2',partial:false});
+ assert.equal(knownActionFormula({parts:[{label:'Цель',value:'?'}]}),null);
+ assert.equal(knownActionFormula({parts:[],notes:['Расчёт при выполнении']}),null);
+ assert.equal(knownActionFormula(undefined),null);
 });

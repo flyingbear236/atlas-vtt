@@ -4,11 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -33,36 +30,10 @@ func TestBrowser(t *testing.T) {
 	s := testServer(t, t.TempDir())
 	ts := httptest.NewServer(s.routes())
 	defer ts.Close()
-	profile := t.TempDir()
-	cmd := exec.Command(chrome, "--no-sandbox", "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-default-apps", "--disable-background-networking", "--remote-debugging-port=0", "--user-data-dir="+profile, "about:blank")
-	if e := cmd.Start(); e != nil {
-		t.Fatal(e)
-	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }()
-	var port string
-	for i := 0; i < 100; i++ {
-		if b, e := os.ReadFile(filepath.Join(profile, "DevToolsActivePort")); e == nil {
-			port = strings.Split(string(b), "\n")[0]
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if port == "" {
-		t.Fatal("Chrome did not start")
-	}
-	res, e := http.Get("http://127.0.0.1:" + port + "/json/version")
-	if e != nil {
-		t.Fatal(e)
-	}
-	var version struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	json.NewDecoder(res.Body).Decode(&version)
-	res.Body.Close()
-	if version.WebSocketDebuggerURL == "" {
-		t.Fatal("Chrome browser target unavailable")
-	}
-	ws, _, e := websocket.DefaultDialer.Dial(version.WebSocketDebuggerURL, nil)
+	browser := startTestChrome(t, chrome, "", "", 10*time.Second,
+		"--no-sandbox", "--disable-extensions", "--disable-default-apps", "--disable-background-networking")
+	defer browser.close()
+	ws, _, e := websocket.DefaultDialer.Dial(browser.wsURL, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -95,8 +66,7 @@ func TestBrowser(t *testing.T) {
 	var created struct {
 		TargetID string `json:"targetId"`
 	}
-	json.Unmarshal(browserCall("Target.createTarget", map[string]any{"url": ts.URL}), &created)
-	time.Sleep(2 * time.Second)
+	json.Unmarshal(browserCall("Target.createTarget", map[string]any{"url": "about:blank"}), &created)
 	var attached struct {
 		SessionID string `json:"sessionId"`
 	}
@@ -106,45 +76,45 @@ func TestBrowser(t *testing.T) {
 	}
 	var browserErrors []string
 	call := func(method string, params any) json.RawMessage {
-		for attempt := 0; ; attempt++ {
-			seq++
-			requestID := seq
-			ws.WriteJSON(map[string]any{"id": requestID, "method": method, "params": params, "sessionId": attached.SessionID})
-			ws.SetReadDeadline(time.Now().Add(120 * time.Second))
-			for {
-				var msg struct {
-					Method string          `json:"method"`
-					Params json.RawMessage `json:"params"`
-					ID     int             `json:"id"`
-					Result json.RawMessage `json:"result"`
-					Error  any             `json:"error"`
-				}
-				if e := ws.ReadJSON(&msg); e != nil {
-					t.Fatal(e)
-				}
-				if msg.Method == "Runtime.exceptionThrown" {
-					browserErrors = append(browserErrors, string(msg.Params))
-				}
-				if msg.ID != requestID {
-					continue
-				}
-				if msg.Error == nil {
-					return msg.Result
-				}
-				errorJSON, _ := json.Marshal(msg.Error)
-				if method == "Runtime.evaluate" && attempt < 10 && strings.Contains(string(errorJSON), "navigated or closed") {
-					time.Sleep(200 * time.Millisecond)
-					break
-				}
-				t.Fatalf("DevTools %s: %v", method, msg.Error)
+		seq++
+		requestID := seq
+		if err := ws.WriteJSON(map[string]any{"id": requestID, "method": method, "params": params, "sessionId": attached.SessionID}); err != nil {
+			t.Fatal(err)
+		}
+		ws.SetReadDeadline(time.Now().Add(120 * time.Second))
+		for {
+			var msg struct {
+				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
+				ID     int             `json:"id"`
+				Result json.RawMessage `json:"result"`
+				Error  any             `json:"error"`
 			}
+			if e := ws.ReadJSON(&msg); e != nil {
+				t.Fatal(e)
+			}
+			if msg.Method == "Runtime.exceptionThrown" {
+				browserErrors = append(browserErrors, string(msg.Params))
+			}
+			if msg.ID != requestID {
+				continue
+			}
+			if msg.Error == nil {
+				return msg.Result
+			}
+			errorJSON, _ := json.Marshal(msg.Error)
+			if method == "Runtime.evaluate" && params.(map[string]any)["expression"] == browserReadyExpression && browserNavigationError(string(errorJSON)) {
+				return nil
+			}
+			t.Fatalf("DevTools %s: %v", method, msg.Error)
 		}
 	}
 	call("Page.enable", map[string]any{})
 	call("Runtime.enable", map[string]any{})
 	call("Inspector.enable", map[string]any{})
 	call("Emulation.setDeviceMetricsOverride", map[string]any{"width": 1440, "height": 1000, "deviceScaleFactor": 1, "mobile": false})
-	time.Sleep(time.Second)
+	navigate := func() { navigateBrowser(t, call, ts.URL, false, func() []string { return browserErrors }) }
+	navigate()
 	eval := func(js string) string {
 		r := call("Runtime.evaluate", map[string]any{"expression": js, "awaitPromise": true, "returnByValue": true})
 		var out struct {
@@ -159,7 +129,22 @@ func TestBrowser(t *testing.T) {
 		}
 		return string(out.Result.Value)
 	}
-	eval(`var sentCommands=window.sentCommands=[];(()=>{const original=WebSocket.prototype.send;WebSocket.prototype.send=function(data){try{sentCommands.push(JSON.parse(data))}catch{}return original.call(this,data)};return true})()`)
+	eval(`
+ var sentCommands=[],sceneSocket={connections:0,snapshot:null},TestNativeWebSocket=window.WebSocket;
+ const sendOriginal=TestNativeWebSocket.prototype.send;
+ TestNativeWebSocket.prototype.send=function(data){try{sentCommands.push(JSON.parse(data))}catch{}return sendOriginal.call(this,data)};
+ window.WebSocket=class extends TestNativeWebSocket {
+  constructor(...args) {
+   super(...args);
+   const connection=++sceneSocket.connections;
+   sceneSocket.snapshot=null;
+   this.addEventListener('message',event=>{
+    const message=JSON.parse(event.data);
+    if(connection===sceneSocket.connections&&message.type==='snapshot')sceneSocket.snapshot=message;
+   });
+  }
+ };
+ true`)
 	result := eval(`(async()=>{
  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
  const wait=async f=>{for(let i=0;i<300;i++){if(f())return;await sleep(100)}throw Error('UI timeout')};
@@ -199,7 +184,7 @@ func TestBrowser(t *testing.T) {
  if(!centerElement)throw Error('center action missing from element context menu');
  centerElement.click();await wait(()=>!xInput.disabled);if(document.getElementById('duplicateElement').disabled)throw Error('centered element did not return to loaded editor state');document.getElementById('fit').click();await sleep(300);
  if(!document.getElementById('tokenUpload').hidden)throw Error('native token file input leaked into sidebar');document.getElementById('add').click();document.querySelector('[data-token-catalog="roster"]').click();if(document.getElementById('tokenCatalogPicker').hidden||!document.getElementById('tokenCatalogSearch')||!document.getElementById('tokenCatalogRosterTab').classList.contains('active'))throw Error('searchable character picker did not open');document.getElementById('tokenCatalogCancel').click();document.getElementById('add').click();document.getElementById('add').click();document.getElementById('addEmptyToken').click();document.getElementById('add').click();document.getElementById('addEmptyToken').click();await wait(()=>document.querySelectorAll('.token-row').length===2).catch(()=>{throw Error('token create timeout: rows='+document.querySelectorAll('.token-row').length+', connection='+document.getElementById('connection').textContent+', queued='+sentCommands.filter(c=>c.type==='create').length)});
- document.querySelector('.token-row').click();const propertiesForm=document.getElementById('properties');if(propertiesForm.parentElement!==document.getElementById('characterSettingsPanel')||document.querySelectorAll('#properties').length!==1)throw Error('token settings were not moved into character settings');await wait(()=>document.getElementById('characterPanel').dataset.characterId&&!document.getElementById('characterSummary').hidden);if(!document.querySelector('.inspector').contains(propertiesForm)||!document.getElementById('noSelection').hidden||document.getElementById('characterPanel').hidden)throw Error('right inspector is not showing character state');if(sentCommands.some(command=>command.type==='characterCreate'))throw Error('new token did not receive its character atomically');if(document.querySelectorAll('.token-floor-group').length!==1)throw Error('GM character list is not grouped by floor');const navigatorRow=document.querySelector('.token-row');if(!navigatorRow.querySelector('.token-row-focus')||!navigatorRow.querySelector('.token-row-menu'))throw Error('character navigator controls missing');const navigatorFocus=navigatorRow.querySelector('.token-row-focus'),navigatorMenu=navigatorRow.querySelector('.token-row-menu');navigatorMenu.click();if(document.getElementById('tokenContextMenu').hidden||document.getElementById('tokenContextMenu').textContent.includes('Переименовать')||!document.getElementById('tokenContextMenu').textContent.includes('Сменить этаж'))throw Error('character context menu is wrong');navigatorMenu.click();if(!document.getElementById('tokenContextMenu').hidden)throw Error('character context menu did not close');navigatorFocus.click();if(document.getElementById('characterPanel').hidden)throw Error('focus control closed the character sheet');const characterGM=document.getElementById('characterGM'),gmScope=characterGM.closest('.gm');if(!gmScope||gmScope.hidden)throw Error('character mutations are not GM-scoped');document.getElementById('characterSettingsToggle').click();if(propertiesForm.hidden)throw Error('token settings are unavailable behind GM gear');const propertyCount=sentCommands.filter(command=>command.type==='properties').length,sizeInput=document.getElementById('tokenSize');for(const value of ['81','82','83']){sizeInput.value=value;sizeInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);let propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.length!==propertyCount+1)throw Error('token input was not coalesced: before='+propertyCount+' after='+propertyCommands.length+' valid='+propertiesForm.checkValidity()+' selected='+document.querySelector('.token-row.selected')?.dataset.tokenId);if(propertyCommands.at(-1).properties.size!==83)throw Error('token autosave lost final size');const opacityCount=propertyCommands.length,opacityInput=document.getElementById('tokenOpacity');opacityInput.value='0.5';opacityInput.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>sentCommands.filter(command=>command.type==='properties').length===opacityCount+1);propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.at(-1).properties.opacity!==0.5)throw Error('token opacity was not sent as a numeric field patch');if(!propertiesForm.querySelector('button[type=submit]').hidden)throw Error('token save button is visible');
+ document.querySelector('.token-row').click();const propertiesForm=document.getElementById('properties');if(propertiesForm.parentElement!==document.getElementById('characterSettingsPanel')||document.querySelectorAll('#properties').length!==1)throw Error('token settings were not moved into character settings');await wait(()=>document.getElementById('characterPanel').dataset.characterId&&!document.getElementById('characterSummary').hidden);if(!document.querySelector('.inspector').contains(propertiesForm)||!document.getElementById('noSelection').hidden||document.getElementById('characterPanel').hidden)throw Error('right inspector is not showing character state');if(sentCommands.some(command=>command.type==='characterCreate'))throw Error('new token did not receive its character atomically');if(document.querySelectorAll('.token-floor-group').length!==1)throw Error('GM character list is not grouped by floor');const navigatorRow=document.querySelector('.token-row');if(!navigatorRow.querySelector('.token-row-focus')||!navigatorRow.querySelector('.token-row-menu'))throw Error('character navigator controls missing');const navigatorFocus=navigatorRow.querySelector('.token-row-focus'),navigatorMenu=navigatorRow.querySelector('.token-row-menu');navigatorMenu.click();if(document.getElementById('tokenContextMenu').hidden||document.getElementById('tokenContextMenu').textContent.includes('Переименовать')||!document.getElementById('tokenContextMenu').textContent.includes('Сменить этаж'))throw Error('character context menu is wrong');navigatorMenu.click();if(!document.getElementById('tokenContextMenu').hidden)throw Error('character context menu did not close');navigatorFocus.click();if(document.getElementById('characterPanel').hidden)throw Error('focus control closed the character sheet');const characterGM=document.getElementById('characterGM'),gmScope=characterGM.closest('.gm');if(!gmScope||gmScope.hidden)throw Error('character mutations are not GM-scoped');document.getElementById('characterMechanicsToggle').click();document.getElementById('characterTokenOptions').click();if(propertiesForm.hidden)throw Error('token settings are unavailable behind GM gear');const propertyCount=sentCommands.filter(command=>command.type==='properties').length,sizeInput=document.getElementById('tokenSize');for(const value of ['81','82','83']){sizeInput.value=value;sizeInput.dispatchEvent(new Event('input',{bubbles:true}))}await sleep(900);let propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.length!==propertyCount+1)throw Error('token input was not coalesced: before='+propertyCount+' after='+propertyCommands.length+' valid='+propertiesForm.checkValidity()+' selected='+document.querySelector('.token-row.selected')?.dataset.tokenId);if(propertyCommands.at(-1).properties.size!==83)throw Error('token autosave lost final size');const opacityCount=propertyCommands.length,opacityInput=document.getElementById('tokenOpacity');opacityInput.value='0.5';opacityInput.dispatchEvent(new Event('change',{bubbles:true}));await wait(()=>sentCommands.filter(command=>command.type==='properties').length===opacityCount+1);propertyCommands=sentCommands.filter(command=>command.type==='properties');if(propertyCommands.at(-1).properties.opacity!==0.5)throw Error('token opacity was not sent as a numeric field patch');if(!propertiesForm.querySelector('button[type=submit]').hidden)throw Error('token save button is visible');document.getElementById('characterMechanicsToggle').click();
  const modeRect=document.getElementById('viewMode').getBoundingClientRect(),headerRect=document.querySelector('header').getBoundingClientRect(),sceneTabRect=document.getElementById('mapTab').getBoundingClientRect();if(Math.abs(modeRect.height-sceneTabRect.height)>4||Math.abs((modeRect.left+modeRect.right-headerRect.left-headerRect.right)/2)>2)throw Error('GM / player switch does not match the header controls');const panBoard=document.getElementById('board'),panRect=panBoard.getBoundingClientRect(),panX=panRect.left+panRect.width/2,panY=panRect.top+panRect.height/2,selectedBeforePan=document.querySelector('.token-row.selected')?.dataset.tokenId;panBoard.onpointerdown({button:1,pointerId:91,clientX:panX,clientY:panY,preventDefault(){}});panBoard.onpointermove({pointerId:91,clientX:panX+30,clientY:panY+20,shiftKey:false});panBoard.onpointerup();if(document.querySelector('.token-row.selected')?.dataset.tokenId!==selectedBeforePan||document.getElementById('characterPanel').hidden)throw Error('middle-button pan closed the character sheet');
  const idCommands=sentCommands.length,idToggle=document.getElementById('characterIDToggle'),fullCharacterID=document.getElementById('characterPanel').dataset.characterId;if(idToggle.hidden)throw Error('GM character ID toggle is hidden');idToggle.click();await wait(()=>document.getElementById('characterName').textContent.startsWith('['+fullCharacterID.slice(0,8)+']'));if(sentCommands.length!==idCommands||![...Object.keys(localStorage)].some(key=>key.startsWith('atlas-character-ids-v1/')&&localStorage.getItem(key)==='1'))throw Error('character ID toggle is not local-only');const selectedTokenRow=document.querySelector('.token-row.selected');document.getElementById('board').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));if(!document.getElementById('characterPanel').hidden)throw Error('character inspector remained visible after deselection');selectedTokenRow.click();if(document.getElementById('characterPanel').hidden||document.getElementById('characterSummary').hidden||!document.getElementById('characterPanel').inert)throw Error('character inspector blinked while reselecting a token');await wait(()=>!document.getElementById('characterPanel').inert&&document.getElementById('characterPanel').dataset.characterId===fullCharacterID);
  document.getElementById('fit').click();await sleep(2500);document.getElementById('reconnect').click();await sleep(2000);await wait(()=>document.getElementById('connection').textContent.includes('В сети'));await wait(()=>!document.getElementById('workspace').hidden);await wait(()=>document.getElementById('diagnostics').textContent.includes('Загрузка 0'));const representationEntries=performance.getEntriesByType('resource').filter(r=>r.name.includes('/api/asset/')),representationPaths=representationEntries.map(r=>new URL(r.name).pathname);if(!representationPaths.some(path=>path.endsWith('/image.png'))||!representationPaths.some(path=>/\/0_\d+_\d+\.png$/.test(path)))throw Error('representations did not use common SceneElement render path');
@@ -499,20 +484,8 @@ func TestBrowser(t *testing.T) {
 	if eval(`document.getElementById('tokenSize').value`) != "\"91\"" {
 		t.Fatal("concurrent token size draft lost")
 	}
-	if eval(browserDefinitionsTOMLScenario) != "true" {
-		t.Fatal("definitions TOML UI scenario failed")
-	}
-	browserSeedWolfPreset(t, s)
-	var characterAssignment struct {
-		WolfIDs    []string `json:"wolfIDs"`
-		LancelotID string   `json:"lancelotID"`
-		Relinked   string   `json:"relinked"`
-	}
-	if err := json.Unmarshal([]byte(eval(browserCharacterAssignmentScenario)), &characterAssignment); err != nil {
-		t.Fatal(err)
-	}
-	if len(characterAssignment.WolfIDs) != 5 || characterAssignment.LancelotID == "" || characterAssignment.Relinked != characterAssignment.LancelotID {
-		t.Fatalf("character assignment UI result: %+v", characterAssignment)
+	if eval(browserCharacterSettingsScenario) != "true" {
+		t.Fatal("character settings UI scenario failed")
 	}
 	browserSeedPlayerView(t, s)
 	if eval(browserPlayerViewScenario) != "true" {
@@ -523,8 +496,7 @@ func TestBrowser(t *testing.T) {
 			t.Fatalf("Browser errors: %v", browserErrors)
 		}
 		eval(`localStorage.setItem('atlas-sessions',JSON.stringify([JSON.parse(localStorage.getItem('atlas-browser-player'))]));true`)
-		call("Page.navigate", map[string]any{"url": ts.URL})
-		time.Sleep(time.Second)
+		navigate()
 		if eval(browserRealPlayerScenario) != "true" {
 			t.Fatal("real player UI scenario failed")
 		}
@@ -570,8 +542,7 @@ func TestBrowser(t *testing.T) {
 		}
 	}
 	eval(`localStorage.setItem('atlas-sessions',JSON.stringify([JSON.parse(localStorage.getItem('atlas-browser-player'))]));true`)
-	call("Page.navigate", map[string]any{"url": ts.URL})
-	time.Sleep(time.Second)
+	navigate()
 	if eval(browserRealPlayerScenario) != "true" {
 		t.Fatal("real player UI scenario failed")
 	}
@@ -583,8 +554,7 @@ func TestBrowser(t *testing.T) {
 		}
 		encoded, _ := json.Marshal(badSession)
 		eval(`(()=>{const c=JSON.parse(localStorage.getItem('atlas-sessions'))[0];c.key='invalid';if(` + string(encoded) + `)c.session=` + string(encoded) + `;localStorage.setItem('atlas-sessions',JSON.stringify([c]));return true})()`)
-		call("Page.navigate", map[string]any{"url": ts.URL})
-		time.Sleep(time.Second)
+		navigate()
 		if eval(`(async()=>{const Base=WebSocket;window.attempts=0;window.WebSocket=class extends Base{constructor(...args){super(...args);window.attempts++}};document.querySelector('#resumeList button').click();await new Promise(r=>setTimeout(r,3000));return window.attempts===1&&document.getElementById('saveStatus').textContent==='Восстановление остановлено'})()`) != "true" {
 			t.Fatal("fatal auth retried")
 		}

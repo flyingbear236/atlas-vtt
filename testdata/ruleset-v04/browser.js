@@ -5,89 +5,194 @@ async credentials => {
       if (result) return result;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    throw Error(label);
+    throw Error(typeof label==='function'?label():label);
   };
-  localStorage.setItem('atlas-sessions', JSON.stringify([credentials]));
-  localStorage.setItem('atlas-dice-animation', 'off');
-  const frame = document.createElement('iframe');
-  frame.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;border:0;z-index:1000';
-  frame.src = '/';
-  document.body.append(frame);
-  const query = selector => frame.contentDocument?.querySelector(selector);
-  const all = selector => [...(frame.contentDocument?.querySelectorAll(selector)||[])];
+  const query = selector => document.querySelector(selector);
+  const all = selector => [...document.querySelectorAll(selector)];
   const click = async selector => (await wait(() => query(selector), selector)).click();
-  const stat = id => query(`#characterLayoutContent [data-sheet-item="stat:${id}"] strong`)?.textContent;
-  const commands = [];
-  await new Promise(resolve => frame.addEventListener('load',resolve,{once:true}));
-  const original = frame.contentWindow.WebSocket.prototype.send;
-  frame.contentWindow.WebSocket.prototype.send = function(data) {
-    commands.push(JSON.parse(data));
+  const stat = id => query(`#characterLayoutContent .character-stat-card[data-sheet-item="stat:${id}"] .character-stat-value`)?.textContent;
+  const commands = [], received = [];
+  const observed = new WeakSet();
+  const original = WebSocket.prototype.send;
+  WebSocket.prototype.send = function(data) {
+    if (!observed.has(this)) {
+      observed.add(this);
+      this.addEventListener('message',event=>{try{received.push(JSON.parse(event.data))}catch{}});
+    }
+    try{commands.push(JSON.parse(data))}catch{}
     return original.call(this,data);
   };
+  const tab = async id => click(`#characterLayoutTabs [data-tab-id="${id}"]`);
+  const sectionButtons = () => all('#characterLayoutContent .character-action-section-tabs [role="tab"]');
+  // Only the selected subsection is mounted. Navigate using the actual tab
+  // controls, which also work if a definition has an explicit display group.
+  const reveal = async (tabId, selector, label) => {
+    await tab(tabId);
+    const count = sectionButtons().length;
+    let element = query(selector);
+    for (let i=0; !element && i<count; i++) {
+      const button=sectionButtons()[i]; // render replaces the tab nodes
+      if(button && button.getAttribute('aria-selected')!=='true')button.click();
+      element=query(selector);
+    }
+    if(!element)throw Error(label+' not found; sections='+JSON.stringify(sectionButtons().map(b=>b.textContent))+'; visible entries='+JSON.stringify(all('#characterLayoutContent [data-sheet-item]').map(e=>e.dataset.sheetItem)));
+    return element;
+  };
+  const tokenRow = name => all('.token-row').find(row => row.querySelector('.row-name')?.textContent===name);
   await click('#resumeList button');
   await click('.scene-card .primary');
+  await wait(()=>!query('#workspace').hidden,'scene ready');
   await click('#objectsTab');
+  await wait(()=>received.some(m=>m.type==='rollHistory'),'action generation');
   const pickCharacter = async name => {
-    const token = await wait(() => all('.token-row').find(row => row.textContent.includes(name)), name);
-    token.click();
-    await wait(() => query('#characterName').textContent===name, 'sheet '+name);
+    const token = await wait(() => tokenRow(name), name);
+    token.querySelector('.token-row-main').click();
+    await wait(() => !query('#characterPanel').hidden&&!query('#characterPanel').inert&&query('#characterName').textContent===name&&!query('#characterSummary').hidden, 'sheet '+name);
+    await tab('stats');
   };
   await pickCharacter('Герой');
-  await wait(() => stat('basic.strength')==='18', 'equipped strength');
-  if (!query('[data-sheet-item="stat:basic.strength"] dl').textContent.includes('bonus4')) throw Error('derived bonus missing');
-  if (query('#characterLayoutContent [data-sheet-item="stat:basic.proficiency"] input')) throw Error('computed default is editable');
-  if (query('#characterLayoutContent [data-sheet-item="stat:basic.strength"] input').value!=='16') throw Error('base displays effective');
-  await click('#characterInventory summary');
-  const ring = '#characterInventory input[aria-label$="item-001"]';
-  await click(ring);
-  await wait(() => stat('basic.strength')==='16', 'unequipped strength');
-  await wait(() => !query(ring).disabled, 'equip ACK');
-  await click(ring);
-  await wait(() => stat('basic.strength')==='18', 'equipped again');
-  const showActions = async () => (await wait(() => all('#characterLayoutTabs button').find(button => button.textContent==='Действия'), 'Actions tab')).click();
-  await showActions();
-  const perform = async (id, source, target) => {
-    const selector = `button[data-action-id="${id}"][data-source-id="${source}"]`;
-    await click(selector);
-    const dialog = await wait(() => query('.character-action-target[open]'), id+' target dialog');
-    await wait(() => !dialog.querySelector('[type=submit]').disabled, id+' targets');
-    if (target) {
-      const select = dialog.querySelector('select');
-      const option = [...select.options].find(option => option.textContent.includes(target));
-      if (!option) throw Error('Missing target '+target);
-      select.value=option.value;
-    }
-    dialog.querySelector('[type=submit]').click();
-    await wait(() => !dialog.open, id+' submitted');
+  const strength = '#characterLayoutContent .character-stat-card[data-sheet-item="stat:basic.strength"]';
+  await reveal('stats',strength,'strength card');
+  await wait(() => stat('basic.strength')==='18', ()=> 'equipped strength (expected 18, observed '+stat('basic.strength')+')');
+  const hero = query('#characterPanel').dataset.characterId;
+  const initial = received.find(m=>m.type==='characterSnapshot'&&m.characterId===hero);
+  if(!initial?.characterSequence||!initial.traceAvailable||Object.keys(initial.statTraces||{}).length)throw Error('initial snapshot includes traces or lacks delta protocol');
+  if (query(strength+' .character-stat-derived-value')?.textContent!=='4') throw Error('derived bonus missing');
+  if (query('#characterLayoutContent .character-stat-card[data-sheet-item="stat:basic.proficiency"] input')) throw Error('computed default is editable');
+  // Trace is loaded through the real WebSocket only when requested and reused
+  // when opened a second time at the same projection sequence.
+  await click(strength+' .character-stat-value');
+  await wait(()=>query('.character-trace-shell:not([hidden]) .character-trace-calculation'),'trace render');
+  if(!commands.some(m=>m.type==='characterStatTrace'&&m.statId==='basic.strength')||!received.some(m=>m.type==='characterStatTrace'&&m.statId==='basic.strength'&&!m.error))throw Error('on-demand trace was not requested');
+  if(!query('.character-trace-shell').textContent.includes('16'))throw Error('base value missing in trace');
+  await click('.character-trace-close');
+  const traceRequests=commands.filter(m=>m.type==='characterStatTrace').length;
+  await click(strength+' .character-stat-value');
+  await wait(()=>query('.character-trace-shell:not([hidden]) .character-trace-calculation'),'cached trace');
+  if(commands.filter(m=>m.type==='characterStatTrace').length!==traceRequests)throw Error('unchanged trace was fetched again');
+  await click('.character-trace-close');
+  const ring = '#characterInventoryBrowse [data-inventory-id="item-001"] input[type=checkbox]';
+  const setEquipped = async equipped => {
+    await tab('inventory');
+    const control=await wait(()=>query(ring)&&!query(ring).disabled&&query(ring),'ring ready');
+    if(control.checked===equipped)throw Error('unexpected initial ring state');
+    const before=received.length;
+    control.click();
+    await wait(()=>query(ring)&&query(ring).checked===equipped&&!query(ring).disabled,'equipment committed');
+    await wait(()=>received.slice(before).some(m=>m.type==='characterDelta'&&m.characterId===hero),'equipment delta');
+    await reveal('stats',strength,'strength after equipment');
+    await wait(()=>stat('basic.strength')===(equipped?'18':'16'),()=> 'effective strength (expected '+(equipped?'18':'16')+', observed '+stat('basic.strength')+')');
   };
-  await perform('weapon.attack.hit','item-002','Ученица');
-  await wait(() => query('[data-action-last]').textContent.includes('Попадание!'), 'successful attack');
-  await perform('weapon.attack.damage','item-002','Ученица');
-  await wait(() => query('[data-action-last]').textContent.includes('100 → 92'), 'resource change in journal');
-  await perform('weapon.attack.damage','item-002',null);
-  await wait(() => query('[data-action-last]').textContent.includes('Бросок урона: 5'), 'target-free roll');
-  if (commands.filter(command => command.type==='actionExecute').at(-1).action.target) throw Error('optional target selected');
+  await setEquipped(false);
+  await setEquipped(true);
+  // The selected actor remains selected. Center on the actor before entering
+  // target mode; the fixture tokens have known x offsets in world coordinates.
+  // Clicking a target's navigator would change the actor and cancel targeting.
+  const locations={'Герой':300,'Ученица':400,'Хранитель кинжала':500};
+  const perform = async (id, source, actor, target) => {
+    const actorRow=await wait(()=>tokenRow(actor),actor);
+    actorRow.querySelector('.token-row-focus').click();
+    const choice=await reveal('actions',`#characterLayoutContent [data-action-id="${id}"][data-source-id="${source}"]`,id+' action');
+    const execute=choice.matches('button')?choice:choice.querySelector('.character-source-roll-content');
+    if(!execute||execute.disabled)throw Error('action not executable '+id);
+    const prior=commands.filter(command=>command.type==='actionExecute').length;
+    const before=received.length;
+    execute.click();
+    await wait(()=>query('.character-action-target-prompt:not([hidden])'),id+' target prompt');
+    await wait(()=>received.slice(before).some(m=>m.type==='actionTargets'&&!m.error),id+' target choices');
+    const board=query('#board'),rect=board.getBoundingClientRect();
+    // The camera zoom label is rounded to whole percent. The fixtures are
+    // 100 units apart and token radius is 35, so this is ample accuracy.
+    const scale=Number.parseFloat(query('#zoom').textContent)/100;
+    if(!Number.isFinite(scale)||scale<=0)throw Error('invalid camera scale');
+    const offset=target?(locations[target]-locations[actor])*scale:0;
+    board.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:71,clientX:rect.left+rect.width/2+offset,clientY:rect.top+rect.height/2+(target?0:90*scale)}));
+    await wait(()=>commands.filter(command=>command.type==='actionExecute').length===prior+1,id+' submitted');
+    await wait(()=>query('.character-action-target-prompt').hidden,id+' target prompt closed');
+    const action=commands.filter(command=>command.type==='actionExecute').at(-1).action;
+    if(target&&!action.target?.characterId)throw Error('target not selected');
+    if(!target&&action.target)throw Error('optional target selected');
+    return action;
+  };
+  const journalLast=()=>query('#diceJournal .roll-entry')?.textContent||'';
+  await perform('weapon.attack.hit','item-002','Герой','Ученица');
+  await wait(() => journalLast().includes('Попадание!'), 'successful attack');
+  await perform('weapon.attack.damage','item-002','Герой','Ученица');
+  await wait(() => journalLast().includes('100 → 92'), 'resource change in journal');
+  await perform('weapon.attack.damage','item-002','Герой',null);
+  await wait(() => journalLast().includes('Бросок урона: 5'), 'target-free roll');
   await pickCharacter('Ученица');
-  await wait(() => query('#characterLayoutContent [data-sheet-item="stat:hp"] .character-resource-count')?.textContent==='92 / 100', 'HP projection');
-  await showActions();
-  if (all('button[data-action-id="weapon.attack.hit"]').length!==3) throw Error('equipment sources collapsed');
-  if (query('button[data-action-id="weapon.attack"]')) throw Error('group is executable');
-  await perform('inspect','','training-dagger');
-  await wait(() => query('[data-action-last]').textContent.includes('Вы осматриваете Кинжал'), 'message-only action');
-  if (query('[data-action-last]').textContent.includes('Результат')) throw Error('inspect rolled');
+  const hpCard='#characterLayoutContent .character-resource-card[data-sheet-item="stat:hp"]';
+  await reveal('stats',hpCard,'HP card');
+  await wait(()=>query(hpCard+' .character-resource-value-input')?.value==='92'&&query(hpCard+' [role=progressbar]')?.getAttribute('aria-valuemax')==='100','HP projection');
+  const trainee=query('#characterPanel').dataset.characterId;
+  const hpInput=query(hpCard+' .character-resource-value-input');
+  const beforeHp=received.length;
+  await click(hpCard+' button[aria-label$="уменьшить на 1"]');
+  await wait(()=>received.slice(beforeHp).some(m=>m.type==='characterDelta'&&m.characterId===trainee)&&query(hpCard+' [role=progressbar]')?.getAttribute('aria-valuenow')==='91','live HP delta');
+  if(query(hpCard+' .character-resource-value-input')!==hpInput)throw Error('HP delta replaced input instead of patching it');
+  await click(hpCard+' button[aria-label$="увеличить на 1"]');
+  await wait(()=>query(hpCard+' [role=progressbar]')?.getAttribute('aria-valuenow')==='92','restore HP');
+  await reveal('actions','#characterLayoutContent [data-action-id="weapon.attack.hit"].is-runnable','weapon actions');
+  if (all('#characterLayoutContent [data-action-id="weapon.attack.hit"].is-runnable').length!==3) throw Error('equipment sources collapsed');
+  const trainedInitial=received.find(m=>m.type==='characterSnapshot'&&m.characterId===trainee);
+  if (!trainedInitial || Object.hasOwn(trainedInitial.actionSelectors||{},'weapon.attack') || query('#characterLayoutContent [data-action-id="weapon.attack"]')) throw Error('group is executable or trained snapshot missing');
+  const inspect=await perform('inspect','','Ученица','Хранитель кинжала');
+  if(inspect.target?.itemId!=='browser-dagger')throw Error('wrong item target');
+  await wait(() => journalLast().includes('Вы осматриваете Кинжал'), 'message-only action');
+  if (journalLast().includes('Результат')) throw Error('inspect rolled');
   await click('#diceJournalToggle');
   const rows = all('#diceJournal .roll-entry');
   if (rows.length!==4 || new Set(rows.map(row=>row.dataset.eventId)).size!==4) throw Error('journal event IDs');
   const manual = query('#diceExpression');
   manual.value='2d6 + 1d4 + 3';
-  manual.dispatchEvent(new frame.contentWindow.Event('input',{bubbles:true}));
+  manual.dispatchEvent(new Event('input',{bubbles:true}));
   await click('[data-dice-submit]');
   await wait(() => query('#diceJournal .roll-entry .roll-result')?.textContent.includes('= 12'), 'manual dice result');
   const command = commands.findLast(entry => entry.type==='roll');
   if (command.roll.manualModifier!==3 || command.roll.groups.length!==2 || 'actionId' in command.roll || 'rollSpecId' in command.roll) {
     throw Error('manual dice command used action fields');
   }
+
+  await pickCharacter('Герой');
+  await tab('inventory');
+  const grantButton='#characterPanel .character-inventory-title button';
+  const itemDialog='dialog.character-item-create-dialog[open]';
+  const inventoryRows=()=>all('#characterInventoryBrowse [data-inventory-id]');
+  const existingIDs=new Set(inventoryRows().map(row=>row.dataset.inventoryId));
+  await click(grantButton);
+  const dagger=await wait(()=>all(itemDialog+' .item-create-catalog-row').find(row=>row.querySelector('small')?.textContent==='dagger'),'dagger in object catalog');
+  dagger.click();
+  query(itemDialog+' input[type=number]').value='2';
+  const beforeGrant=received.length;
+  await click(itemDialog+' .item-create-footer .primary');
+  const added=await wait(()=>{
+    const rows=inventoryRows().filter(row=>!existingIDs.has(row.dataset.inventoryId));
+    return rows.length===2&&rows;
+  },'two granted inventory items');
+  if(new Set(added.map(row=>row.dataset.inventoryId)).size!==2||added.some(row=>row.querySelector('small')?.textContent!=='dagger'||row.dataset.equipped!=='false'))throw Error('incorrect inventory grants');
+  if(!received.slice(beforeGrant).some(m=>m.type==='characterDelta'&&m.characterId===hero))throw Error('item grant did not use character delta');
+
+  await click(grantButton);
+  await click(itemDialog+' [data-mode=new]');
+  const effect=await wait(()=>query(itemDialog+' input[data-kind=effects][value=ring_strength]'),'effect in object draft picker');
+  const bracelet='Браслет проверки';
+  query(itemDialog+' .item-create-new input[type=text]').value=bracelet;
+  effect.checked=true;
+  query(itemDialog+' .item-create-footer input[type=checkbox]').checked=true;
+  const beforeCreate=received.length;
+  await click(itemDialog+' .item-create-footer .primary');
+  const created=await wait(()=>inventoryRows().find(row=>row.querySelector('strong')?.textContent===bracelet),'created and granted item');
+  if(created.dataset.equipped!=='true'||!created.querySelector('small')?.textContent.startsWith('campaign.item_'))throw Error('created item has wrong definition or equipment');
+  if(!received.slice(beforeCreate).some(m=>m.type==='registryChanged'))throw Error('definition creation did not refresh the registry');
+  await reveal('stats',strength,'strength after item creation');
+  await wait(()=>stat('basic.strength')==='20','created equipped item applies its effect');
+  await tab('effects');
+  await wait(()=>all('.character-effect-row .character-effect-origin').some(row=>row.textContent.includes(bracelet)),'created item effect in the character tab');
+
   await click('#definitionsOpen');
+  const fileOrFolder=await wait(()=>query('button[aria-label="Открыть rules/examples.toml"]')||query('button[aria-label="Раскрыть rules"]'),'rules folder');
+  if(fileOrFolder.getAttribute('aria-label')==='Раскрыть rules')fileOrFolder.click();
   await click('button[aria-label="Открыть rules/examples.toml"]');
   const definition = await wait(() => all('.lb-definition-link').find(button => button.textContent.includes('weapon.attack.damage')), 'action in library');
   definition.click();
@@ -97,13 +202,13 @@ async credentials => {
   }, 'original TOML in editor');
   const originalSource=editor.value;
   editor.value += '\n[action.\n';
-  editor.dispatchEvent(new frame.contentWindow.Event('input',{bubbles:true}));
+  editor.dispatchEvent(new Event('input',{bubbles:true}));
   await click('[data-toml-preview]');
   await wait(() => query('dialog[open] .lb-import-errors'), 'invalid TOML preview');
   await click('[data-lb-dialog-close]');
   if (!editor.value.endsWith('[action.\n')) throw Error('invalid draft lost after preview');
   editor.value=originalSource+'\n# Browser acceptance\n';
-  editor.dispatchEvent(new frame.contentWindow.Event('input',{bubbles:true}));
+  editor.dispatchEvent(new Event('input',{bubbles:true}));
   await click('[data-toml-preview]');
   const apply = await wait(() => all('dialog[open] button').find(button => button.textContent==='Применить'&&!button.disabled), 'TOML preview');
   apply.click();

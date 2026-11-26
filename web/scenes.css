@@ -1094,6 +1094,7 @@ body.inspector-resizing, body.inspector-resizing * { cursor: ew-resize !importan
 .action-trace-close{width:34px;height:34px;font-size:20px;padding:0;border-radius:50%}
 .action-trace-list{flex:0 0 auto;max-height:24%;min-height:74px;overflow-y:auto;display:grid;align-content:start;gap:4px;padding:9px;border-bottom:1px solid #42604c}
 .action-trace-entry{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:3px 8px;padding:9px 10px;border:1px solid #415a4b;border-radius:8px;background:#22362e;text-align:left;color:#eff4e9}
+.action-trace-more{width:100%;min-height:34px;color:#c8dfb8;border:1px solid #496550;border-radius:7px}
 .action-trace-entry.active{background:#385443;border-color:#b0d394}
 .action-trace-entry strong{font-size:13px}.action-trace-entry small{font-size:11px;color:#adc2b3}.action-trace-entry b{font-size:12px;color:#cae3af}
 .action-trace-detail{flex:1;min-height:0;overflow-y:auto;padding:14px 15px 18px;overscroll-behavior:contain}

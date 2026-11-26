@@ -147,18 +147,32 @@ func (a actionAudience) project(e *actionJournalEntry) (ActionEvent, bool) {
 	return out, true
 }
 
-func actionHistoryForPeer(session *Session, p *peer) []ActionEvent {
-	out := make([]ActionEvent, 0)
-	if len(session.ActionHistory) == 0 {
-		return out
-	}
+// The first page and subsequent pages are bounded independently of the
+// retained history. Re-check visibility on every request so a player cannot
+// recover actions that have since become inaccessible.
+const actionHistoryPageSize = 100
+
+func actionHistoryPageForPeer(session *Session, p *peer, beforeRevision uint64) ([]ActionEvent, bool) {
+	out := make([]ActionEvent, 0, actionHistoryPageSize)
 	a := audienceForAction(session, p)
-	for i := range session.ActionHistory {
-		if event, ok := a.project(&session.ActionHistory[i]); ok {
+	hasMore := false
+	for i := len(session.ActionHistory) - 1; i >= 0; i-- {
+		entry := &session.ActionHistory[i]
+		if beforeRevision != 0 && entry.Revision >= beforeRevision {
+			continue
+		}
+		if event, ok := a.project(entry); ok {
+			if len(out) == actionHistoryPageSize {
+				hasMore = true
+				break
+			}
 			out = append(out, event)
 		}
 	}
-	return out
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, hasMore
 }
 
 // Executor replacements are detached, validated drafts. Keep the original

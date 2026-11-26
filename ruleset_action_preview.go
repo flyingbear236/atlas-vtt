@@ -39,12 +39,24 @@ func actionPreviewsForSheet(ruleset RulesetSnapshot, instance CharacterInstance,
 			sources[item.ID] = registry.itemBindings(item)
 		}
 	}
+	self := maps.Clone(base)
+	self["target"] = base["actor"]
+	for address, value := range state.StatValues {
+		self["target."+address] = value
+	}
 	for _, choice := range state.ActionSources {
 		if _, ok := ruleset.actionPlans[choice.ActionID]; !ok {
 			continue
 		}
 		preview := ActionPreview{ActionID: choice.ActionID, SourceID: choice.SourceID}
-		bindings := maps.Clone(base)
+		bindings := base
+		if ruleset.actionPlans[choice.ActionID].selector == "self" {
+			bindings = self
+		}
+		delete(bindings, "source")
+		if ruleset.actionPlans[choice.ActionID].selector != "self" {
+			delete(bindings, "target")
+		}
 		if choice.SourceID != "" {
 			source, ok := sources[choice.SourceID]
 			if !ok {
@@ -56,10 +68,7 @@ func actionPreviewsForSheet(ruleset RulesetSnapshot, instance CharacterInstance,
 		// target is deliberately unknown until the player chooses one.
 		switch ruleset.actionPlans[choice.ActionID].selector {
 		case "self":
-			bindings["target"] = bindings["actor"]
-			for address, value := range state.StatValues {
-				bindings["target."+address] = value
-			}
+			// Prebuilt above.
 		case "source":
 			bindings["target"] = bindings["source"]
 		}
