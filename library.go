@@ -542,7 +542,7 @@ func deleteLibraryFile(ss *Session, p string) error {
 			}
 		}
 		for id, inst := range ss.CharacterInstances {
-			if inst.ArtworkPath == p {
+			if inst.ArtworkPath == p || inst.PortraitPath == p {
 				deps = append(deps, "character:"+id)
 			}
 		}
@@ -698,10 +698,16 @@ func applyLibraryOperation(ss *Session, req libraryRequest) error {
 				}
 			}
 			for id, inst := range ss.CharacterInstances {
+				if inst.ArtworkPath != f.Path && inst.PortraitPath != f.Path {
+					continue
+				}
 				if inst.ArtworkPath == f.Path {
 					inst.ArtworkPath = next
-					ss.CharacterInstances[id] = inst
 				}
+				if inst.PortraitPath == f.Path {
+					inst.PortraitPath = next
+				}
+				ss.CharacterInstances[id] = inst
 			}
 		}
 	case "deleteFile":

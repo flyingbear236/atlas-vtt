@@ -209,8 +209,8 @@ export function numericRollFormula(event,preview=null){
 
 
 export class DiceRuntime {
-  constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},onActionPresented=()=>{},animator=null,storage=localStorage}={}){
-    this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.onActionPresented=onActionPresented;this.animator=animator;this.storage=storage;
+  constructor(root,{queue,getCharacterId=()=>'',toast=()=>{},onAnimate=()=>{},onActionPresented=()=>{},formatChangeField=field=>field,animator=null,storage=localStorage}={}){
+    this.root=root;this.queue=queue;this.getCharacterId=getCharacterId;this.toast=toast;this.onAnimate=onAnimate;this.onActionPresented=onActionPresented;this.formatChangeField=formatChangeField;this.animator=animator;this.storage=storage;
     this.sceneId='';this.userId='';this.events=[];this.eventIds=new Set();this.actionPreviews=new Map();this.liveActionRolls=new Set();this.liveActionNotices=new Set();this.overlayActionID='';this.groups=[{count:1,sides:20}];this.modifier=0;this.awaitingManual=false;this.awaitingRoll=false;this.overlayTimer=null;
     this.lastAction=root.querySelector('[data-action-last]');
     this.expression=root.querySelector('[data-dice-expression]');this.error=root.querySelector('[data-dice-error]');this.submit=root.querySelector('[data-dice-submit]');this.entries=root.diceUI.journal.querySelector('[data-roll-entries]');this.journalCount=root.diceUI.journal.querySelector('[data-roll-count]');this.animation=root.querySelector('[data-roll-animation]');this.last=root.querySelector('[data-dice-last]');this.overlay=root.diceUI.overlay;
@@ -299,7 +299,8 @@ export class DiceRuntime {
 
   #actionEvent(action){
     const groups=action.roll?.dice||[];
-    return {...action,id:action.executionId,actionExecution:true,groups,
+    const {trace,...publicAction}=action;
+    return {...publicAction,id:action.executionId,actionExecution:true,groups,
       total:action.roll?.total,results:groups.flatMap(group=>group.results||[])};
   }
 
@@ -356,7 +357,7 @@ export class DiceRuntime {
     for(const message of event.messages||[])if(message!==undefined)append(message);
     if(event.objectText)append(event.objectText);
     for(const change of event.changes||[]){
-      append(`${change.field} · ${String(change.before.value)} → ${String(change.after.value)}`);
+      append(`${this.formatChangeField(change.field)} · ${String(change.before.value)} → ${String(change.after.value)}`);
     }
     return lines;
   }
@@ -375,6 +376,8 @@ export class DiceRuntime {
     if(wasReading)this.entries.scrollTop+=this.entries.scrollHeight-oldHeight;
     this.#updateCount();
   }
+
+  refreshPresentation(){this.#renderAll();}
 
   #renderAll(){
     const fragment=document.createDocumentFragment();
@@ -425,7 +428,7 @@ export class DiceRuntime {
     if(!(event.messages||[]).some(Boolean)&&event.changes?.length){
       const details=document.createElement('div');details.className='dice-overlay-message';
       details.textContent=event.changes.slice(0,3).map(change=>
-        `${change.field}: ${String(change.before?.value??'—')} → ${String(change.after?.value??'—')}`).join(' · ');
+        `${this.formatChangeField(change.field)}: ${String(change.before?.value??'—')} → ${String(change.after?.value??'—')}`).join(' · ');
       if(event.changes.length>3)details.textContent+=` · ещё ${event.changes.length-3}`;
       this.overlay.append(details);
     }

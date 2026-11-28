@@ -1,3 +1,4 @@
+import {humanTargetName} from './ruleset-presentation.js';
 import {catalogActionRules,catalogActionSource,catalogDefinitionFields,catalogFullPath} from './stat-catalog.js';
 
 // The catalogue and the floating inspector consume the same model and DOM.
@@ -13,21 +14,26 @@ export function actionReferenceModel(definition,group=null){
  };
 }
 
-export function renderActionReference(definition,group=null){
+export function renderActionReference(definition,group=null,detailed=true,snapshot=null){
  const data=actionReferenceModel(definition,group);
  const root=document.createElement('div');root.className='action-reference-content';
  const heading=document.createElement('h3');heading.textContent=data.name;
  const path=document.createElement('p');path.className='action-reference-id';path.textContent=data.id;
- root.append(heading,path);
+ root.append(heading);if(detailed)root.append(path);
  const info=document.createElement('div');info.className='action-reference-info';root.append(info);
  if(data.group){
   const affiliation=document.createElement('div');affiliation.className='action-reference-group';
   affiliation.append(document.createTextNode('Группа действий'));
-  const id=document.createElement('strong');id.textContent=data.group.id;affiliation.append(id);
+  const id=document.createElement('strong');id.textContent=data.group.id;if(detailed||!data.group.name)affiliation.append(id);
   if(data.group.name){const name=document.createElement('span');name.textContent=data.group.name;affiliation.append(name);}
   info.append(affiliation);
  }
  if(data.description){const description=document.createElement('p');description.className='action-reference-description';description.textContent=data.description;info.append(description);}
+ if(!detailed){
+  const targets=[...new Set(data.rules.filter(rule=>/(^|\.)apply(?:\.\d+)?\.path$/.test(rule.path)).map(rule=>humanTargetName(rule.value,snapshot)))];
+  if(targets.length){const title=document.createElement('h4');title.textContent='Влияет на';info.append(title);for(const target of targets){const row=document.createElement('p');row.textContent=target;info.append(row);}}
+  return root;
+ }
  if(data.source){
   const title=document.createElement('h4');title.textContent='Полное определение действия';info.append(title);
   const pre=document.createElement('pre');pre.className='action-reference-source';
@@ -46,8 +52,8 @@ export function renderActionReference(definition,group=null){
 }
 
 export class ActionReferencePanel{
- constructor(){
-  this.openId='';this.characterId='';this.registryRevision=-1;
+ constructor({detailed=()=>true}={}){
+  this.detailed=detailed;this.openId='';this.characterId='';this.registryRevision=-1;
   this.host=document.createElement('aside');this.host.className='action-reference-shell';
   this.host.hidden=true;this.host.setAttribute('aria-label','Справочник действия');
   const close=document.createElement('button');close.type='button';close.className='action-reference-close';
@@ -61,19 +67,19 @@ export class ActionReferencePanel{
  open(snapshot,definition,group){
   if(!snapshot?.characterId||!definition?.id)return false;
   this.characterId=snapshot.characterId;this.openId=definition.id;this.registryRevision=snapshot.registryRevision;
-  this.render(definition,group);this.host.hidden=false;this.position();return true;
+  this.render(definition,group,snapshot);this.host.hidden=false;this.position();return true;
  }
- render(definition,group){
+ render(definition,group,snapshot){
   const note=document.createElement('div');note.className='action-reference-note';
-  note.textContent='Справочник действия · данные из рулсета';
-  this.card.replaceChildren(note,renderActionReference(definition,group));
+  note.textContent=this.detailed()?'Справочник действия · данные из рулсета':'Справочник действия';
+  this.card.replaceChildren(note,renderActionReference(definition,group,this.detailed(),snapshot));
  }
  refresh(snapshot,definition,group){
   if(this.host.hidden)return;
   if(!snapshot||snapshot.characterId!==this.characterId||!definition){this.close();return;}
   if(snapshot.registryRevision!==this.registryRevision){
    const scroll=this.card.scrollTop;this.registryRevision=snapshot.registryRevision;
-   this.render(definition,group);this.card.scrollTop=scroll;
+   this.render(definition,group,snapshot);this.card.scrollTop=scroll;
   }
   this.position();
  }

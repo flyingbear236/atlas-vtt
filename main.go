@@ -152,6 +152,7 @@ type peer struct {
 	region            *SceneRegion
 	delivery          uint64
 	playerPreview     bool
+	playerDetails     bool
 	previewRevision   uint64
 	previewAssetKey   string
 	characterID       string
@@ -475,6 +476,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/media-library/place", s.placeCampaignMedia)
 	mux.HandleFunc("POST /api/media-library/prepare", s.prepareCampaignMediaUse)
 	mux.HandleFunc("POST /api/media-library/sheet-artwork", s.setSheetArtwork)
+	mux.HandleFunc("POST /api/media-library/character-artwork", s.setCharacterPortrait)
 	mux.HandleFunc("GET /api/library/file/download", s.downloadLibraryFile)
 	mux.HandleFunc("GET /api/library/inspect", s.inspectLibraryFile)
 	mux.HandleFunc("POST /api/library/operation", s.libraryOperation)
@@ -769,6 +771,9 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				if msg.PreviewEnabled != nil {
 					s.setPeerPlayerPreview(p, *msg.PreviewEnabled)
 				}
+				if !memberIsGM(m) {
+					p.playerDetails = msg.PlayerDetails
+				}
 				p.sceneID = msg.SceneID
 				p.activeTokenID = msg.ActiveTokenID
 				p.floorID = currentFloorForPeer(p, scene)
@@ -777,15 +782,27 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 				s.send(p, s.snapshotSceneForPeer(ss, p))
 				s.sendRollHistory(ss, p)
 			}
+		} else if msg.Type == "playerDetails" {
+			if !memberIsGM(m) && p.sceneID != "" && msg.SceneID == p.sceneID && p.playerDetails != msg.PlayerDetails {
+				p.playerDetails = msg.PlayerDetails
+				if p.playerDetails {
+					s.sendActionTraceHistory(ss, p)
+				}
+			}
 		} else if msg.Type == "actionHistoryPage" {
 			if msg.SceneID == p.sceneID && p.sceneID != "" {
 				s.sendActionHistoryPage(ss, p, msg.BeforeActionRevision)
 			}
+		} else if msg.Type == "characterHover" {
+			s.sendCharacterHover(ss, p, msg)
 		} else if msg.Type == "objectHover" {
 			s.sendObjectHover(ss, p, msg)
 		} else if msg.Type == "actionTargets" {
 			s.sendActionTargets(ss, p, msg)
 		} else if msg.Type == "characterWatch" {
+			if !memberIsGM(m) {
+				p.playerDetails = msg.PlayerDetails
+			}
 			s.watchCharacter(ss, p, msg.CharacterID, msg.CharacterWatch, msg.CharacterDelta)
 		} else if msg.Type == "characterStatTrace" {
 			s.sendCharacterStatTrace(ss, p, msg)

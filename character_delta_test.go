@@ -177,4 +177,23 @@ func TestCharacterDeltaTraceScope(t *testing.T) {
 	if len(player.out) != 0 {
 		t.Fatal("player received GM trace")
 	}
+	player.playerDetails = true
+	s.watchCharacter(ss, player, cid, 2, true)
+	detailed := (<-player.out).(characterSnapshot)
+	if !detailed.TraceAvailable || detailed.Permissions.Manage {
+		t.Fatal("detailed player should receive read-only trace access")
+	}
+	cmd.CharacterWatch = 2
+	s.sendCharacterStatTrace(ss, player, cmd)
+	if len(player.out) != 1 {
+		t.Fatal("detailed player did not receive trace")
+	}
+	if reply := (<-player.out).(map[string]any); reply["error"] != nil || len(reply["statTraces"].(map[string]*statCalculationTrace)) == 0 {
+		t.Fatalf("trace missing: %v", reply)
+	}
+	player.playerDetails = false
+	s.sendCharacterStatTrace(ss, player, cmd)
+	if len(player.out) != 0 {
+		t.Fatal("disabled player mode received trace")
+	}
 }

@@ -27,7 +27,7 @@ function drawResourceOverlay(ctx,item,config,definitions,display){
  else{const text=truncateOverlayText(ctx,presentation.text,172),width=Math.max(28,Math.min(180,ctx.measureText(text).width+8));ctx.fillStyle='#0c1517dd';ctx.fillRect(item.x-width/2,baseY-7,width,14);ctx.fillStyle=presentation.color;ctx.textAlign='center';ctx.fillText(text,item.x,baseY);}ctx.restore();
 }
 
-export function drawTokens({ctx,camera,viewport,dpr,tokens,index,visuals,moving,drag,selected,queue,requestImage,artwork,delta,floorId,alpha=1,outOfBounds,resourceVisible,characterDisplays={},resourceOverlays=[],resourceOverlayDefinitions={},showCharacterIDs=false}){
+export function drawTokens({ctx,camera,viewport,dpr,tokens,index,visuals,moving,drag,selected,queue,requestImage,artwork,delta,floorId,alpha=1,outOfBounds,resourceVisible,characterDisplays={},resourceOverlays=[],resourceOverlayDefinitions={},showCharacterIDs=false,impactOffsets}){
  const margin=20/camera.scale;
  const candidates=new Map(index.query(camera.x-margin,camera.y-margin,camera.x+viewport.w/camera.scale+margin,camera.y+viewport.h/camera.scale+margin).filter(t=>t.floorId===floorId).map(t=>[t.id,t]));
  const finals=new Map();for(const c of queue)if(c.type==='final'&&tokens[c.token.id]?.floorId===floorId){finals.set(c.token.id,c.token);if(tokens[c.token.id])candidates.set(c.token.id,tokens[c.token.id]);}
@@ -35,7 +35,7 @@ export function drawTokens({ctx,camera,viewport,dpr,tokens,index,visuals,moving,
  const items=[];let animating=false;
  for(const t of candidates.values()){
   const v=visuals.get(t.id)||{x:t.x,y:t.y},final=finals.get(t.id);if(drag?.id===t.id){v.x=drag.x;v.y=drag.y;}else if(final){v.x=final.x;v.y=final.y;}else{const a=Math.min(1,delta/70);v.x+=(t.x-v.x)*a;v.y+=(t.y-v.y)*a;if(Math.abs(t.x-v.x)+Math.abs(t.y-v.y)>.1){animating=true;moving.add(t.id);}else{v.x=t.x;v.y=t.y;moving.delete(t.id);}}
-  visuals.set(t.id,v);const diameter=t.size*camera.scale,x=(v.x-camera.x)*camera.scale,y=(v.y-camera.y)*camera.scale;if(x+diameter/2<0||y+diameter/2<0||x-diameter/2>viewport.w||y-diameter/2>viewport.h||resourceVisible&&!resourceVisible(v.x,v.y,t.size/2))continue;
+  visuals.set(t.id,v);const diameter=t.size*camera.scale,x=(v.x-camera.x)*camera.scale+(impactOffsets?.get(t.id)||0),y=(v.y-camera.y)*camera.scale;if(x+diameter/2<0||y+diameter/2<0||x-diameter/2>viewport.w||y-diameter/2>viewport.h||resourceVisible&&!resourceVisible(v.x,v.y,t.size/2))continue;
   const bitmap=t.asset?requestImage(`${t.asset}/token.png`,diameter*dpr):null,spec=artworkSpec(t,bitmap,diameter*dpr),outside=!!outOfBounds?.(v.x,v.y),name=tokenDisplayName(t,showCharacterIDs);items.push({t,x,y,diameter,spec,outside,name,alpha:alpha*(t.hidden?.45:1)*(t.opacity??1)});
  }
  artwork.begin(items.flatMap(i=>i.diameter>=24||i.t.id===selected?[i.spec.key,`label:${i.name}`]:[i.spec.key]));ctx.save();ctx.setTransform(dpr,0,0,dpr,0,0);

@@ -150,7 +150,7 @@ func (s *Server) sendCharacterProjection(p *peer, snapshot characterSnapshot) {
 // Trace requests are scoped to the currently watched character and projection.
 // No result from an older projection is ever labeled as current.
 func (s *Server) sendCharacterStatTrace(session *Session, p *peer, msg Command) {
-	if !p.characterDelta || p.characterBaseline == nil || !memberIsGM(p.member) || p.playerPreview || msg.CharacterWatch != p.characterWatch || msg.CharacterID != p.characterID || !memberCanAccessCharacter(session, p.member, msg.CharacterID) {
+	if !p.characterDelta || p.characterBaseline == nil || !peerCanReadTrace(p) || msg.CharacterWatch != p.characterWatch || msg.CharacterID != p.characterID || !memberCanAccessCharacter(session, p.member, msg.CharacterID) {
 		return
 	}
 	baseline := p.characterBaseline

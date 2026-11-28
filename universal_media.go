@@ -218,9 +218,10 @@ func (s *Server) playerMediaCatalog(w http.ResponseWriter, r *http.Request) {
 	out := campaignMediaView{Revision: ss.CharacterRevision, Files: []campaignMediaFile{}, Directories: []string{}}
 	seen := map[string]bool{}
 	usedNames := map[string]bool{}
+	portraitsOnly := r.URL.Query().Get("portrait") == "1"
 	add := func(aid string) {
 		a := ss.Assets[aid]
-		if a.ID == "" || seen[aid] {
+		if a.ID == "" || seen[aid] || portraitsOnly && !universalMedia(a) {
 			return
 		}
 		seen[aid] = true
@@ -238,6 +239,7 @@ func (s *Server) playerMediaCatalog(w http.ResponseWriter, r *http.Request) {
 	for cid, c := range ss.CharacterInstances {
 		if memberCanAccessCharacter(ss, m, cid) {
 			add(effectiveCharacterAvatar(ss, c, registry))
+			add(characterPortraitAsset(ss, c))
 		}
 	}
 	out.Revision = ss.MediaLibrary.Revision + ss.CharacterRevision

@@ -5,7 +5,7 @@ export function applyCharacterChanges(snapshot, changes) {
  const assign=(node,key,value)=>Object.defineProperty(node,key,{value,writable:true,enumerable:true,configurable:true});
  for(const op of changes){
   if(!Array.isArray(op.path)||!op.path.length||op.path.length>6||op.path.some(k=>typeof k!=='string'))throw Error('Invalid character path');
-  if(!['instance','effective','preset','presetArtwork','statDefinitions','actions','permissions','registryRevision','actionSelectors','actionGroups','actionPreviews','inactiveActionSources','itemNames','itemDetails','directEffects','statFields','statTraces','traceAvailable'].includes(op.path[0]))throw Error('Invalid character field');
+  if(!['instance','effective','preset','presetArtwork','statDefinitions','referenceNames','actions','permissions','registryRevision','actionSelectors','actionGroups','actionPreviews','inactiveActionSources','itemNames','itemDetails','directEffects','statFields','statTraces','traceAvailable'].includes(op.path[0]))throw Error('Invalid character field');
   let node=next;
   const validKey=(obj,key)=>!Array.isArray(obj)||(/^(0|[1-9]\d*)$/.test(key)&&Number(key)<obj.length);
   for(const key of op.path.slice(0,-1)){

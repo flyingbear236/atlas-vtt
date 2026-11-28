@@ -494,6 +494,9 @@ func validateSessionCharacterState(session *Session) error {
 		if err := ValidateCharacterInstance(instance, registry); err != nil {
 			return fmt.Errorf("character instance %q: %w", id, err)
 		}
+		if instance.PortraitAssetID != "" && !universalMedia(session.Assets[instance.PortraitAssetID]) {
+			return fmt.Errorf("character instance %q references unknown portrait asset %q", id, instance.PortraitAssetID)
+		}
 		if instance.AvatarAssetID != nil && *instance.AvatarAssetID != "" {
 			if asset, exists := session.Assets[*instance.AvatarAssetID]; !exists || !isCharacterArtworkAsset(asset) {
 				return fmt.Errorf("character instance %q references unknown avatar asset %q", id, *instance.AvatarAssetID)

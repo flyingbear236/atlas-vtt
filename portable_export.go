@@ -90,6 +90,9 @@ func resolvePortableMediaPaths(s *portableExportSnapshot) error {
 		return nil
 	}
 	for _, instance := range s.Session.CharacterInstances {
+		if err := ensure(instance.PortraitAssetID); err != nil {
+			return err
+		}
 		if instance.AvatarAssetID != nil && *instance.AvatarAssetID != "" {
 			if err := ensure(*instance.AvatarAssetID); err != nil {
 				return err

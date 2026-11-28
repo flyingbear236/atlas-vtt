@@ -82,6 +82,10 @@ func messageAccess(result ActionExecutionResult) []actionMessageAccess {
 	return access
 }
 
+func peerCanReadTrace(p *peer) bool {
+	return !p.playerPreview && (memberIsGM(p.member) || p.playerDetails)
+}
+
 type actionAudience struct {
 	session *Session
 	peer    *peer
@@ -126,7 +130,7 @@ func (a actionAudience) project(e *actionJournalEntry) (ActionEvent, bool) {
 		return ActionEvent{}, false
 	}
 	out := e.ActionEvent
-	if !memberIsGM(a.peer.member) || a.peer.playerPreview {
+	if !peerCanReadTrace(a.peer) {
 		out.Trace = nil
 	}
 	if out.Roll != nil {
@@ -359,6 +363,7 @@ func (m *actionCommit) rollback(session *Session) {
 }
 
 func (s *Server) publishAction(session *Session, m *actionCommit) {
+	impacts := actionImpacts(m.plan, m.entry.Target, session.Ruleset.Registry.Stats)
 	for p := range s.peers {
 		if p.session != session.ID || p.sceneID != m.entry.SceneID {
 			continue
@@ -368,7 +373,7 @@ func (s *Server) publishAction(session *Session, m *actionCommit) {
 			continue
 		}
 		messages := event.Messages
-		// The detailed journal has its own GM-only delivery channel.
+		// Detailed journal delivery is opt-in for players.
 		// Roll and message broadcasts remain as small as before.
 		trace := event.Trace
 		event.Messages = nil
@@ -380,7 +385,10 @@ func (s *Server) publishAction(session *Session, m *actionCommit) {
 		for i, text := range messages {
 			s.send(p, map[string]any{"type": "actionMessage", "executionId": event.ExecutionID, "sceneId": event.SceneID, "actionRevision": event.Revision, "index": i, "message": text, "event": event})
 		}
-		if trace != nil && memberIsGM(p.member) && !p.playerPreview {
+		if len(impacts) > 0 {
+			s.send(p, map[string]any{"type": "actionImpact", "executionId": event.ExecutionID, "sceneId": event.SceneID, "actorId": event.CharacterID, "targetId": m.entry.Target.CharacterID, "changes": impacts, "hasRoll": event.Roll != nil, "hasMessage": len(messages) > 0})
+		}
+		if trace != nil && peerCanReadTrace(p) {
 			event.Trace = trace
 			s.send(p, map[string]any{"type": "actionTrace", "event": event})
 		}

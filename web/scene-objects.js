@@ -145,19 +145,19 @@ export class ObjectPresentation {
   }
   pointer(element,x,y,alt){
     const id=element?.id||'',scene=this.context(),previous=this.hovered;this.alt=alt;this.last={element,x,y};this.hovered=id;
-    if(id!==previous)this.onHover?.(id);
+    if(id!==previous)this.onHover?.(element?.characterTokenId?'':id);
     if(!alt){this.hideHover();return;}
     if(!id){if(this.tooltip.hidden){this.hideHover();return;}clearTimeout(this.openTimer);this.openTimer=null;if(!this.tooltip.hidden&&!this.closeTimer)this.closeTimer=setTimeout(()=>this.hideHover(),500);return;}
     clearTimeout(this.closeTimer);this.closeTimer=null;
     if(this.currentID===id&&this.currentScene===scene){if(!this.tooltip.hidden)this.position(x,y);return;}
     this.hideHover();this.currentID=id;this.currentScene=scene;const seq=++this.seq;
-    this.openTimer=setTimeout(()=>{this.openTimer=null;if(this.alt&&this.hovered===id&&this.context()===scene)this.send({type:'objectHover',sceneId:scene,seq,element:{id}});},150);
+    this.openTimer=setTimeout(()=>{this.openTimer=null;if(this.alt&&this.hovered===id&&this.context()===scene)this.send(element?.characterTokenId?{type:'characterHover',sceneId:scene,seq,tokenId:element.characterTokenId}:{type:'objectHover',sceneId:scene,seq,element:{id}});},150);
   }
   setAlt(value){if(value===this.alt)return;if(!value){this.alt=false;this.hideHover();}else if(this.last)this.pointer(this.last.element,this.last.x,this.last.y,true);else this.alt=true;}
   position(x,y){const r=this.tooltip.getBoundingClientRect();let left=x+16,top=y+16;if(left+r.width>innerWidth-8)left=x-r.width-12;if(top+r.height>innerHeight-8)top=y-r.height-12;this.tooltip.style.left=`${Math.max(8,Math.min(left,innerWidth-r.width-8))}px`;this.tooltip.style.top=`${Math.max(8,Math.min(top,innerHeight-r.height-8))}px`;}
   hideHover(){if(!this.currentID&&this.tooltip.hidden)return;clearTimeout(this.openTimer);clearTimeout(this.closeTimer);this.openTimer=this.closeTimer=null;this.currentID='';this.currentScene='';this.seq++;this.tooltip.hidden=true;this.tooltip.replaceChildren();this.hoverMedia.clear();}
   handle(msg){
-    if(msg.type==='objectHover'){if(msg.sceneId!==this.context()||msg.seq!==this.seq||!this.alt||msg.id!==this.hovered)return true;if(!msg.text&&!msg.media)return true;this.tooltip.replaceChildren();if(msg.text)this.tooltip.append(node('div','scene-object-hover-text',msg.text));if(msg.media){const img=node('img');img.alt='Описание объекта';this.tooltip.append(img);this.hoverMedia.show(msg.media,img,320,()=>{if(this.last)this.position(this.last.x,this.last.y);},()=>img.remove());}this.tooltip.hidden=false;if(this.last)this.position(this.last.x,this.last.y);return true;}
+    if(msg.type==='objectHover'){if(msg.sceneId!==this.context()||msg.seq!==this.seq||!this.alt||msg.id!==this.hovered)return true;if(!msg.text&&!msg.media)return true;this.tooltip.replaceChildren();if(msg.text)this.tooltip.append(node('div','scene-object-hover-text',msg.text));if(msg.media){const img=node('img');img.alt=msg.id.startsWith('character:')?'Артворк персонажа':'Описание объекта';this.tooltip.append(img);this.hoverMedia.show(msg.media,img,320,()=>{if(this.last)this.position(this.last.x,this.last.y);},()=>img.remove());}this.tooltip.hidden=false;if(this.last)this.position(this.last.x,this.last.y);return true;}
     if(msg.type==='objectImage'){if(msg.sceneId===this.context()&&!this.seenImages.has(msg.executionId)){if(msg.executionId){this.seenImages.add(msg.executionId);if(this.seenImages.size>128)this.seenImages.delete(this.seenImages.values().next().value);}if(this.dialog.open){if(this.imageQueue.length<8)this.imageQueue.push({...msg.media,reactionText:msg.text||''});}else this.showImage({...msg.media,reactionText:msg.text||''});}return true;}return false;
   }
   showImage(media){this.dialog.replaceChildren();const frame=node('div','scene-object-result-frame'),img=node('img');img.alt='Изображение результата действия';const status=node('span','scene-object-image-status','Загрузка изображения…');frame.append(button('×',()=>this.closeImage(),'scene-object-result-close subtle'),status,img);if(media.reactionText)frame.append(node('div','scene-object-result-caption',media.reactionText));this.dialog.append(frame);this.dialog.showModal();this.resultMedia.show(media,img,1536,()=>status.remove(),e=>{status.textContent=e.message;});}

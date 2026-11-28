@@ -25,7 +25,7 @@ export class ActionTraceJournal {
  constructor(mount=document.body,sendPage=()=>false){
   this.sceneId='';this.enabled=false;this.events=new Map();this.selected='';
   this.sendPage=sendPage;this.historyCursor=0;this.hasMore=false;this.loading=false;this.requestedCursor=0;this.loadedPages=1;
-  this.toggle=document.createElement('button');this.toggle.type='button';this.toggle.className='subtle gm action-trace-toggle';this.toggle.textContent='Трассировка';this.toggle.title='Журнал вычислений действий (ГМ)';this.toggle.hidden=true;this.toggle.setAttribute('aria-expanded','false');
+  this.toggle=document.createElement('button');this.toggle.type='button';this.toggle.className='subtle action-trace-toggle';this.toggle.textContent='Трассировка';this.toggle.title='Журнал вычислений действий';this.toggle.hidden=true;this.toggle.setAttribute('aria-expanded','false');
   document.getElementById('diceJournalToggle')?.after(this.toggle);
   this.panel=document.createElement('aside');this.panel.className='action-trace-panel';this.panel.hidden=true;this.panel.setAttribute('aria-label','Журнал трассировки действий');
   const header=document.createElement('header');header.className='action-trace-header';header.append(text('strong','Трассировка действий'));
@@ -52,7 +52,7 @@ export class ActionTraceJournal {
  setOpen(open){this.panel.hidden=!open||!this.enabled;this.toggle.classList.toggle('active',!this.panel.hidden);this.toggle.setAttribute('aria-expanded',String(!this.panel.hidden));if(!this.panel.hidden)this.render();}
  handle(message){
   if(!this.enabled)return false;
-  if(message?.type==='rollHistory'&&message.sceneId===this.sceneId){
+  if((message?.type==='rollHistory'||message?.type==='actionTraceHistory')&&message.sceneId===this.sceneId){
    const next=new Map();for(const event of message.actions||[]){const row=actionTraceSummary(event);if(row&&row.sceneId===this.sceneId)next.set(row.id,row);}
    this.loadedPages=1;this.events=new Map([...next.entries()].slice(-PAGE_SIZE));this.selected=this.events.has(this.selected)?this.selected:[...this.events.keys()].at(-1)||'';
    this.historyCursor=message.actions?.[0]?.actionRevision||0;this.hasMore=!!message.actionHistoryHasMore;this.loading=false;this.requestedCursor=0;

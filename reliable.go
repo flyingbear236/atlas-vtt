@@ -203,6 +203,7 @@ type Command struct {
 	Roll                     *RollRequest               `json:"roll,omitempty"`
 	Action                   *ActionExecutionRequest    `json:"action,omitempty"`
 	ActionGeneration         uint64                     `json:"actionGeneration,omitempty"`
+	PlayerDetails            bool                       `json:"playerDetails,omitempty"`
 	BeforeActionRevision     uint64                     `json:"beforeActionRevision,omitempty"`
 	invalidActionDigest      string
 	wireBytes                int

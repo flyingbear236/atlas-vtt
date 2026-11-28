@@ -281,7 +281,7 @@ func avatarAssetVisibleTo(session *Session, member *Member, assetID string) bool
 		return false
 	}
 	for characterID, instance := range session.CharacterInstances {
-		if memberCanAccessCharacter(session, member, characterID) && effectiveCharacterAvatar(session, instance, registry) == assetID {
+		if memberCanAccessCharacter(session, member, characterID) && (characterPortraitAsset(session, instance) == assetID || effectiveCharacterAvatar(session, instance, registry) == assetID) {
 			return true
 		}
 	}

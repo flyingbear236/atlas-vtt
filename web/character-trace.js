@@ -68,8 +68,8 @@ export function buildStatTraceModel(snapshot,id){
 }
 
 export class CharacterTracePanel{
- constructor({save}){
-  this.save=save;this.snapshot=null;this.model=null;this.edits=new Map();this.openId='';
+ constructor({save,canEdit=snapshot=>!!snapshot?.permissions?.manage}){
+  this.save=save;this.canEdit=canEdit;this.snapshot=null;this.model=null;this.edits=new Map();this.openId='';
   this.host=document.createElement('aside');this.host.className='character-trace-shell';this.host.hidden=true;this.host.setAttribute('aria-label','Трассировка характеристики');document.body.append(this.host);
   this.onKey=event=>{if(event.key==='Escape'&&!this.host.hidden){event.preventDefault();this.close();}};
   document.addEventListener('keydown',this.onKey);
@@ -128,7 +128,7 @@ export class CharacterTracePanel{
   const value=this.elt('div','character-trace-value-box');
   const key=traceSourceEditKey(source);
   const saved=this.edits.get(key);const displayed=saved===undefined?source.value:saved;
-  if(source.editable){
+  if(source.editable&&this.canEdit(this.snapshot)){
    const button=this.elt('button','character-trace-change',source.kind==='itemEffect'&&displayed>=0?`+${displayed}`:displayed);
    button.type='button';button.title='Изменить значение этого источника';
    button.onclick=()=>{const input=this.elt('input','character-trace-input');input.type='number';input.step='1';input.value=String(displayed);input.setAttribute('aria-label',`Изменить ${source.label}`);value.replaceChildren(input);input.focus();input.select();
@@ -228,10 +228,10 @@ export class CharacterTracePanel{
   const cancel=this.elt('button','character-trace-cancel',this.edits.size?'Отмена':'Закрыть');cancel.onclick=()=>this.close();bar.append(cancel);
   const save=this.elt('button','character-trace-save','Сохранить');save.disabled=!this.edits.size;
   save.onclick=()=>{
-   if(!this.edits.size||!this.snapshot)return;
+   if(!this.edits.size||!this.snapshot||!this.canEdit(this.snapshot))return;
    const changes=[...this.edits.entries()].map(([key,value])=>{const [kind,statId,itemId,effectId,target]=key.split(':');return {kind,statId,itemId,effectId,target,value};});
    if(this.save(this.snapshot,changes))this.close(true);
-  };bar.append(save);body.append(bar);
+  };if(this.canEdit(this.snapshot))bar.append(save);body.append(bar);
   this.position();
  }
 }

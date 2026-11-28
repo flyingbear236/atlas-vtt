@@ -688,6 +688,9 @@ func refreshAssetOrphans(session *Session, now time.Time) bool {
 		}
 	}
 	for _, instance := range session.CharacterInstances {
+		if id := characterPortraitAsset(session, instance); id != "" {
+			references[id]++
+		}
 		if instance.AvatarAssetID != nil && *instance.AvatarAssetID != "" {
 			references[*instance.AvatarAssetID]++
 		}

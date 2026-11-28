@@ -352,10 +352,18 @@ func (s *Server) sendRollHistory(session *Session, peer *peer) {
 	})
 }
 
+func (s *Server) sendActionTraceHistory(session *Session, peer *peer) {
+	if !peerCanReadTrace(peer) || !sceneVisible(session.Scenes[peer.sceneID], peer.member) {
+		return
+	}
+	actions, hasMore := actionHistoryPageForPeer(session, peer, 0)
+	s.send(peer, map[string]any{"type": "actionTraceHistory", "sceneId": peer.sceneID, "actions": actions, "actionHistoryHasMore": hasMore})
+}
+
 // Older action history is requested only when the user scrolls the GM debug
 // journal. The cursor is an exclusive revision, never a client-visible offset.
 func (s *Server) sendActionHistoryPage(session *Session, peer *peer, beforeRevision uint64) {
-	if beforeRevision == 0 || !memberIsGM(peer.member) || peer.playerPreview || !sceneVisible(session.Scenes[peer.sceneID], peer.member) {
+	if beforeRevision == 0 || !peerCanReadTrace(peer) || !sceneVisible(session.Scenes[peer.sceneID], peer.member) {
 		return
 	}
 	actions, hasMore := actionHistoryPageForPeer(session, peer, beforeRevision)

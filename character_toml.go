@@ -34,6 +34,8 @@ type characterTOMLBody struct {
 	Persistent         bool             `toml:"persistent"`
 	Materialized       bool             `toml:"materialized"`
 	Artwork            string           `toml:"artwork,omitempty"`
+	Portrait           string           `toml:"portrait,omitempty"`
+	PortraitText       string           `toml:"portrait_text,omitempty"`
 	ArtworkMode        string           `toml:"artwork_mode,omitempty"` // "placeholder" is distinct from inheritance.
 	Actions            []string         `toml:"actions,omitempty"`
 	Stats              map[string]any   `toml:"stats,omitempty"`
@@ -122,7 +124,14 @@ func buildCharacterTOMLDocument(instance CharacterInstance, media map[string]str
 	if err != nil {
 		return characterTOMLDocument{}, err
 	}
-	body := characterTOMLBody{ID: instance.ID, Name: instance.Name, PresetID: instance.PresetID, Persistent: true,
+	portrait := instance.PortraitPath
+	if instance.PortraitAssetID != "" {
+		portrait, _, err = characterTOMLPath(CharacterInstance{AvatarAssetID: &instance.PortraitAssetID}, media)
+		if err != nil {
+			return characterTOMLDocument{}, err
+		}
+	}
+	body := characterTOMLBody{Portrait: portrait, PortraitText: instance.PortraitText, ID: instance.ID, Name: instance.Name, PresetID: instance.PresetID, Persistent: true,
 		Materialized: instance.Materialized != nil, Artwork: artwork, ArtworkMode: mode,
 		ResourceCurrent: characterTOMLValues(instance.ResourceCurrent), StatFieldOverrides: maps.Clone(instance.StatFieldOverrides), Inventory: inventoryTOML(instance.Inventory), EffectIDs: instance.EffectIDs}
 	if instance.V04 != nil {
@@ -194,7 +203,7 @@ func DecodeCharacterTOML(data []byte, media map[string]string, registry Effectiv
 	if !b.Materialized && (len(b.Stats) > 0 || len(b.ResourceInitial) > 0 || len(b.Actions) > 0) {
 		return CharacterInstance{}, fmt.Errorf("inherited character cannot define materialized mechanics")
 	}
-	instance := CharacterInstance{ID: b.ID, Name: b.Name, PresetID: b.PresetID, Persistent: true, ArtworkPath: b.Artwork}
+	instance := CharacterInstance{ID: b.ID, Name: b.Name, PresetID: b.PresetID, Persistent: true, ArtworkPath: b.Artwork, PortraitPath: b.Portrait, PortraitText: b.PortraitText}
 	if b.ArtworkMode == "placeholder" {
 		empty := ""
 		instance.AvatarAssetID = &empty
@@ -375,7 +384,7 @@ func CurrentCharacterTOML(session *Session, id string) ([]byte, error) {
 func sameCharacterDocument(left, right characterTOMLDocument) bool {
 	a, b := left.Character, right.Character
 	return left.SchemaVersion == right.SchemaVersion && a.ID == b.ID && a.Name == b.Name && a.PresetID == b.PresetID &&
-		a.Persistent == b.Persistent && a.Materialized == b.Materialized && a.Artwork == b.Artwork && a.ArtworkMode == b.ArtworkMode &&
+		a.Persistent == b.Persistent && a.Materialized == b.Materialized && a.Artwork == b.Artwork && a.ArtworkMode == b.ArtworkMode && a.Portrait == b.Portrait && a.PortraitText == b.PortraitText &&
 		slices.Equal(a.Actions, b.Actions) && equalCharacterTOMLMap(a.Stats, b.Stats) && equalCharacterTOMLMap(a.ResourceInitial, b.ResourceInitial) && equalCharacterTOMLMap(a.ResourceCurrent, b.ResourceCurrent)
 }
 func equalCharacterTOMLMap(a, b map[string]any) bool {

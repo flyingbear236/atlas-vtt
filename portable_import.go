@@ -604,6 +604,7 @@ func buildPortableImportCandidate(ctx context.Context, base *Session, a portable
 	}
 	for _, inst := range next.CharacterInstances {
 		reportArtwork(inst.ArtworkPath)
+		reportArtwork(inst.PortraitPath)
 	}
 	info.MissingMedia = info.MissingMedia[:0]
 	for name := range missing {

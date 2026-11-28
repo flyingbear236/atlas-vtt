@@ -167,7 +167,7 @@ func inventoryTOML(items []InventoryItem) []any {
 }
 
 func canEncodeNestedCharacter(instance CharacterInstance, registry EffectiveRegistry) bool {
-	if instance.V04 == nil || instance.PresetID != "" || instance.Materialized == nil || instance.AvatarAssetID != nil || instance.ArtworkPath != "" {
+	if instance.V04 == nil || instance.PresetID != "" || instance.Materialized == nil || instance.AvatarAssetID != nil || instance.ArtworkPath != "" || instance.PortraitAssetID != "" || instance.PortraitPath != "" || instance.PortraitText != "" {
 		return false
 	}
 	parts, err := parseRulesetPath(instance.ID)

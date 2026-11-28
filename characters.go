@@ -237,6 +237,9 @@ type CharacterInstance struct {
 	Name               string                    `json:"name"`
 	AvatarAssetID      *string                   `json:"avatarAssetId,omitempty"`
 	ArtworkPath        string                    `json:"artworkPath,omitempty"`
+	PortraitAssetID    string                    `json:"portraitAssetId,omitempty"`
+	PortraitPath       string                    `json:"portraitPath,omitempty"` // portable media reference; independent of the token avatar
+	PortraitText       string                    `json:"portraitText,omitempty"`
 	Materialized       *CharacterMechanicalState `json:"materialized,omitempty"`
 	ResourceCurrent    map[string]StatValue      `json:"resourceCurrent,omitempty"`
 	StatFieldOverrides map[string]int64          `json:"statFieldOverrides,omitempty"` // per-character v0.4 literal fields
@@ -625,6 +628,22 @@ func ValidateCharacterInstance(instance CharacterInstance, registry EffectiveReg
 		}
 		if instance.AvatarAssetID != nil {
 			return errors.New("character artwork cannot have both path and asset override")
+		}
+	}
+	if err := validateText("character portrait text", instance.PortraitText, 8192, true); err != nil {
+		return err
+	}
+	if instance.PortraitPath != "" {
+		if instance.PortraitAssetID != "" {
+			return errors.New("character portrait cannot have both path and asset override")
+		}
+		if err := validateRulesetMediaPath(instance.PortraitPath); err != nil {
+			return err
+		}
+	}
+	if instance.PortraitAssetID != "" {
+		if err := validateID(instance.PortraitAssetID); err != nil {
+			return err
 		}
 	}
 	currentLimit := MaxStatsPerCharacter

@@ -305,8 +305,10 @@ type characterSnapshot struct {
 	RegistryRevision      uint64                           `json:"registryRevision"`
 	Instance              CharacterInstance                `json:"instance"`
 	Preset                *CharacterPresetDefinition       `json:"preset,omitempty"`
+	PortraitAssetID       string                           `json:"portraitAssetId,omitempty"`
 	PresetArtwork         ArtworkResolution                `json:"presetArtwork,omitempty"`
 	Effective             EffectiveCharacter               `json:"effective"`
+	ReferenceNames        map[string]string                `json:"referenceNames,omitempty"`
 	StatDefinitions       map[string]StatDefinition        `json:"statDefinitions"`
 	Actions               map[string]ActionDefinition      `json:"actions"`
 	Permissions           characterPermissions             `json:"permissions"`
@@ -316,7 +318,7 @@ func characterSnapshotForMember(session *Session, member *Member, characterID st
 	return buildCharacterSnapshot(session, member, characterID, watch, true, nil)
 }
 
-func buildCharacterSnapshot(session *Session, member *Member, characterID string, watch uint64, legacy bool, previous *characterSnapshot) (characterSnapshot, error) {
+func buildCharacterSnapshot(session *Session, member *Member, characterID string, watch uint64, legacy bool, previous *characterSnapshot, detailed ...bool) (characterSnapshot, error) {
 	if !memberCanAccessCharacter(session, member, characterID) {
 		return characterSnapshot{}, errors.New("character access denied")
 	}
@@ -331,7 +333,7 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 		preset = &copy
 	}
 	var traces map[string]*statCalculationTrace
-	traceAvailable := memberIsGM(member) && registry.statPlan != nil
+	traceAvailable := (memberIsGM(member) || len(detailed) > 0 && detailed[0]) && registry.statPlan != nil
 	if legacy && traceAvailable {
 		traces = map[string]*statCalculationTrace{}
 	}
@@ -358,6 +360,7 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 		result.ExecutionID = ""
 		result.CharacterWatch, result.Revision = watch, session.CharacterRevision
 		result.Instance, result.Preset, result.PresetArtwork = instance, preset, presetArtwork
+		result.PortraitAssetID = characterPortraitAsset(session, instance)
 		result.Effective, result.StatTraces, result.TraceAvailable = effective, traces, traceAvailable
 		result.Permissions = characterPermissions{Edit: true, Manage: memberIsGM(member)}
 		result.StatFields = statFieldsForSheet(registry, effective)
@@ -458,6 +461,7 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 	for i := range direct {
 		direct[i].ArtworkAssetID = session.EffectArtwork[sheetEffectDefinitionID(direct[i].ID)]
 	}
+	referenceNames := sheetReferenceNames(session, registry, actions, itemDetails, direct)
 	var combined []inventorySheetEffect
 	if legacy {
 		// Preserve the full effects list for clients that don't opt into deltas.
@@ -469,6 +473,7 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 	}
 	return characterSnapshot{
 		artworkRevision: session.sheetArtworkRevision,
+		PortraitAssetID: characterPortraitAsset(session, instance),
 		ActionSelectors: selectors, ActionGroups: groups, ItemNames: itemNames,
 		ItemDetails:           itemDetails,
 		CharacterEffects:      combined,
@@ -480,7 +485,7 @@ func buildCharacterSnapshot(session *Session, member *Member, characterID string
 		TraceAvailable:        traceAvailable,
 		Type:                  "characterSnapshot", CharacterWatch: watch, CharacterID: characterID,
 		Revision: session.CharacterRevision, RegistryRevision: session.RegistryRevision, Instance: instance, Preset: preset, PresetArtwork: presetArtwork, Effective: effective,
-		StatDefinitions: stats, Actions: actions,
+		StatDefinitions: stats, Actions: actions, ReferenceNames: referenceNames,
 		Permissions: characterPermissions{Edit: true, Manage: memberIsGM(member)},
 	}, nil
 }
@@ -506,7 +511,7 @@ func (s *Server) watchCharacter(session *Session, peer *peer, characterID string
 	peer.characterID = characterID
 	peer.characterDelta = delta
 	peer.characterBaseline = nil
-	snapshot, err := buildCharacterSnapshot(session, peer.member, characterID, watch, !delta, nil)
+	snapshot, err := buildCharacterSnapshot(session, peer.member, characterID, watch, !delta, nil, peer.playerDetails && delta)
 	if err != nil {
 		s.closeCharacterWatch(peer, session.CharacterRevision, "accessRevoked")
 		return
@@ -543,7 +548,7 @@ func (s *Server) refreshCharacterWatches(session *Session, changed map[string]bo
 				continue
 			}
 		}
-		snapshot, err := buildCharacterSnapshot(session, peer.member, characterID, peer.characterWatch, !peer.characterDelta, peer.characterBaseline)
+		snapshot, err := buildCharacterSnapshot(session, peer.member, characterID, peer.characterWatch, !peer.characterDelta, peer.characterBaseline, peer.playerDetails && peer.characterDelta)
 		if err != nil {
 			s.closeCharacterWatch(peer, session.CharacterRevision, "unavailable")
 			continue
